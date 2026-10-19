@@ -193,6 +193,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_file(hits[0])
         if p == "/api/health":
             return self._json({"ok": True})
+        if p == "/api/job-log":
+            # Full log for one job. The state poll carries logs only for
+            # running/failed jobs, so an opened log panel fetches the rest here.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            jid = (q.get("id") or [""])[0]
+            if not jid:
+                return self.send_error(400)
+            return self._json(get_engine().job_log(jid))
         if p == "/api/gallery":
             # Profiles whose archive is finished and still on disk.
             return self._json({"profiles": get_engine().gallery_profiles()})

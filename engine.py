@@ -1265,6 +1265,23 @@ class Engine:
     move_media = move_media
     set_output_root = set_output_root
 
+    def job_log(self, job_id: str) -> dict:
+        """One job's full log tail, for the UI to fetch when a log is opened.
+
+        The poll no longer carries logs for finished jobs, so this is how a
+        card's "log (N lines)" panel fills itself in.
+        """
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                archived = next((r for r in self.removed if r.get("id") == job_id), None)
+                if archived is None:
+                    return {"ok": False, "error": "no such job"}
+                tail = list(archived.get("tail") or [])
+                return {"ok": True, "id": job_id, "tail": tail, "tail_len": len(tail)}
+            tail = list(job.tail)
+            return {"ok": True, "id": job_id, "tail": tail, "tail_len": len(tail)}
+
     # ---------- persistence ----------
 
     def _load_state(self) -> None:
@@ -1828,10 +1845,30 @@ class Engine:
             out.extend(done)
         return out
 
+    def _job_summary(self, job: Job) -> dict:
+        """One job as the UI's poll sees it, without its log unless it matters.
+
+        Log tails were 95% of a 1.6 MB snapshot (7.6k lines over 148 jobs, ~22 KB
+        each even on finished jobs), and the UI polls every 1.2 s -- so the
+        browser re-downloaded and re-parsed the entire log history continuously,
+        which is what made every click feel dead. Only a running or failed job's
+        log is worth shipping on every poll; everything else keeps a line count
+        and fetches its log on demand via /api/job-log.
+        """
+        d = job.to_dict()
+        tail = d.pop("tail", None) or []
+        d["tail_len"] = len(tail)
+        d["tail"] = tail if job.status in ("running", "retrying", "failed") else []
+        return d
+
     def snapshot(self) -> dict:
-        jobs = [j.to_dict() for j in self._order()]
+        jobs = [self._job_summary(j) for j in self._order()]
         with self.lock:
             pending_count = len(self.pending)
+            # The removed-jobs archive is capped at 500 entries and each carries
+            # its own tail, so it is the same trap in slower motion. The UI only
+            # needs the metadata there.
+            removed = [dict(r, tail=[]) for r in list(reversed(self.removed))[-100:]]
         sess = self.session_info()
         return {
             "current": self.current,
@@ -1855,7 +1892,7 @@ class Engine:
             #   "rate_limit" -- Instagram asked us to back off (long, an issue)
             "wait": self.wait_reason(),
             "consecutive_limits": self.consecutive_limits,
-            "removed": list(reversed(self.removed))[-100:],
+            "removed": removed,
             "jobs": jobs,
             "counts": self._counts(),
         }

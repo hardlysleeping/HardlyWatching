@@ -696,6 +696,7 @@ function openProfile(username){
   host.scrollIntoView({behavior:"smooth", block:"start"});
 }
 
+let lastState = null;   // cached snapshot so reorder handlers can update locally
 let paused=false, settings=null, adv=false, lastHash="";
 
 /* ---------- settings panel ---------- */
@@ -836,7 +837,25 @@ let openMenus = new Set();
 // cards it wires are built in a different function.
 let logScrolls = {};
 
+// The four card lists are rebuilt from HTML every poll. Writing identical
+// markup back to innerHTML still destroys and recreates ~150 cards, and the
+// browser then re-decodes every thumbnail -- that alone pegged a core at 136%
+// and made clicks feel unresponsive. So keep the last markup per container and
+// only touch the DOM when it actually differs.
+const lastListHtml = {};
+
+function setListHtml(id, html){
+  if(lastListHtml[id] === html) return false;   // nothing to do, leave the DOM alone
+  lastListHtml[id] = html;
+  const el = $(id);
+  if(!el) return false;
+  el.innerHTML = html;
+  wireCards(el);
+  return true;
+}
+
 function render(st){
+  lastState = st;  // cache for optimistic updates (reorder, etc.)
   // preserve which log panels are expanded (+ scroll offsets) across re-render.
   // Cards live in four containers, not just the queue list, so scan them all --
   // otherwise a log opened on the "Downloading now" card closes each poll.
@@ -917,8 +936,6 @@ function render(st){
 
   if(!settings) fillSettings(st.settings||{});
 
-  const listEl = $("list");
-
   // Split the jobs into four groups:
   //   1. what's downloading right now  (pinned, full width)
   //   2. what needs attention          (failed)
@@ -957,12 +974,12 @@ function render(st){
       $("waitNext").textContent = "";
       $("nowHint").textContent = "working";
     }
-    $("nowList").innerHTML = current.map(j=>cardHtml(j, "", 1)).join("");
+    setListHtml("nowList", current.map(j=>cardHtml(j, "", 1)).join(""));
   } else {
     stopWaitTimer();
     nowSec.classList.remove("waiting", "rate-limited");
     nowSec.style.display = "none";
-    $("nowList").innerHTML = "";
+    setListHtml("nowList", "");
   }
 
   // "Needs attention" section
@@ -970,10 +987,10 @@ function render(st){
   if(failed.length){
     failSec.style.display = "block";
     $("failHint").textContent = failed.length + " failed";
-    $("failList").innerHTML = failed.map(j=>cardHtml(j, "", 0)).join("");
+    setListHtml("failList", failed.map(j=>cardHtml(j, "", 0)).join(""));
   } else {
     failSec.style.display = "none";
-    $("failList").innerHTML = "";
+    setListHtml("failList", "");
   }
 
   // "Finished" section (right column)
@@ -981,10 +998,10 @@ function render(st){
   if(finished.length){
     doneSec.style.display = "block";
     $("doneHint").textContent = finished.length + " done";
-    $("doneList").innerHTML = finished.map(j=>cardHtml(j, "", 0)).join("");
+    setListHtml("doneList", finished.map(j=>cardHtml(j, "", 0)).join(""));
   } else {
     doneSec.style.display = "none";
-    $("doneList").innerHTML = "";
+    setListHtml("doneList", "");
   }
 
   $("empty").style.display = jobs.length ? "none" : "block";
@@ -992,14 +1009,10 @@ function render(st){
 
   // position numbers only for queued items
   let qpos = 0;
-  listEl.innerHTML = queued.map((j)=>{
+  setListHtml("list", queued.map((j)=>{
     qpos++;
     return cardHtml(j, String(qpos), qpos);
-  }).join("");
-  wireCards(listEl);
-  wireCards($("nowList"));
-  wireCards($("failList"));
-  wireCards($("doneList"));
+  }).join(""));
 }
 
 /* Build one job card. `pos` is the queue position label ("" for pinned rows);
@@ -1035,10 +1048,15 @@ function cardHtml(j, pos, qpos){
     }
 
     const isOpen = openLogs.has(j.id);
-    const tail = (j.tail||[]).length
-      ? `<details data-log="${j.id}" ${isOpen?"open":""}>
-           <summary>log (${j.tail.length} lines)</summary>
-           <pre data-scroll="${j.id}">${esc(j.tail.join("\n"))}</pre>
+    // The poll only carries a log for running/failed jobs. Any other job sends
+    // just a line count, and opening the panel fetches the text from
+    // /api/job-log -- that is what keeps the 1.2s poll small.
+    const lines = (j.tail||[]).length || j.tail_len || 0;
+    const hasBody = (j.tail||[]).length > 0;
+    const tail = lines
+      ? `<details data-log="${j.id}" ${isOpen?"open":""} ${hasBody?"data-loaded='1'":""}>
+           <summary>log (${lines} line${lines===1?"":"s"})</summary>
+           <pre data-scroll="${j.id}">${esc((j.tail||[]).join("\n"))}</pre>
          </details>`:"";
     const running = j.status==="running"||j.status==="retrying";
 
@@ -1103,6 +1121,32 @@ function cardHtml(j, pos, qpos){
     </div>`;
 }
 
+// Set while a reorder is in flight. tick() skips rendering until it passes,
+// so the 1.2s poll cannot snap the list back to the server's pre-move order
+// and make the card visibly jump twice.
+let optimisticUntil = 0;
+
+function optimisticReorder(jobId, kind, amount){
+  // Clone the cached snapshot, reorder the clone, and re-render immediately,
+  // so the user sees the card move without waiting for a server round-trip.
+  // `kind` is "to" (absolute index) or "by" (relative delta).
+  // If the server disagrees, the next poll after the guard restores the truth.
+  if(!lastState) return false;
+  const st = JSON.parse(JSON.stringify(lastState));
+  const jobs = st.jobs || [];
+  const queued = jobs.filter(j => j.status === "queued");
+  const i = queued.findIndex(j => j.id === jobId);
+  if(i < 0) return false;
+  const [job] = queued.splice(i, 1);
+  let at = kind === "by" ? i + amount : amount;
+  at = Math.max(0, Math.min(at, queued.length));
+  queued.splice(at, 0, job);
+  st.jobs = [...queued, ...jobs.filter(j => j.status !== "queued")];
+  optimisticUntil = Date.now() + 900;
+  render(st);
+  return true;
+}
+
 /* Wire up all interactive elements inside a rendered list container. */
 function wireCards(container){
   // Restore expanded logs + scroll. The innerHTML rebuild drops both.
@@ -1128,6 +1172,27 @@ function wireCards(container){
   });
 
   const on = (sel, fn) => container.querySelectorAll(sel).forEach(fn);
+
+  // Log panels ship empty for finished jobs. Fill one in the first time it is
+  // opened (and immediately for panels restored as open by a re-render).
+  const fillLog = async (d) => {
+    if(d.dataset.loaded === "1") return;
+    const pre = d.querySelector("pre");
+    if(!pre) return;
+    d.dataset.loaded = "1";
+    try{
+      const r = await (await fetch(`/api/job-log?id=${encodeURIComponent(d.dataset.log)}`)).json();
+      if(r.ok && Array.isArray(r.tail)){
+        pre.textContent = r.tail.join("\n");
+        if(!logScrolls[d.dataset.log] || logScrolls[d.dataset.log].pinned !== false)
+          pre.scrollTop = pre.scrollHeight;
+      }
+    }catch(e){ d.dataset.loaded = ""; }
+  };
+  container.querySelectorAll("details[data-log]").forEach(d=>{
+    d.addEventListener("toggle", () => { if(d.open) fillLog(d); });
+    if(d.open) fillLog(d);
+  });
   on("[data-more]", b=>b.onclick=()=>{
     const m = container.querySelector(`[data-menu="${b.dataset.more}"]`);
     if(!m) return;
@@ -1154,16 +1219,42 @@ function wireCards(container){
   on("[data-remove]", b=>b.onclick=async()=>{ await post("/api/remove",{id:b.dataset.remove});
     toast("Removed"); tick(); });
   on("[data-forget]", b=>b.onclick=async()=>{ await post("/api/forget",{id:b.dataset.forget}); tick(); });
-  on("[data-top]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.top,index:0}); tick(); });
-  on("[data-up]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.up,delta:-1}); tick(); });
-  on("[data-down]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.down,delta:1}); tick(); });
+  on("[data-top]", b=>b.onclick=async()=>{
+    // Optimistic: move to front immediately, then sync to server.
+    if(optimisticReorder(b.dataset.top, "to", 0)){
+      toast("Moved to top");
+      const r = await post("/api/move",{id:b.dataset.top,index:0});
+      if(!r.ok) toast("Could not move to top");
+    }
+  });
+  on("[data-up]", b=>b.onclick=async()=>{
+    if(optimisticReorder(b.dataset.up, "by", -1)){
+      const r = await post("/api/move",{id:b.dataset.up,delta:-1});
+      if(!r.ok) toast("Could not move up");
+    }
+  });
+  on("[data-down]", b=>b.onclick=async()=>{
+    if(optimisticReorder(b.dataset.down, "by", 1)){
+      const r = await post("/api/move",{id:b.dataset.down,delta:1});
+      if(!r.ok) toast("Could not move down");
+    }
+  });
   // Push to the very back. `index` is a position among the runnable queue and
   // the server clamps it, so a big value lands the job last — the same way
   // data-top uses index:0 for the front. No server change needed for this.
-  on("[data-bottom]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.bottom,index:1e9}); tick(); });
+  on("[data-bottom]", b=>b.onclick=async()=>{
+    if(optimisticReorder(b.dataset.bottom, "to", 1e9)){
+      toast("Moved to bottom");
+      const r = await post("/api/move",{id:b.dataset.bottom,index:1e9});
+      if(!r.ok) toast("Could not move to bottom");
+    }
+  });
 }
 
 async function tick(){
+  // A reorder is still being saved: rendering the server's pre-move order
+  // would make the card visibly jump back and forth. Skip one or two polls.
+  if(Date.now() < optimisticUntil) return;
   try{
     const r = await fetch("/api/state");
     const st = await r.json();
