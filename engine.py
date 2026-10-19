@@ -401,7 +401,7 @@ class Job:
     username: str
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     status: str = "queued"  # queued running retrying done failed skipped cancelled
-    kind: str = "main"  # "main" | "reels" — reels runs as its own follow-up job
+    kind: str = "main"  # "main" | "reels" | "tagged" — extra passes run as follow-up jobs
     parent_id: str | None = None  # for a reels job: the main job it follows
     attempts: int = 0
     max_attempts: int = 6
@@ -904,6 +904,46 @@ class Engine:
                 "error": f"None of the browser sessions belong to {name}. "
                          f"Tried: {'; '.join(tried)}"}
 
+    def add_extra_pass(self, job_id: str, kind: str) -> dict:
+        """Queue an extra pass (reels/tagged) for a profile already known.
+
+        The new job is inserted directly after the source job so the extra
+        content lands with its profile rather than at the end of the queue.
+        """
+        if kind not in ("reels", "tagged"):
+            return {"ok": False, "error": "unknown pass"}
+
+        with self.lock:
+            src = self.jobs.get(job_id)
+            if src is None:
+                # allow calling by username too
+                src = next((j for j in self.jobs.values()
+                            if j.username == job_id or j.id == job_id), None)
+            if src is None:
+                return {"ok": False, "error": "profile not in the list"}
+
+            # Don't stack duplicates of the same pass for one profile.
+            existing = [j for j in self.jobs.values()
+                        if j.username == src.username and j.kind == kind
+                        and j.status in ("queued", "running", "retrying")]
+            if existing:
+                return {"ok": False, "error": f"{kind} pass already queued"}
+
+            job = Job(username=src.username, kind=kind, parent_id=src.id,
+                      settings={**(src.settings or {}), kind: True})
+            self.jobs[job.id] = job
+
+            # Insert right after the source job when it is still waiting;
+            # otherwise append (the source has already run).
+            if src.id in self.pending:
+                idx = self.pending.index(src.id) + 1
+                self.pending.insert(idx, job.id)
+            else:
+                self.pending.append(job.id)
+        self._kick()
+        self.save_state()
+        return {"ok": True, "username": src.username, "kind": kind}
+
     def forget_session(self, username: str) -> bool:
         """Delete a saved session file (used to clear a broken login)."""
         safe = clean_profile_name(username)
@@ -1243,6 +1283,12 @@ class Engine:
             # treats download_posts/tagged/reels/igtv as one "profile content"
             # group, so --reels with everything else off does just reels.
             cmd.append("--reels")
+            cmd.append("--no-posts")
+            if not s.profile_pic:
+                cmd.append("--no-profile-pic")
+        elif job.kind == "tagged":
+            # Tagged posts as their own pass, same reasoning as reels.
+            cmd.append("--tagged")
             cmd.append("--no-posts")
             if not s.profile_pic:
                 cmd.append("--no-profile-pic")

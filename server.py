@@ -167,6 +167,11 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/forget":
             return self._json({"ok": engine.forget(body.get("id", ""))})
 
+        if p == "/api/extra-pass":
+            return self._json(engine.add_extra_pass(
+                str(body.get("id") or body.get("username") or ""),
+                str(body.get("kind") or "")))
+
         if p == "/api/restore":
             return self._json({"ok": engine.restore(body.get("id", ""))})
 

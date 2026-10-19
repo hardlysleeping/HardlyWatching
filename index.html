@@ -135,6 +135,7 @@
   .pill.failed{color:var(--err);border-color:#5a2b2b}
   .pill.cancelled{color:var(--muted)}
   .pill.reels{color:#f472b6;border-color:#5a2b4a;background:#24162100}
+  .pill.tagged{color:#67e8f9;border-color:#1e4d5a;background:#0f232800}
   .prog{height:3px;background:#0e1117;border-radius:3px;overflow:hidden;margin-top:8px}
   .prog i{display:block;height:100%;width:30%;background:linear-gradient(90deg,var(--accent),var(--accent-2));
     animation:sweep 1.1s linear infinite}
@@ -823,6 +824,16 @@ function cardHtml(j, pos, qpos){
       if(j.status==="done") more.push(`<button class="small" data-full="${j.id}">Re-download all</button>`);
     }
     more.push(`<button class="small" data-profile="${esc(j.username)}">View on Instagram</button>`);
+    // Extra passes: re-run just one slice of content without touching the rest.
+    // Useful when a profile was archived before these were enabled.
+    if(j.kind !== "tagged"){
+      more.push(`<button class="small" data-pass="tagged" data-user="${esc(j.username)}"
+        title="Download only the posts this profile is tagged in">Grab tagged photos</button>`);
+    }
+    if(j.kind !== "reels"){
+      more.push(`<button class="small" data-pass="reels" data-user="${esc(j.username)}"
+        title="Download only this profile's reels">Grab reels</button>`);
+    }
     if(j.status==="running"||isQ){
       more.push(`<button class="small danger" data-remove="${j.id}">Remove</button>`);
     } else {
@@ -838,7 +849,8 @@ function cardHtml(j, pos, qpos){
         <div class="top">
           <span class="name clickable" data-profile="${esc(j.username)}"
                 title="Show ${esc(j.username)} on Instagram">${esc(j.username)}</span>
-          ${j.kind==="reels"?'<span class="pill reels" title="Separate reels-only pass">reels</span>':""}
+          ${j.kind==="reels"?'<span class="pill reels" title="Reels-only pass">reels</span>':""}
+          ${j.kind==="tagged"?'<span class="pill tagged" title="Tagged-posts-only pass">tagged</span>':""}
           <span class="pill ${esc(j.status)}">${esc(j.status)}</span>
           ${j.attempts>1?`<span class="pill">try ${j.attempts}</span>`:""}
           ${j.settings&&j.settings.fast_update===false?`<span class="pill">full</span>`:""}
@@ -872,6 +884,12 @@ function wireCards(container){
   // restore menus that were open before the re-render
   container.querySelectorAll("[data-menu]").forEach(m=>{
     if(openMenus.has(m.dataset.menu)) m.style.display = "flex";
+  });
+  on("[data-pass]", b=>b.onclick=async()=>{
+    const r = await post("/api/extra-pass",{username:b.dataset.user, kind:b.dataset.pass});
+    if(r.ok) toast(`Queued ${r.kind} pass for ${r.username}`);
+    else showErr(r.error || "Could not queue that");
+    tick();
   });
   on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile));
   on("[data-open]", b=>b.onclick=()=>post("/api/open-folder",{profile:b.dataset.open}));
