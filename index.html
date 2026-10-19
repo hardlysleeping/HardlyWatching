@@ -450,6 +450,9 @@ https://www.instagram.com/a.third.profile/"></textarea>
           Paste Instagram profiles above and hit <b>Add to queue</b> —
           then press <b>Start</b> in the top bar to begin.<br>
           <span class="hint">Downloads land in <span id="emptyPath"></span>, one folder per profile.</span>
+          <div style="margin-top:10px">
+            <button class="small" id="changeFolderBtn">Change folder…</button>
+          </div>
         </div>
       </div>
 
@@ -1214,6 +1217,11 @@ $("input").addEventListener("keydown",(e)=>{
   if((e.ctrlKey||e.metaKey)&&e.key==="Enter") $("startBtn").click();
 });
 
+$("changeFolderBtn").addEventListener("click", () => {
+  const ep = $("emptyPath");
+  changeFolderDialog(ep ? ep.textContent : "");
+});
+
 buildSettings();
 tick();
 setInterval(tick,1200);
@@ -1400,6 +1408,56 @@ function confirmClearTrash(n){
   wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
   document.body.appendChild(wrap);
   go.focus();
+}
+
+function changeFolderDialog(current){
+  const wrap = document.createElement("div");
+  wrap.className = "confirm";
+  const box = document.createElement("div");
+  box.className = "box";
+  box.innerHTML = `<p>Where should downloads go?</p>
+    <div class="why">One folder per profile is created inside this one.
+    Changing it does not move what you already have unless you tick the box.</div>`;
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.value = current || "";
+  inp.style.cssText = "width:100%;margin-bottom:10px";
+  box.appendChild(inp);
+  const moveRow = document.createElement("label");
+  moveRow.className = "tog";
+  moveRow.style.marginBottom = "14px";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  moveRow.appendChild(cb);
+  moveRow.appendChild(document.createTextNode(" Move my existing archives across too"));
+  box.appendChild(moveRow);
+  const row = document.createElement("div");
+  row.className = "row";
+  const cancel = document.createElement("button");
+  cancel.className = "small";
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => wrap.remove();
+  const go = document.createElement("button");
+  go.className = "small";
+  go.textContent = "Save";
+  go.onclick = async () => {
+    go.disabled = true;
+    const r = await post("/api/set-output-root", {path: inp.value, migrate: cb.checked});
+    if(r.ok){
+      wrap.remove();
+      toast(r.message || "Folder updated");
+      load();
+    } else {
+      go.disabled = false;
+      toast(r.message || r.error || "Could not change folder");
+    }
+  };
+  row.appendChild(cancel); row.appendChild(go);
+  box.appendChild(row);
+  wrap.appendChild(box);
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  document.body.appendChild(wrap);
+  inp.focus();
 }
 
 async function renderGallery(){

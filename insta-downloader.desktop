@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Instagram Downloader
+Comment=Archive Instagram profiles with instaloader
+Exec=__INSTALL_DIR__/start.sh
+Path=__INSTALL_DIR__
+Icon=folder-download
+Terminal=true
+Categories=Network;FileTransfer;
+Keywords=instagram;instaloader;download;archive;

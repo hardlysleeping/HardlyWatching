@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import shutil
 import subprocess
+import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,8 +28,38 @@ from engine import (Engine, OUTPUT_ROOT, clean_profile_name, make_preview,
                     make_thumb)
 
 HERE = Path(__file__).resolve().parent
-PORT = int(os.environ.get("INSTA_PORT", "8765"))
-HOST = os.environ.get("INSTA_HOST", "127.0.0.1")
+
+
+def _opt(flag: str, env: str, default: str) -> str:
+    """Value for a setting: --flag on the command line beats the env var."""
+    argv = sys.argv[1:]
+    if flag in argv:
+        i = argv.index(flag)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return os.environ.get(env, default)
+
+
+PORT = int(_opt("--port", "INSTA_PORT", "8765"))
+HOST = _opt("--host", "INSTA_HOST", "127.0.0.1")
+
+
+def find_free_port(start: int, host: str = "127.0.0.1") -> int:
+    """Return the first free port at or after `start`.
+
+    Lets the app just work when the default port is taken by something else,
+    instead of dying with 'Address already in use'.
+    """
+    import socket
+    for port in range(start, start + 50):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((host, port))
+                return port
+            except OSError:
+                continue
+    return start  # give up; let the real bind produce the error
 
 # The Engine is created lazily so that importing this module (tests, tooling,
 # anything that just wants Handler) never constructs a worker or touches the
@@ -143,7 +175,7 @@ class Handler(BaseHTTPRequestHandler):
             name = clean_profile_name((q.get("profile") or [""])[0])
             if not name:
                 return self.send_error(400)
-            d = OUTPUT_ROOT / name
+            d = get_engine().output_root / name
             if not d.is_dir():
                 return self.send_error(404)
             # instaloader names these <user>_<date>_UTC_profile_pic.<ext>
@@ -296,6 +328,14 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("profile") or ""), str(body.get("file") or ""))
             return self._json({"ok": ok, "message": msg})
 
+        if p == "/api/set-output-root":
+            # Point downloads at a different folder. Body: {path, migrate}
+            # migrate=true moves the existing archives across; false just
+            # switches where new downloads go.
+            ok, msg = get_engine().set_output_root(
+                str(body.get("path") or ""), bool(body.get("migrate")))
+            return self._json({"ok": ok, "message": msg})
+
         if p == "/api/gallery/move":
             # Favourite / trash / restore a single photo. Moves, never deletes.
             section = str(body.get("section") or "")
@@ -374,25 +414,90 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/open-folder":
             name = clean_profile_name(body.get("profile", ""))
-            target = (OUTPUT_ROOT / name) if name else OUTPUT_ROOT
+            root = get_engine().output_root
+            target = (root / name) if name else root
             threading.Thread(target=_open_folder, args=(target,), daemon=True).start()
             return self._json({"ok": True, "path": str(target)})
 
         return self.send_error(404)
 
 
+def _ensure_instaloader() -> bool:
+    """Make sure instaloader is present, offering to install it if not.
+
+    Returns True if it is (or becomes) available. Says plainly that the app
+    will not work without it, and never installs anything without a yes.
+    """
+    import engine
+    if engine.instaloader_available():
+        return True
+
+    print()
+    print("instaloader is not installed.")
+    print("This app is only a front end for it -- without instaloader,")
+    print("nothing will download. It cannot work without it.")
+    print()
+    if not sys.stdin.isatty():
+        print("Install it with one of:")
+        print("    pipx install instaloader")
+        print("    pip install --user instaloader")
+        print()
+        return False
+
+    try:
+        answer = input("Install instaloader now? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if answer not in ("", "y", "yes"):
+        print("Skipped. Install it yourself with: pipx install instaloader")
+        return False
+
+    # Prefer pipx (isolated); fall back to pip --user. Try both, report honestly.
+    for cmd in (["pipx", "install", "instaloader"],
+                [sys.executable, "-m", "pip", "install", "--user", "instaloader"]):
+        if shutil.which(cmd[0]) or cmd[0] == sys.executable:
+            print(f"running: {' '.join(cmd)}")
+            try:
+                rc = subprocess.call(cmd)
+            except OSError as e:
+                print(f"could not run it: {e}")
+                continue
+            if rc == 0 and engine.instaloader_available():
+                print("instaloader installed.")
+                return True
+    print()
+    print("Automatic install did not succeed.")
+    print("Please install instaloader yourself, then start this app again:")
+    print("    pipx install instaloader")
+    return False
+
+
 def main() -> None:
-    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    eng = get_engine()
+    eng.output_root.mkdir(parents=True, exist_ok=True)
+    _ensure_instaloader()
     # Resume queued work -- only when actually run as the server. Importing
     # this module must never start a worker against the user's real queue.
-    get_engine().kick_if_work()
+    eng.kick_if_work()
+
+    global PORT
+    want = PORT
+    PORT = find_free_port(want, "127.0.0.1" if HOST in ("0.0.0.0", "::") else HOST)
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     url = f"http://{'127.0.0.1' if HOST in ('0.0.0.0', '::') else HOST}:{PORT}"
-    print(f"Instaloader queue UI running at {url}")
+    print()
+    print("=" * 56)
+    print(f"  Instagram Downloader is running at {url}")
+    if PORT != want:
+        print(f"  (port {want} was busy, so it used {PORT})")
+    print("  It should have opened in your browser.")
+    print("  If not, copy that address into your browser.")
+    print(f"  Downloads land in: {eng.output_root}")
+    print("  Press Ctrl-C here to stop.")
+    print("=" * 56)
     if HOST in ("0.0.0.0", "::"):
         print(f"Reachable from other devices at http://<this-box-ip>:{PORT}")
-    print(f"Downloads land in: {OUTPUT_ROOT}")
-    print("Ctrl-C to stop.")
     try:
         webbrowser.open(url)
     except Exception:

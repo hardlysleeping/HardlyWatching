@@ -34,11 +34,17 @@ Instagram, by instaloader, using your own logged-in session.
   Zen instead of typing your password.
 - **Autostart.** Optional systemd user service so it's always running.
 
+> **Platform:** the app itself is plain Python and runs on Linux, macOS and
+> Windows, but the convenience layers (the launcher icon, autostart service,
+> and "send to trash" recovery) are **Linux-only**. On macOS/Windows you can
+> still run it with `python3 server.py`; only those extras won't work.
+
 ## Requirements
 
-- **Linux** with **Python 3.10+** (the app itself is standard-library only — no
+- **Python 3.10+** (the app itself is standard-library only — no
   `pip install` needed).
 - **[instaloader](https://instaloader.github.io/)** — the actual downloader.
+  The launcher offers to install it for you; or do it yourself:
   ```
   pipx install instaloader     # recommended
   # or: pip install --user instaloader
@@ -49,15 +55,51 @@ Instagram, by instaloader, using your own logged-in session.
 
 ## Quick start
 
+The easiest way — one command, no setup:
+
 ```bash
 git clone https://github.com/hardlysleeping/insta-desktop.git
 cd insta-desktop
-python3 server.py
+./start.sh
 ```
 
-It opens `http://127.0.0.1:8765` in your browser.
+That checks everything, starts the app, and opens it in your browser. If the
+default port (8765) is taken it picks a free one automatically and tells you
+which. If instaloader is missing it says so plainly and offers to install it
+for you.
 
-Then:
+Prefer something you can click? Add a launcher icon:
+
+```bash
+./install-desktop-icon.sh
+```
+
+Then start it any time from your applications menu or desktop.
+
+Want a small window that shows whether it's running and lets you start, stop,
+restart, copy or open the link?
+
+```bash
+python3 control-panel.py
+```
+
+Closing that window does **not** stop the app — it keeps running in the
+background. Only **Stop** (or Ctrl-C) stops it.
+
+Other ways to start it:
+
+```bash
+python3 server.py         # plain, if you already have instaloader
+python3 run.py            # fully self-contained: makes its own venv + installs
+                          # instaloader into it, nothing else needed
+python3 run.py --service  # set it up to start automatically (see below)
+```
+
+`run.py` is the most foolproof: it sets up its own private environment next to
+itself (`.venv/`), installs instaloader into it if needed, then starts the app.
+Nothing is installed system-wide.
+
+Then, in the browser:
 
 1. **Log in.** Click **Sessions** → either
    - **Auto-grab best session** (uses the Instagram login already in your
@@ -69,12 +111,6 @@ Then:
 3. **Add to queue**, then **Start**.
 4. Watch the queue. Downloading goes to `~/instagram/<username>/` in
    instaloader's normal layout.
-
-Want it to start on its own at login? One command:
-
-```bash
-./install-service.sh
-```
 
 ## Install as a service (autostart)
 
@@ -144,14 +180,30 @@ unblocked.
 
 | Path | What |
 | --- | --- |
-| `~/instagram/<username>/` | Downloaded media, in instaloader's layout |
+| `~/instagram/<username>/` | Downloaded media (default — changeable, see below) |
 | `~/instagram/<username>/.insta-index.json` | Hidden record of what was there, used to spot file-manager deletions |
 | `~/.config/insta-desktop/state.json` | Queue, order, settings, cooldowns, deleted-post markers |
 | `~/.config/instaloader/session-<user>` | Instagram session (created by instaloader) |
 | `~/.config/instaloader/latest-stamps.ini` | "What have I already archived" record |
 
 Override the first two with `INSTA_OUTPUT` and `INSTA_STATE`. Also honours
-`INSTA_PORT`.
+`INSTA_PORT` and `INSTA_HOST`.
+
+### Choosing the downloads folder
+
+In the app, click **Change folder…** (shown under "Nothing queued yet", or any
+time from the empty state). Give a full path, e.g. `/mnt/bigdrive/instagram`.
+
+- Leave **Move my existing archives across too** unticked to just send *new*
+  downloads to the new location. Your old files stay where they are.
+- Tick it to **move every existing profile folder** into the new location in one
+  go, so everything lives together. It refuses if a folder with the same name
+  already exists there, and refuses while a download is running.
+
+Your choice is saved and survives restarts. And because instaloader's
+`--latest-stamps` record lives outside the media folder, moving or even
+deleting the whole tree never causes re-downloads — it still knows what you
+already have.
 
 ## Reaching it from your phone or another device
 

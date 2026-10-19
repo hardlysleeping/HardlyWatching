@@ -35,6 +35,19 @@ STATE_FILE = Path(os.environ.get(
     "INSTA_STATE", Path.home() / ".config" / "insta-desktop" / "state.json"))
 INSTALOADER = shutil.which("instaloader") or str(Path.home() / ".local/bin/instaloader")
 
+
+def instaloader_available() -> bool:
+    """True when an instaloader binary can actually be run.
+
+    `shutil.which` may have failed at import time; re-check here so a freshly
+    installed instaloader is picked up without restarting the app.
+    """
+    return bool(shutil.which("instaloader")) or Path(INSTALOADER).is_file()
+
+
+def instaloader_path() -> str:
+    return shutil.which("instaloader") or INSTALOADER
+
 BETWEEN_PROFILES_SECONDS = 240  # 4 min. instaloader's own RateController already throttles
                                 # inside each run (275 gql reqs/10 min), so this gap only
                                 # spaces out back-to-back full-profile bursts.
@@ -741,6 +754,72 @@ def remove_tombstone(self, username: str, name: str) -> tuple[bool, str]:
     return True, "tombstone cleared; post will re-download"
 
 
+def set_output_root(self, path: str, migrate: bool = False) -> tuple[bool, str]:
+    """Change where downloads are stored. Persists across restarts.
+
+    With migrate=False, future downloads land in the new folder; existing
+    archives stay put (point back and they are seen again).
+
+    With migrate=True, every existing profile folder is moved across first, so
+    the archive stays in one place. Moving is safe to skip: instaloader's
+    --latest-stamps lives outside the media folder, so it still knows what was
+    already downloaded even if you move or delete the whole tree.
+
+    Refuses while a download is running (a move mid-write is a bad idea).
+    """
+    p = (path or "").strip()
+    if not p:
+        return False, "no folder given"
+    target = Path(p).expanduser()
+    if not target.is_absolute():
+        return False, "please give a full path (starting with /)"
+    with self.lock:
+        old = self.output_root
+        busy = any(j.status in ("running", "retrying") for j in self.jobs.values())
+    if busy:
+        return False, "a download is running -- stop it first, then change the folder"
+    if target == old:
+        return False, "that is already the downloads folder"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return False, f"could not use that folder: {e}"
+    if not os.access(target, os.W_OK):
+        return False, "that folder is not writable"
+
+    moved = 0
+    if migrate:
+        try:
+            old_real = old.resolve(strict=True)
+            target_real = target.resolve(strict=True)
+        except OSError:
+            old_real = target_real = None
+        if old_real and target_real and old_real != target_real:
+            for entry in list(old.iterdir()):
+                if not entry.is_dir():
+                    continue
+                dest = target / entry.name
+                if dest.exists():
+                    # Never clobber; note it and move on.
+                    return False, f"{entry.name} already exists in the new folder"
+                try:
+                    shutil.move(str(entry), str(dest))
+                    moved += 1
+                except OSError as e:
+                    with self.lock:
+                        self.output_root = target
+                    self.save_state()
+                    return False, (f"moved {moved}, then failed on {entry.name}: {e}. "
+                                   "Downloads now point at the new folder.")
+
+    with self.lock:
+        self.output_root = target
+    self.save_state()
+    if migrate and moved:
+        return True, f"moved {moved} profile folder(s); downloads now go to {target}"
+    return True, f"downloads now go to {target}"
+
+
 def gallery_photos(self, username: str, limit: int = 60) -> list[str]:
     """A random sample of a finished profile's media, as relative paths.
 
@@ -1114,6 +1193,7 @@ class Engine:
     reconcile_deletions = reconcile_deletions
     resolve_media = resolve_media
     move_media = move_media
+    set_output_root = set_output_root
 
     # ---------- persistence ----------
 
@@ -1127,6 +1207,11 @@ class Engine:
                 self.consecutive_limits = int(d.get("consecutive_limits") or 0)
                 self.removed = list(d.get("removed") or [])
                 self.tombstones = list(d.get("tombstones") or [])
+                # Where downloads go. A user-chosen folder persists across
+                # restarts; falls back to the default when unset.
+                saved_root = d.get("output_root")
+                if saved_root:
+                    self.output_root = Path(saved_root)
                 # Restore a rate-limit pause so the worker waits it out after a
                 # restart instead of hammering Instagram immediately.
                 if d.get("limit_paused"):
@@ -1170,6 +1255,7 @@ class Engine:
                     "order": list(self.pending),
                     "removed": self.removed,
                     "tombstones": self.tombstones,
+                    "output_root": str(self.output_root),
                     "jobs": jobs,
                 }
             tmp = STATE_FILE.with_suffix(".tmp")
