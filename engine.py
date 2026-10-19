@@ -202,7 +202,13 @@ def read_browser_cookies(cookiefile: Path) -> dict[str, str]:
 
 
 def find_browser_sessions() -> list[dict]:
-    """Instagram logins available in installed browsers, best candidate first."""
+    """Instagram logins available in installed browsers, best candidate first.
+
+    `account` is the username whose sessionid is in that store, when it can be
+    determined from the cookies themselves (ds_user_id is not a name, so the
+    name is resolved by importing and calling test_login, which the UI does
+    only on an explicit click).
+    """
     home = Path.home()
     out: list[dict] = []
     seen: set[str] = set()
@@ -213,7 +219,8 @@ def find_browser_sessions() -> list[dict]:
                 continue
             seen.add(rp)
             entry = {"browser": label, "path": str(p), "cookies": 0,
-                     "has_sessionid": False, "mtime": 0.0}
+                     "has_sessionid": False, "mtime": 0.0, "account": None,
+                     "user_id": None}
             try:
                 entry["mtime"] = p.stat().st_mtime
             except OSError:
@@ -222,6 +229,8 @@ def find_browser_sessions() -> list[dict]:
                 c = read_browser_cookies(p)
                 entry["cookies"] = len(c)
                 entry["has_sessionid"] = bool(c.get("sessionid"))
+                # ds_user_id identifies the account even without the name.
+                entry["user_id"] = c.get("ds_user_id") or None
             except Exception:
                 pass
             out.append(entry)
@@ -858,6 +867,43 @@ class Engine:
         self.save_state()
         return True
 
+    def add_session(self, username: str) -> dict:
+        """Install a session for `username` by importing it from a browser.
+
+        Finds the browser store logged into that account and writes an
+        instaloader session file for it, so several accounts can be kept
+        side by side and switched between.
+        """
+        name = clean_profile_name(username)
+        if not name:
+            return {"ok": False, "error": "Enter an Instagram username."}
+
+        # Prefer a store whose cookie user id we can match, else try each store
+        # that has a sessionid until one resolves to this username.
+        candidates = [b for b in find_browser_sessions() if b["has_sessionid"]]
+        if not candidates:
+            return {"ok": False,
+                    "error": "No browser has an Instagram login. Log into that "
+                             "account in Firefox or Zen first, then try again."}
+
+        tried = []
+        for b in candidates:
+            res = import_browser_cookie(Path(b["path"]), name)
+            if res.get("ok"):
+                got = res["username"]
+                tried.append(f"{b['browser']} → {got}")
+                if got.lower() == name.lower():
+                    with self.lock:
+                        self.active_session = got
+                    self.save_state()
+                    return {"ok": True, "username": got, "browser": b["browser"]}
+            else:
+                tried.append(f"{b['browser']} → {res.get('error','failed')}")
+
+        return {"ok": False,
+                "error": f"None of the browser sessions belong to {name}. "
+                         f"Tried: {'; '.join(tried)}"}
+
     def forget_session(self, username: str) -> bool:
         """Delete a saved session file (used to clear a broken login)."""
         safe = clean_profile_name(username)
@@ -1081,7 +1127,7 @@ class Engine:
             if self.cancel_current:
                 self._set(job, status="cancelled", finished_at=time.time(), message="cancelled")
                 return
-            if outcome == "ok":
+            if outcome in ("ok", "ok_warned"):
                 with self.lock:
                     self.consecutive_limits = 0
                 n_media = self._count_media(target_dir)
@@ -1093,8 +1139,9 @@ class Engine:
                               message="no posts downloaded",
                               error="instaloader reported success but no posts were saved")
                     return
+                msg = "complete" if outcome == "ok" else "complete (with warnings)"
                 self._set(job, status="done", finished_at=time.time(),
-                          message="complete", error="")
+                          message=msg, error="")
                 return
             if outcome == "fatal":
                 self._set(job, status="failed", finished_at=time.time(),
@@ -1276,6 +1323,10 @@ class Engine:
                     try:
                         job.done_count = int(pm.group(1))
                         job.total_count = int(pm.group(2))
+                        # Persist occasionally so a restart or crash mid-download
+                        # still shows how far this job got.
+                        if job.done_count % 25 == 0:
+                            self.save_state()
                     except ValueError:
                         pass
                 m = WAIT_HINT.search(line)
@@ -1315,8 +1366,15 @@ class Engine:
             self._set(job, error=last_err)
             return "fatal"
         if not retry_hit:
-            # Non-zero exit with no recognised marker: treat as a crash, not a
-            # rate limit, so we don't wait 15 minutes for nothing.
+            # instaloader exits non-zero when it merely logged warnings (e.g.
+            # "Unable to fetch high quality profile pic", or Instagram replying
+            # 200 with a "fail" payload). If media actually landed, that is a
+            # success with warnings -- not a failure worth retrying.
+            if self._count_media(target_dir) > 0:
+                self._set(job, error="")
+                return "ok_warned"
+            # No content at all and no recognised marker: treat as a crash, not
+            # a rate limit, so we don't wait 15 minutes for nothing.
             self._set(job, error=last_err or f"exit code {proc.returncode}")
             return "crash"
         self._set(job, error=last_err or f"exit code {proc.returncode}")

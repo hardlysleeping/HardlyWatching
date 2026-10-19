@@ -644,6 +644,9 @@ function refreshSummary(){
 let openLogs = new Set();
 // Same idea for the per-card "⋯" action menus.
 let openMenus = new Set();
+// Log scroll offsets, kept module-level because wireCards() reads them and the
+// cards it wires are built in a different function.
+let logScrolls = {};
 
 function render(st){
   // preserve which log panels are expanded (+ scroll offsets) across re-render
@@ -651,9 +654,9 @@ function render(st){
   list.querySelectorAll("details[data-log]").forEach(d=>{
     if(d.open) openLogs.add(d.dataset.log); else openLogs.delete(d.dataset.log);
   });
-  const scrolls = {};
+  logScrolls = {};
   list.querySelectorAll("pre[data-scroll]").forEach(p=>{
-    scrolls[p.dataset.scroll] = p.scrollTop;
+    logScrolls[p.dataset.scroll] = p.scrollTop;
   });
   list.querySelectorAll("[data-menu]").forEach(m=>{
     if(m.style.display !== "none") openMenus.add(m.dataset.menu);
@@ -854,7 +857,7 @@ function wireCards(container){
   // restore expanded logs + their scroll positions (the innerHTML rebuild drops both)
   container.querySelectorAll("pre[data-scroll]").forEach(p=>{
     const k = p.dataset.scroll;
-    if(scrolls[k] != null) p.scrollTop = scrolls[k];
+    if(logScrolls[k] != null) p.scrollTop = logScrolls[k];
     else p.scrollTop = p.scrollHeight;  // first view: jump to newest
   });
 
