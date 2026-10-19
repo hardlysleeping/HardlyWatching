@@ -1045,6 +1045,7 @@ function cardHtml(j, pos, qpos){
         btns.push(`<button class="icon" data-up="${j.id}" title="Move up one">↑</button>`);
       }
       btns.push(`<button class="icon" data-down="${j.id}" title="Move down one">↓</button>`);
+      btns.push(`<button class="icon" data-bottom="${j.id}" title="Move to the back (run last)">⤓</button>`);
     }
     btns.push(`<button class="small" data-open="${esc(j.username)}" title="Open the download folder">Open</button>`);
 
@@ -1149,6 +1150,10 @@ function wireCards(container){
   on("[data-top]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.top,index:0}); tick(); });
   on("[data-up]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.up,delta:-1}); tick(); });
   on("[data-down]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.down,delta:1}); tick(); });
+  // Push to the very back. `index` is a position among the runnable queue and
+  // the server clamps it, so a big value lands the job last — the same way
+  // data-top uses index:0 for the front. No server change needed for this.
+  on("[data-bottom]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.bottom,index:1e9}); tick(); });
 }
 
 async function tick(){
