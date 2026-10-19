@@ -830,18 +830,25 @@ let openMenus = new Set();
 let logScrolls = {};
 
 function render(st){
-  // preserve which log panels are expanded (+ scroll offsets) across re-render
+  // preserve which log panels are expanded (+ scroll offsets) across re-render.
+  // Cards live in four containers, not just the queue list, so scan them all --
+  // otherwise a log opened on the "Downloading now" card closes each poll.
   const list = $("list");
-  list.querySelectorAll("details[data-log]").forEach(d=>{
-    if(d.open) openLogs.add(d.dataset.log); else openLogs.delete(d.dataset.log);
+  const containers = [list, $("nowList"), $("failList"), $("doneList")].filter(Boolean);
+  containers.forEach(c=>{
+    c.querySelectorAll("details[data-log]").forEach(d=>{
+      if(d.open) openLogs.add(d.dataset.log); else openLogs.delete(d.dataset.log);
+    });
   });
   logScrolls = {};
-  list.querySelectorAll("pre[data-scroll]").forEach(p=>{
-    logScrolls[p.dataset.scroll] = p.scrollTop;
-  });
-  list.querySelectorAll("[data-menu]").forEach(m=>{
-    if(m.style.display !== "none") openMenus.add(m.dataset.menu);
-    else openMenus.delete(m.dataset.menu);
+  containers.forEach(c=>{
+    c.querySelectorAll("pre[data-scroll]").forEach(p=>{
+      logScrolls[p.dataset.scroll] = p.scrollTop;
+    });
+    c.querySelectorAll("[data-menu]").forEach(m=>{
+      if(m.style.display !== "none") openMenus.add(m.dataset.menu);
+      else openMenus.delete(m.dataset.menu);
+    });
   });
   // session + stats
   const dot=$("sessDot"), txt=$("sessTxt");
