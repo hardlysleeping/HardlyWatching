@@ -840,11 +840,9 @@ function render(st){
       if(d.open) openLogs.add(d.dataset.log); else openLogs.delete(d.dataset.log);
     });
   });
-  logScrolls = {};
+  // logScrolls is maintained live by each pre's scroll listener (see
+  // wireCards); do NOT reset it here, or the pin state is lost every poll.
   containers.forEach(c=>{
-    c.querySelectorAll("pre[data-scroll]").forEach(p=>{
-      logScrolls[p.dataset.scroll] = p.scrollTop;
-    });
     c.querySelectorAll("[data-menu]").forEach(m=>{
       if(m.style.display !== "none") openMenus.add(m.dataset.menu);
       else openMenus.delete(m.dataset.menu);
@@ -1099,11 +1097,26 @@ function cardHtml(j, pos, qpos){
 
 /* Wire up all interactive elements inside a rendered list container. */
 function wireCards(container){
-  // restore expanded logs + their scroll positions (the innerHTML rebuild drops both)
+  // Restore expanded logs + scroll. The innerHTML rebuild drops both.
+  //   - If the user scrolled up to read, keep them where they were.
+  //   - Otherwise stick to the bottom, so a running job always shows the
+  //     newest lines (a frozen mid-log position is useless while downloading).
   container.querySelectorAll("pre[data-scroll]").forEach(p=>{
     const k = p.dataset.scroll;
-    if(logScrolls[k] != null) p.scrollTop = logScrolls[k];
-    else p.scrollTop = p.scrollHeight;  // first view: jump to newest
+    const saved = logScrolls[k];
+    if(saved != null && saved.pinned === false){
+      p.scrollTop = saved.top;
+    } else {
+      p.scrollTop = p.scrollHeight;   // pinned: newest at the bottom
+    }
+    // Remember whether this log is scrolled away from the bottom, so the next
+    // rebuild knows whether to follow the tail or hold the reader's place.
+    const record = () => {
+      const atBottom = p.scrollHeight - p.scrollTop - p.clientHeight < 24;
+      logScrolls[k] = {top: p.scrollTop, pinned: atBottom};
+    };
+    p.addEventListener("scroll", record);
+    record();
   });
 
   const on = (sel, fn) => container.querySelectorAll(sel).forEach(fn);
