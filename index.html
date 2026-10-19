@@ -247,46 +247,55 @@ https://www.instagram.com/a.third.profile/"></textarea>
     </div>
   </details>
 
-  <!-- Downloading now: pinned above everything so it is never scrolled away -->
-  <div id="nowSection" style="display:none">
-    <div class="section-head"><h2>Downloading now</h2>
-      <span class="hint" id="nowHint"></span></div>
-    <div id="nowList" class="list"></div>
-  </div>
+    <div class="layout">
+      <!-- Finished: below "Downloading now", above "Waiting" -->
+      <div id="doneSection" style="display:none">
+        <div class="section-head"><h2>Finished</h2>
+          <span class="hint" id="doneHint"></span>
+          <button class="small" id="clearFinishedBtn" style="margin-left:auto">Clear</button></div>
+        <div id="doneList" class="list"></div>
+      </div>
 
-  <!-- Needs attention: failed jobs, above the waiting queue -->
-  <div id="failSection" style="display:none">
-    <div class="section-head"><h2>Needs attention</h2>
-      <span class="hint" id="failHint"></span>
-      <button class="small" id="retryFailBtn" style="margin-left:auto">Retry all</button></div>
-    <div id="failList" class="list"></div>
-  </div>
+      <!-- Downloading now: pinned above everything so it is never scrolled away -->
+      <div id="nowSection" style="display:none">
+        <div class="section-head"><h2>Downloading now</h2>
+          <span class="hint" id="nowHint"></span></div>
+        <div id="nowList" class="list"></div>
+      </div>
 
-  <!-- Waiting: the queue proper, ordered -->
-  <div class="section-head">
-    <h2>Waiting</h2>
-    <span class="hint" id="queueHint"></span>
-    <button class="small" id="removedBtn" style="display:none;margin-left:auto">Removed (<span id="removedCount">0</span>)</button>
-  </div>
-  <div id="removedPanel" class="composer" style="display:none;margin-bottom:12px">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <b style="font-size:13.5px">Removed profiles</b>
-      <span class="hint">Nothing is lost — restore anything you removed.</span>
-      <button class="small" id="restoreAll" style="margin-left:auto">Restore all</button>
-      <button class="small danger" id="purgeRemoved" title="Permanently delete this archive">Empty</button>
-    </div>
-    <div id="removedList" style="margin-top:10px"></div>
-  </div>
-  <div id="list" class="list"></div>
-  <div id="viewerHost"></div>
-  <div id="empty" class="empty">
-    <b>Nothing queued yet.</b><br>
-    Paste Instagram profiles above and hit <b>Add to queue</b> —
-    then press <b>Start</b> in the top bar to begin.<br>
-    <span class="hint">Downloads land in <span id="emptyPath"></span>, one folder per profile.</span>
-  </div>
-</div>
-<div class="toast" id="toast"></div>
+      <!-- Needs attention: failed jobs, above the waiting queue -->
+      <div id="failSection" style="display:none">
+        <div class="section-head"><h2>Needs attention</h2>
+          <span class="hint" id="failHint"></span>
+          <button class="small" id="retryFailBtn" style="margin-left:auto">Retry all</button></div>
+        <div id="failList" class="list"></div>
+      </div>
+
+      <!-- Waiting: the queue proper, ordered -->
+      <div class="section-head">
+        <h2>Waiting</h2>
+        <span class="hint" id="queueHint"></span>
+        <button class="small" id="removedBtn" style="display:none;margin-left:auto">Removed (<span id="removedCount">0</span>)</button>
+      </div>
+      <div id="removedPanel" class="composer" style="display:none;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <b style="font-size:13.5px">Removed profiles</b>
+          <span class="hint">Nothing is lost — restore anything you removed.</span>
+          <button class="small" id="restoreAll" style="margin-left:auto">Restore all</button>
+          <button class="small danger" id="purgeRemoved" title="Permanently delete this archive">Empty</button>
+        </div>
+        <div id="removedList" style="margin-top:10px"></div>
+      </div>
+          <div id="list" class="list"></div>
+          <div id="viewerHost"></div>
+          <div id="empty" class="empty">
+            <b>Nothing queued yet.</b><br>
+            Paste Instagram profiles above and hit <b>Add to queue</b> —
+            then press <b>Start</b> in the top bar to begin.<br>
+            <span class="hint">Downloads land in <span id="emptyPath"></span>, one folder per profile.</span>
+          </div>
+        </div>
+                <div class="toast" id="toast"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
