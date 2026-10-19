@@ -8,8 +8,6 @@ pacing and automatic back-off so you don't get rate-limited.
 Everything runs on your own machine. Nothing is sent anywhere except to
 Instagram, by instaloader, using your own logged-in session.
 
-![queue UI](docs/screenshot.png)
-
 ## What it does
 
 - **Queue-based.** Paste many profiles; they download one at a time.
