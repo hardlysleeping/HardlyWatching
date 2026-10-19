@@ -1526,19 +1526,28 @@ function tileFor(username, post, section){
   return tile;
 }
 
+// Random order is keyed per POST, not by position in the array. Hashing the
+// post id means the order survives items being added or moved (favouriting
+// shifts a post between main and favorites), so nothing reshuffles under you.
+function randKey(post){
+  const s = String(post.post || post.username || "");
+  let h = gSeed >>> 0;
+  for(let i = 0; i < s.length; i++){
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
+}
+
 function sortPosts(list){
   const a = list.slice();
   if(gSort === "oldest"){
     a.sort((x,y) => (x.ts||0) - (y.ts||0));
   } else if(gSort === "newest"){
     a.sort((x,y) => (y.ts||0) - (x.ts||0));
-  } else {                        // random, stable for this view
-    let seed = gSeed;
-    for(let i=a.length-1;i>0;i--){
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      const j = seed % (i+1);
-      [a[i],a[j]] = [a[j],a[i]];
-    }
+  } else {
+    // Stable per-post key: same post keeps the same slot.
+    a.sort((x,y) => randKey(x) - randKey(y));
   }
   return a;
 }
