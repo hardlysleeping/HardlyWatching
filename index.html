@@ -1623,16 +1623,39 @@ function tileFor(username, post, section){
     return b;
   };
   const names = post.items.map(i => i.file);
-  const every = (sec) => names.forEach(n => movePhoto(username, n, sec, true));
+  const every = (sec) => Promise.all(names.map(n => movePhoto(username, n, sec, true)));
 
-  // Favouriting is a toggle available wherever the post appears, so you can
-  // un-favourite straight from the All grid instead of hunting for it.
-  if(faved){
-    acts.appendChild(mkBtn("♥","Remove from favourites",
-      () => { every("main"); toast("Removed from favourites"); refreshAfterMove(username); }));
-  } else if(srcSection !== "trash"){
-    acts.appendChild(mkBtn("♡","Add to favourites",
-      () => { every("favorites"); toast("Favourited"); refreshAfterMove(username); }));
+  // Favouriting toggles IN PLACE: the heart flips instantly and the post stays
+  // exactly where it is, so the grid never reshuffles under you. Un-favouriting
+  // additionally drops the post out of a favourites-only view (it no longer
+  // belongs there), but leaves it in All, where it is still shown from main/.
+  if(srcSection !== "trash"){
+    let on = faved;
+    const paint = () => {
+      tile.classList.toggle("faved", on);
+      btn.textContent = on ? "♥" : "♡";
+      btn.title = on ? "Remove from favourites" : "Add to favourites";
+    };
+    const btn = mkBtn(on ? "♥" : "♡",
+      on ? "Remove from favourites" : "Add to favourites", async () => {
+        const was = on;
+        on = !on; paint();                        // instant feedback
+        const res = await every(on ? "favorites" : "main");
+        if(!res.every(Boolean)){                  // any file failed -> revert
+          on = was; paint();
+          toast("Could not update favourites");
+          return;
+        }
+        toast(on ? "Favourited" : "Removed from favourites");
+        if(was && inFavouritesView()){            // left a favourites-only feed
+          tile.remove();
+          adjustFavCount(-1);
+          refreshAllFavHint();
+        } else {
+          adjustFavCount(on ? 1 : -1);
+        }
+      });
+    acts.appendChild(btn);
   }
   if(srcSection === "trash"){
     actsRight.appendChild(mkBtn("↩","Restore to main folder",
@@ -1693,6 +1716,7 @@ function drawPhotos(username, sec){
   for(const [key,label,n] of opts){
     const c = document.createElement("button");
     c.className = "fchip" + (gFilter === key ? " on" : "");
+    c.dataset.chip = key;
     c.innerHTML = `${label}<span class="n">${n}</span>`;
     c.onclick = () => { gFilter = key; gSeed = (gSeed * 7919 + 13) & 0x7fffffff; drawPhotos(username, sec); };
     bar.appendChild(c);
@@ -1815,6 +1839,31 @@ async function refreshAfterMove(username){
   if(gProfile !== username) return;
   const d = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}`)).json();
   if(gProfile === username) drawPhotos(username, d.sections || {main:[],favorites:[],trash:[]});
+}
+
+// True when the grid on screen lists favourites ONLY — the per-profile
+// "♥ Favorites" chip, or the cross-profile "♥ All Favourites" view. In those
+// views an un-favourited post must disappear; in "All" it stays (still in main).
+function inFavouritesView(){
+  if(gAll) return gAll === "favorites";
+  return gProfile != null && gFilter === "favorites";
+}
+
+// Keep the ♥ Favorites chip honest without redrawing the whole grid.
+function adjustFavCount(delta){
+  const n = document.querySelector('.gbar .fchip[data-chip="favorites"] .n');
+  if(n) n.textContent = Math.max(0, (+n.textContent || 0) + delta);
+}
+
+// Re-count the cross-profile "N posts across M profiles" header after a tile
+// leaves the All Favourites view, so the count stays truthful in place.
+function refreshAllFavHint(){
+  const hint = document.querySelector("#profileGrid .gbar .hint");
+  if(!hint || !gAll) return;
+  const users = new Set([...document.querySelectorAll("#profileGrid .pgrid .ptile-user")]
+                          .map(e => e.textContent));
+  const posts = document.querySelectorAll("#profileGrid .pgrid .ptile").length;
+  hint.textContent = `${posts} post${posts===1?"":"s"} across ${users.size} profile${users.size===1?"":"s"}`;
 }
 
 /* ---------- post viewer (single/carousel, with arrows) ---------- */
