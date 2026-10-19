@@ -19,6 +19,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from engine import instaloader_config_dir
+
 try:
     from instaloader import Instaloader
 except ModuleNotFoundError:
@@ -119,7 +121,7 @@ def import_session(cookiefile: Path, sessionfile: str | None,
 
     loader.context.username = who
     loader.save_session_to_file(sessionfile)
-    dest = sessionfile or str(Path.home() / ".config/instaloader" / f"session-{who}")
+    dest = sessionfile or str(instaloader_config_dir() / f"session-{who}")
     print(f"Saved session to {dest}")
     return 0
 

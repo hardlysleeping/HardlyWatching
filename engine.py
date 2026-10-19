@@ -22,6 +22,7 @@ import random
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -30,9 +31,42 @@ from pathlib import Path
 
 # Where downloads and app state live. Overridable so this works on any machine
 # (and so no personal path is baked into the source).
+def config_dir() -> Path:
+    """Standard per-user config folder for this OS.
+
+    Linux/macOS: ~/.config   Windows: %APPDATA%
+    """
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base)
+
+
+def cache_dir() -> Path:
+    """Standard per-user cache folder for this OS."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "insta-desktop" / "cache"
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "insta-desktop"
+
+
+def instaloader_config_dir() -> Path:
+    """Where instaloader keeps its sessions and stamps.
+
+    Mirrors instaloader's own rule so we look in the right place on every OS:
+    %LOCALAPPDATA%\\Instaloader on Windows, ~/.config/instaloader elsewhere.
+    """
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "Instaloader"
+    return Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "instaloader"
+
+
 OUTPUT_ROOT = Path(os.environ.get("INSTA_OUTPUT", Path.home() / "instagram"))
 STATE_FILE = Path(os.environ.get(
-    "INSTA_STATE", Path.home() / ".config" / "insta-desktop" / "state.json"))
+    "INSTA_STATE", config_dir() / "insta-desktop" / "state.json"))
 INSTALOADER = shutil.which("instaloader") or str(Path.home() / ".local/bin/instaloader")
 
 
@@ -112,7 +146,7 @@ PROFILE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 
 def list_sessions() -> list[dict]:
     """Every saved instaloader session, newest first, each with a validity check."""
-    cfg = Path.home() / ".config" / "instaloader"
+    cfg = instaloader_config_dir()
     out: list[dict] = []
     if not cfg.is_dir():
         return out
@@ -191,6 +225,7 @@ def session_diagnosis(active: str | None = None) -> dict:
 # cookies ourselves so the UI can offer them with one click.
 
 BROWSER_GLOBS = [
+    # Linux (native + Flatpak)
     ("Firefox",        ".mozilla/firefox/*/cookies.sqlite"),
     ("Firefox",        ".config/mozilla/firefox/*/cookies.sqlite"),
     ("Firefox",        ".var/app/org.mozilla.firefox/.mozilla/firefox/*/cookies.sqlite"),
@@ -198,7 +233,26 @@ BROWSER_GLOBS = [
     ("Zen",            ".var/app/app.zen_browser.zen/.zen/*/cookies.sqlite"),
     ("LibreWolf",      ".librewolf/*/cookies.sqlite"),
     ("LibreWolf",      ".var/app/io.gitlab.librewolf-community/.librewolf/*/cookies.sqlite"),
+    # macOS
+    ("Firefox",        "Library/Application Support/Firefox/Profiles/*/cookies.sqlite"),
+    ("Zen",            "Library/Application Support/zen/Profiles/*/cookies.sqlite"),
+    ("LibreWolf",      "Library/Application Support/LibreWolf/Profiles/*/cookies.sqlite"),
+    # Windows (%APPDATA% is resolved below)
+    ("Firefox",        "Mozilla/Firefox/Profiles/*/cookies.sqlite"),
+    ("Zen",            "zen/Profiles/*/cookies.sqlite"),
+    ("LibreWolf",      "LibreWolf/Profiles/*/cookies.sqlite"),
 ]
+
+
+def _browser_roots() -> list[Path]:
+    """Base folders to look under for browser profiles, per OS."""
+    home = Path.home()
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA") or str(home / "AppData" / "Roaming")
+        return [Path(appdata)]
+    if sys.platform == "darwin":
+        return [home, home / "Library" / "Application Support"]
+    return [home]
 
 
 def read_browser_cookies(cookiefile: Path) -> dict[str, str]:
@@ -230,31 +284,32 @@ def find_browser_sessions() -> list[dict]:
     name is resolved by importing and calling test_login, which the UI does
     only on an explicit click).
     """
-    home = Path.home()
     out: list[dict] = []
     seen: set[str] = set()
+    roots = _browser_roots()
     for label, pattern in BROWSER_GLOBS:
-        for p in home.glob(pattern):
-            rp = str(p.resolve())
-            if rp in seen or not p.is_file():
-                continue
-            seen.add(rp)
-            entry = {"browser": label, "path": str(p), "cookies": 0,
-                     "has_sessionid": False, "mtime": 0.0, "account": None,
-                     "user_id": None}
-            try:
-                entry["mtime"] = p.stat().st_mtime
-            except OSError:
-                pass
-            try:
-                c = read_browser_cookies(p)
-                entry["cookies"] = len(c)
-                entry["has_sessionid"] = bool(c.get("sessionid"))
-                # ds_user_id identifies the account even without the name.
-                entry["user_id"] = c.get("ds_user_id") or None
-            except Exception:
-                pass
-            out.append(entry)
+        for root in roots:
+            for p in root.glob(pattern):
+                rp = str(p.resolve())
+                if rp in seen or not p.is_file():
+                    continue
+                seen.add(rp)
+                entry = {"browser": label, "path": str(p), "cookies": 0,
+                         "has_sessionid": False, "mtime": 0.0, "account": None,
+                         "user_id": None}
+                try:
+                    entry["mtime"] = p.stat().st_mtime
+                except OSError:
+                    pass
+                try:
+                    c = read_browser_cookies(p)
+                    entry["cookies"] = len(c)
+                    entry["has_sessionid"] = bool(c.get("sessionid"))
+                    # ds_user_id identifies the account even without the name.
+                    entry["user_id"] = c.get("ds_user_id") or None
+                except Exception:
+                    pass
+                out.append(entry)
     out.sort(key=lambda e: (not e["has_sessionid"], -e["mtime"]))
     return out
 
@@ -513,13 +568,28 @@ def _write_index(root: Path, index: dict) -> None:
 def _to_desktop_trash(path: Path) -> None:
     """Move `path` to the desktop trash bin, so a mistake is recoverable.
 
-    Prefers `gio trash` (GNOME) then `trash-put` (trash-cli); if neither is
-    available, or the move fails, falls back to a plain unlink so the delete
-    the user asked for still happens.
+    Linux: `gio trash` (GNOME) then `trash-put` (trash-cli).
+    macOS: Finder's Trash via osascript.
+    Windows: the Recycle Bin via PowerShell.
+    If none is available, falls back to a plain unlink so the delete the user
+    asked for still happens.
     """
-    for cmd in (["gio", "trash"], ["trash-put"]):
+    cmds: list[list[str]] = []
+    if os.name == "nt":
+        ps = ("Add-Type -AssemblyName Microsoft.VisualBasic; "
+              "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
+              f"'{path}', 'OnlyErrorDialogs', 'SendToRecycleBin')")
+        cmds = [["powershell", "-NoProfile", "-Command", ps]]
+    elif sys.platform == "darwin":
+        cmds = [["osascript", "-e",
+                 f'tell application "Finder" to delete POSIX file "{path}"']]
+    else:
+        cmds = [["gio", "trash"], ["trash-put"]]
+
+    for cmd in cmds:
         try:
-            r = subprocess.run(cmd + [str(path)], timeout=30,
+            r = subprocess.run(cmd if cmd[0] in ("osascript", "powershell") else cmd + [str(path)],
+                               timeout=30,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if r.returncode == 0 and not path.exists():
                 return
@@ -843,7 +913,7 @@ def gallery_photos(self, username: str, limit: int = 60) -> list[str]:
 THUMB_MAX = 320          # px on the long edge; the grid shows them ~190px
 THUMB_VIDEO_AT = 1.0     # seconds into a clip for its poster frame
 THUMB_CACHE = Path(os.environ.get(
-    "INSTA_THUMBS", Path.home() / ".cache" / "insta-desktop" / "thumbs"))
+    "INSTA_THUMBS", cache_dir() / "thumbs"))
 
 # Hover-preview clips: a few silent seconds of the video, small enough to fetch
 # on hover. A 4 MB source becomes ~180 KB, so sweeping the cursor over a row of
@@ -1717,7 +1787,7 @@ class Engine:
         safe = clean_profile_name(username)
         if not safe:
             return False
-        f = Path.home() / ".config" / "instaloader" / f"session-{safe}"
+        f = instaloader_config_dir() / f"session-{safe}"
         if not f.is_file():
             return False
         try:

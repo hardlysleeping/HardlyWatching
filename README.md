@@ -34,10 +34,30 @@ Instagram, by instaloader, using your own logged-in session.
   Zen instead of typing your password.
 - **Autostart.** Optional systemd user service so it's always running.
 
-> **Platform:** the app itself is plain Python and runs on Linux, macOS and
-> Windows, but the convenience layers (the launcher icon, autostart service,
-> and "send to trash" recovery) are **Linux-only**. On macOS/Windows you can
-> still run it with `python3 server.py`; only those extras won't work.
+> **Platform:** the core runs anywhere Python 3.10+ does — **Linux, macOS,
+> Windows** — with `python3 server.py` (or `run.py`). The extra conveniences
+> are Linux-only for now: the launcher icon, the autostart service, and the
+> GTK control-panel window. On macOS/Windows, "send to trash" recovery still
+> works (Finder Trash / Recycle Bin) and folder-opening uses the native file
+> manager.
+
+## Running it on macOS or Windows
+
+The web UI and downloader are plain Python — they run on any OS. You just
+don't get the Linux desktop extras.
+
+```bash
+# any OS, from the cloned folder
+python3 run.py            # makes its own venv, installs instaloader, starts
+```
+
+Then open the address it prints in your browser. No launcher icon, no
+autostart service, no control-panel window — those are Linux-only. Everything
+in the web UI (queue, gallery, favourites, trash, folder choice) works the
+same.
+
+To reach it from another device, set `INSTA_HOST=0.0.0.0` (on Windows,
+`set INSTA_HOST=0.0.0.0` before the command).
 
 ## Requirements
 

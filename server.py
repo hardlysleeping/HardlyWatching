@@ -75,9 +75,16 @@ def get_engine() -> Engine:
 
 
 def _open_folder(path: Path) -> None:
+    """Reveal a folder in the desktop's file manager, on any OS."""
     if not path.exists():
         return
-    for cmd in (["xdg-open", str(path)], ["gio", "open", str(path)]):
+    if sys.platform == "darwin":
+        cmds = [["open", str(path)]]
+    elif os.name == "nt":
+        cmds = [["explorer", str(path)]]
+    else:
+        cmds = [["xdg-open", str(path)], ["gio", "open", str(path)]]
+    for cmd in cmds:
         try:
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return
