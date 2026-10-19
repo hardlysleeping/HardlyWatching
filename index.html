@@ -107,6 +107,12 @@
   .viewer-note{padding:9px 14px;font-size:12.5px;color:var(--muted);
     border-top:1px solid var(--line)}
 
+  /* pinned sections */
+  #nowSection .card{border-color:#2d4a7a;background:#141a26;box-shadow:0 0 0 1px #2d4a7a33}
+  #nowSection .section-head h2{color:var(--run)}
+  #failSection .section-head h2{color:var(--err)}
+  #failSection .card{border-color:#5a2b2b;background:#1c1416}
+
   /* per-card secondary action menu */
   .card{position:relative}
   .menu{grid-column:1/-1;display:flex;gap:7px;flex-wrap:wrap;
@@ -240,8 +246,24 @@ https://www.instagram.com/a.third.profile/"></textarea>
     </div>
   </details>
 
+  <!-- Downloading now: pinned above everything so it is never scrolled away -->
+  <div id="nowSection" style="display:none">
+    <div class="section-head"><h2>Downloading now</h2>
+      <span class="hint" id="nowHint"></span></div>
+    <div id="nowList" class="list"></div>
+  </div>
+
+  <!-- Needs attention: failed jobs, above the waiting queue -->
+  <div id="failSection" style="display:none">
+    <div class="section-head"><h2>Needs attention</h2>
+      <span class="hint" id="failHint"></span>
+      <button class="small" id="retryFailBtn" style="margin-left:auto">Retry all</button></div>
+    <div id="failList" class="list"></div>
+  </div>
+
+  <!-- Waiting: the queue proper, ordered -->
   <div class="section-head">
-    <h2>Queue</h2>
+    <h2>Waiting</h2>
     <span class="hint" id="queueHint"></span>
     <button class="small" id="removedBtn" style="display:none;margin-left:auto">Removed (<span id="removedCount">0</span>)</button>
   </div>
@@ -415,6 +437,11 @@ function renderRemoved(list){
     toast(r.ok ? "Restored" : "Could not restore"); tick();
   });
 }
+
+$("retryFailBtn").onclick = async () => {
+  const r = await post("/api/retry-all", {});
+  toast("Retried "+(r.requeued||0)); tick();
+};
 
 $("removedBtn").onclick = () => {
   const p = $("removedPanel");
@@ -695,14 +722,60 @@ function render(st){
   if(!settings) fillSettings(st.settings||{});
 
   const listEl = $("list");
-  $("empty").style.display = st.jobs.length ? "none" : "block";
+
+  // Split the jobs into three visually distinct groups:
+  //   1. what's downloading right now  (pinned, always visible)
+  //   2. what needs attention          (failed, pinned above the queue)
+  //   3. everything else: running wait + recent history
+  const jobs = st.jobs || [];
+  const current = jobs.filter(j => j.status === "running" || j.status === "retrying");
+  const failed  = jobs.filter(j => j.status === "failed");
+  const restq   = jobs.filter(j => j.status !== "running" && j.status !== "retrying"
+                                    && j.status !== "failed");
+
+  // "Downloading now" section
+  const nowSec = $("nowSection");
+  if(current.length){
+    nowSec.style.display = "block";
+    $("nowHint").textContent = st.paused ? "paused" : (st.cooldown_remaining>0
+      ? "cooling down " + Math.ceil(st.cooldown_remaining/60) + " min"
+      : "working");
+    $("nowList").innerHTML = current.map(j=>cardHtml(j, "", 1)).join("");
+  } else {
+    nowSec.style.display = "none";
+    $("nowList").innerHTML = "";
+  }
+
+  // "Needs attention" section
+  const failSec = $("failSection");
+  if(failed.length){
+    failSec.style.display = "block";
+    $("failHint").textContent = failed.length + " failed";
+    $("failList").innerHTML = failed.map(j=>cardHtml(j, "", 0)).join("");
+  } else {
+    failSec.style.display = "none";
+    $("failList").innerHTML = "";
+  }
+
+  $("empty").style.display = (jobs.length || current.length || failed.length) ? "none" : "block";
+  $("removedBtn").style.display = (st.removed && st.removed.length) ? "" : "none";
 
   // position numbers only for queued items
   let qpos = 0;
-  listEl.innerHTML = st.jobs.map((j)=>{
-    const isQ = (j.status==="queued"||j.status==="retrying");
+  listEl.innerHTML = restq.map((j)=>{
+    const isQ = (j.status==="queued");
     if(isQ) qpos++;
-    const pos = isQ ? qpos : "";
+    return cardHtml(j, isQ ? String(qpos) : "", qpos);
+  }).join("");
+  wireCards(listEl);
+  wireCards($("nowList"));
+  wireCards($("failList"));
+}
+
+/* Build one job card. `pos` is the queue position label ("" for pinned rows);
+   `qpos` is the numeric position, used to decide where reorder buttons show. */
+function cardHtml(j, pos, qpos){
+    const isQ = (j.status==="queued");
     const bits=[];
     if(j.posts) bits.push(j.posts+" files");
     if(j.total_bytes) bits.push(fmtBytes(j.total_bytes));
@@ -728,13 +801,15 @@ function render(st){
     const running = j.status==="running"||j.status==="retrying";
 
     const btns=[];
-    // Reorder controls only where they are useful: the next few jobs that will
-    // actually run. Everything further down keeps its position implicitly.
-    const nearFront = isQ && qpos <= 3;
-    if(nearFront){
-      btns.push(`<button class="icon" data-top="${j.id}" title="Move to front">⤒</button>`);
-      btns.push(`<button class="icon" data-up="${j.id}" title="Move up">↑</button>`);
-      btns.push(`<button class="icon" data-down="${j.id}" title="Move down">↓</button>`);
+    // Every waiting job can be promoted, not just the first few: moving
+    // something to the top is the whole point of a priority queue.
+    if(isQ){
+      // ⤒ / ↑ are pointless on the job that will run next anyway.
+      if(qpos > 1){
+        btns.push(`<button class="icon" data-top="${j.id}" title="Move to the front (run next)">⤒</button>`);
+        btns.push(`<button class="icon" data-up="${j.id}" title="Move up one">↑</button>`);
+      }
+      btns.push(`<button class="icon" data-down="${j.id}" title="Move down one">↓</button>`);
     }
     btns.push(`<button class="small" data-open="${esc(j.username)}" title="Open the download folder">Open</button>`);
 
@@ -772,25 +847,27 @@ function render(st){
       <div class="actions">${btns.join("")}</div>
       ${moreMenu}
     </div>`;
-  }).join("");
+}
 
+/* Wire up all interactive elements inside a rendered list container. */
+function wireCards(container){
   // restore expanded logs + their scroll positions (the innerHTML rebuild drops both)
-  listEl.querySelectorAll("pre[data-scroll]").forEach(p=>{
+  container.querySelectorAll("pre[data-scroll]").forEach(p=>{
     const k = p.dataset.scroll;
     if(scrolls[k] != null) p.scrollTop = scrolls[k];
     else p.scrollTop = p.scrollHeight;  // first view: jump to newest
   });
 
-  const on = (sel, fn) => listEl.querySelectorAll(sel).forEach(fn);
+  const on = (sel, fn) => container.querySelectorAll(sel).forEach(fn);
   on("[data-more]", b=>b.onclick=()=>{
-    const m = listEl.querySelector(`[data-menu="${b.dataset.more}"]`);
+    const m = container.querySelector(`[data-menu="${b.dataset.more}"]`);
     if(!m) return;
     const open = m.style.display !== "none";
     m.style.display = open ? "none" : "flex";
     if(open) openMenus.delete(b.dataset.more); else openMenus.add(b.dataset.more);
   });
   // restore menus that were open before the re-render
-  listEl.querySelectorAll("[data-menu]").forEach(m=>{
+  container.querySelectorAll("[data-menu]").forEach(m=>{
     if(openMenus.has(m.dataset.menu)) m.style.display = "flex";
   });
   on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile));
