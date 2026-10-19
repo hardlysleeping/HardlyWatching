@@ -20,6 +20,13 @@ if [ -z "$PYTHON" ]; then
   exit 1
 fi
 
+# The app is a UI around instaloader; warn (don't fail) if it is missing.
+if ! command -v instaloader >/dev/null 2>&1; then
+  echo "note: instaloader is not on PATH yet."
+  echo "      Install it first:  pipx install instaloader"
+  echo
+fi
+
 if [ "${1:-install}" = "remove" ]; then
   systemctl --user disable --now insta-downloader.service 2>/dev/null || true
   rm -f "$UNIT"

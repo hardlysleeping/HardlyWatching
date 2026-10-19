@@ -433,6 +433,14 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
     if not folder.is_dir():
         return []
 
+    # Catch anything deleted from the file manager since we last looked, so a
+    # manual delete also leaves a placeholder. Only for the main folder.
+    if section not in SUBDIRS:
+        try:
+            self.reconcile_deletions(username)
+        except Exception:
+            pass
+
     grouped: dict[str, list[dict]] = {}
     for name in _gallery_media(folder):
         info = _media_info(folder, name)
@@ -463,6 +471,97 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
 FAVORITES_DIR = "favorites"
 TRASH_DIR = "trash"
 SUBDIRS = (FAVORITES_DIR, TRASH_DIR)
+
+# A dotfile inside each profile folder listing the media that was there last
+# time we looked. It lets us notice files you deleted from the file manager and
+# leave a placeholder for them, so they are not silently re-downloaded. A
+# dotfile is invisible to instaloader and to _gallery_media (extension filter).
+INDEX_FILE = ".insta-index.json"
+
+
+def _read_index(root: Path) -> dict:
+    try:
+        raw = (root / INDEX_FILE).read_bytes()
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_index(root: Path, index: dict) -> None:
+    try:
+        tmp = root / (INDEX_FILE + ".tmp")
+        tmp.write_text(json.dumps(index, separators=(",", ":")))
+        tmp.replace(root / INDEX_FILE)
+    except OSError:
+        pass
+
+
+def _to_desktop_trash(path: Path) -> None:
+    """Move `path` to the desktop trash bin, so a mistake is recoverable.
+
+    Prefers `gio trash` (GNOME) then `trash-put` (trash-cli); if neither is
+    available, or the move fails, falls back to a plain unlink so the delete
+    the user asked for still happens.
+    """
+    for cmd in (["gio", "trash"], ["trash-put"]):
+        try:
+            r = subprocess.run(cmd + [str(path)], timeout=30,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if r.returncode == 0 and not path.exists():
+                return
+        except (OSError, subprocess.SubprocessError):
+            continue
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def reconcile_deletions(self, username: str) -> list[str]:
+    """Leave a placeholder for media deleted outside the app.
+
+    Compares the profile's main folder against the remembered index. Any file
+    that was there and is now gone (deleted from the file manager, or by any
+    means other than our own trash flow) gets a 0-byte placeholder of the same
+    name and a tombstone entry, so instaloader's fast-update skips it. Then the
+    index is rewritten to the current listing.
+
+    Returns the list of names newly tombstoned. Cheap: one small JSON read and
+    one directory listing per call.
+    """
+    root = self.output_root / username
+    if not root.is_dir():
+        return []
+    index = _read_index(root)
+    current = set(_gallery_media(root))
+    previously = set(index.get("media") or [])
+
+    vanished = sorted(previously - current)
+    added: list[str] = []
+    if vanished:
+        with self.lock:
+            known = {(t.get("username"), t.get("name")) for t in self.tombstones}
+            for name in vanished:
+                placeholder = root / name
+                try:
+                    if not placeholder.exists():
+                        placeholder.write_bytes(b"")
+                    if (username, name) not in known:
+                        self.tombstones.append({
+                            "username": username, "name": name, "at": time.time(),
+                        })
+                        added.append(name)
+                except OSError:
+                    continue
+            if len(self.tombstones) > 5000:
+                del self.tombstones[:-5000]
+        if added:
+            self.save_state()
+
+    # Remember what is there now (only real media, never placeholders).
+    _write_index(root, {"media": sorted(current)})
+    return added
 
 
 def gallery_sections(self, username: str) -> dict:
@@ -534,13 +633,21 @@ def clear_trash(self) -> tuple[int, list[str]]:
     Only files inside a profile's own trash/ subfolder are touched, symlinks
     are skipped rather than followed, and each removed media file takes its
     sidecar siblings (json/txt) with it.
+
+    Each deleted media file leaves a 0-byte placeholder of the same name in
+    the profile's main folder. instaloader's fast-update decides a post is
+    already downloaded purely by `os.path.isfile` on the expected filename, so
+    the placeholder stops a later run from re-downloading what you deleted.
+    The placeholder is recorded in self.tombstones and hidden from the gallery
+    (which already skips 0-byte files).
     """
     removed = 0
     errors: list[str] = []
     with self.lock:
         usernames = [j.username for j in self.jobs.values()]
     for username in usernames:
-        trash = self.output_root / username / TRASH_DIR
+        root = self.output_root / username
+        trash = root / TRASH_DIR
         if not trash.is_dir():
             continue
         for name in _gallery_media(trash):
@@ -550,10 +657,27 @@ def clear_trash(self) -> tuple[int, list[str]]:
                 continue
             stem = name.rsplit(".", 1)[0]
             try:
-                target.unlink()
+                # Leave the tombstone FIRST: if anything below fails, the
+                # placeholder already exists so the post is not re-fetched.
+                placeholder = root / name
+                placeholder.parent.mkdir(parents=True, exist_ok=True)
+                if not placeholder.exists():
+                    placeholder.write_bytes(b"")
+                with self.lock:
+                    self.tombstones.append({
+                        "username": username,
+                        "name": name,
+                        "at": time.time(),
+                    })
+                    if len(self.tombstones) > 5000:
+                        del self.tombstones[:-5000]
+                # Send to the desktop trash bin rather than unlinking outright,
+                # so there is one more chance to recover a mistake. Falls back
+                # to a hard delete if no trash tool is available.
+                _to_desktop_trash(target)
                 for sib in trash.glob(f"{stem}.*"):
                     if sib.is_file() and not sib.is_symlink():
-                        sib.unlink()
+                        _to_desktop_trash(sib)
                 removed += 1
             except OSError as e:
                 errors.append(f"{username}/{name}: {e}")
@@ -563,7 +687,58 @@ def clear_trash(self) -> tuple[int, list[str]]:
                 trash.rmdir()
         except OSError:
             pass
+    if removed:
+        self.save_state()
     return removed, errors
+
+
+def list_tombstones(self) -> list[dict]:
+    """Every permanently-deleted post, newest first.
+
+    Each entry is {username, name, at}. `name` is the placeholder filename in
+    the profile's main folder; a 0-byte file of that name is what stops
+    instaloader re-downloading the post.
+    """
+    with self.lock:
+        return list(reversed(self.tombstones))[-200:]
+
+
+def remove_tombstone(self, username: str, name: str) -> tuple[bool, str]:
+    """Undo a permanent delete: drop the placeholder so the post is fetched again.
+
+    Removes the 0-byte placeholder from the profile's main folder and forgets
+    the manifest entry. The media itself is already gone; the next run of that
+    profile will re-download it.
+    """
+    username = clean_profile_name(username) or ""
+    if not username:
+        return False, "bad profile"
+    if name != Path(name).name or Path(name).suffix.lower() not in GALLERY_EXTS:
+        return False, "bad filename"
+    with self.lock:
+        before = len(self.tombstones)
+        self.tombstones = [
+            t for t in self.tombstones
+            if not (t.get("username") == username and t.get("name") == name)
+        ]
+        found = len(self.tombstones) != before
+    if not found:
+        return False, "no such tombstone"
+    root = self.output_root / username
+    try:
+        root_real = root.resolve(strict=True)
+    except OSError:
+        self.save_state()
+        return True, "tombstone cleared (profile folder missing)"
+    placeholder = root_real / name
+    # Only ever remove a 0-byte file inside the profile folder itself.
+    try:
+        if placeholder.is_file() and placeholder.stat().st_size == 0:
+            placeholder.unlink()
+    except OSError as e:
+        return False, f"could not remove placeholder: {e}"
+    self.save_state()
+    return True, "tombstone cleared; post will re-download"
 
 
 def gallery_photos(self, username: str, limit: int = 60) -> list[str]:
@@ -574,12 +749,122 @@ def gallery_photos(self, username: str, limit: int = 60) -> list[str]:
     folder = self.output_root / username
     if not folder.is_dir():
         return []
+    try:
+        self.reconcile_deletions(username)
+    except Exception:
+        pass
     media = _gallery_media(folder)
     if len(media) > limit:
         media = random.sample(media, limit)
     else:
         random.shuffle(media)
     return media
+
+
+THUMB_MAX = 320          # px on the long edge; the grid shows them ~190px
+THUMB_VIDEO_AT = 1.0     # seconds into a clip for its poster frame
+THUMB_CACHE = Path(os.environ.get(
+    "INSTA_THUMBS", Path.home() / ".cache" / "insta-desktop" / "thumbs"))
+
+# Hover-preview clips: a few silent seconds of the video, small enough to fetch
+# on hover. A 4 MB source becomes ~180 KB, so sweeping the cursor over a row of
+# video tiles does not pull tens of megabytes.
+PREVIEW_MAX = 360        # px on the long edge
+PREVIEW_SECONDS = 2
+PREVIEW_CRF = 32
+
+
+def _cache_key(src: Path) -> str:
+    """Name + size + mtime, so a re-download invalidates the cached artefact."""
+    st = src.stat()
+    return f"{src.name}.{st.st_size}.{int(st.st_mtime)}"
+
+
+def _thumb_path(kind: str, name: str) -> Path:
+    return THUMB_CACHE / kind / (name + ".jpg")
+
+
+def _preview_path(name: str) -> Path:
+    return THUMB_CACHE / "prev" / (name + ".mp4")
+
+
+def make_thumb(src: Path, ext: str) -> Path | None:
+    """Create (or reuse) a small JPEG for `src`. Returns None on failure.
+
+    Images are shrunk with PIL; videos get a single frame via ffmpeg. This is
+    what makes a 2958-item grid usable -- originals average ~1.9 MB, so a
+    screenful would otherwise pull tens of megabytes per scroll.
+    """
+    dest = _thumb_path("v" if ext in GALLERY_VIDEO_EXTS else "i",
+                       _cache_key(src))
+    if dest.is_file() and dest.stat().st_size > 0:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".part.jpg")
+    try:
+        if ext in GALLERY_VIDEO_EXTS:
+            import subprocess
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-ss", str(THUMB_VIDEO_AT),
+                 "-i", str(src), "-frames:v", "1", "-vf",
+                 f"scale='min({THUMB_MAX},iw)':-2", str(tmp)],
+                check=True, timeout=45,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            from PIL import Image
+            with Image.open(src) as im:
+                im = im.convert("RGB")
+                im.thumbnail((THUMB_MAX, THUMB_MAX))
+                im.save(tmp, "JPEG", quality=82, optimize=True)
+        if tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(dest)
+            return dest
+    except Exception as e:
+        print(f"thumb failed for {src.name}: {e}")
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return None
+
+
+def make_preview(src: Path) -> Path | None:
+    """Short silent clip for hover playback. Returns None on failure.
+
+    Only for videos. The real file is far too heavy to start playing on a
+    cursor pass; a truncated, downscaled copy starts instantly.
+    """
+    dest = _preview_path(_cache_key(src))
+    if dest.is_file() and dest.stat().st_size > 0:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".part.mp4")
+    try:
+        import subprocess
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y",
+             "-ss", str(THUMB_VIDEO_AT), "-t", str(PREVIEW_SECONDS),
+             "-i", str(src),
+             "-vf", f"scale='min({PREVIEW_MAX},iw)':-2",
+             "-an", "-c:v", "libx264", "-preset", "veryfast",
+             "-crf", str(PREVIEW_CRF), "-movflags", "+faststart",
+             "-pix_fmt", "yuv420p", str(tmp)],
+            check=True, timeout=60,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(dest)
+            return dest
+    except Exception as e:
+        print(f"preview failed for {src.name}: {e}")
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return None
 
 
 def resolve_media(self, username: str, rel: str, section: str = "") -> Path | None:
@@ -802,6 +1087,12 @@ class Engine:
         # when the cooldown expires) rather than by the user (stays paused).
         # Jobs the user removed, kept so they can be restored.
         self.removed: list[dict] = []
+        # Posts permanently deleted from trash, kept as a list of
+        # {username, name} so we can report them and un-tombstone on demand.
+        # A 0-byte placeholder with the original name is left in the profile's
+        # main folder so instaloader's fast-update (which only checks whether a
+        # file exists) skips the post instead of re-downloading it.
+        self.tombstones: list[dict] = []
         self._limit_paused: bool = False
         # While the worker sleeps out `between_profiles`, these hold the wait's
         # start and deadline (epoch seconds, 0 when not waiting). The UI counts
@@ -818,6 +1109,9 @@ class Engine:
     gallery_posts = gallery_posts
     gallery_all = gallery_all
     clear_trash = clear_trash
+    list_tombstones = list_tombstones
+    remove_tombstone = remove_tombstone
+    reconcile_deletions = reconcile_deletions
     resolve_media = resolve_media
     move_media = move_media
 
@@ -832,6 +1126,7 @@ class Engine:
                 self.cooldown_until = float(d.get("cooldown_until") or 0.0)
                 self.consecutive_limits = int(d.get("consecutive_limits") or 0)
                 self.removed = list(d.get("removed") or [])
+                self.tombstones = list(d.get("tombstones") or [])
                 # Restore a rate-limit pause so the worker waits it out after a
                 # restart instead of hammering Instagram immediately.
                 if d.get("limit_paused"):
@@ -874,6 +1169,7 @@ class Engine:
                     # on restart would scramble the queue.
                     "order": list(self.pending),
                     "removed": self.removed,
+                    "tombstones": self.tombstones,
                     "jobs": jobs,
                 }
             tmp = STATE_FILE.with_suffix(".tmp")

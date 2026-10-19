@@ -206,6 +206,8 @@
   .ptile{position:relative;background:var(--panel-3);border-radius:9px;overflow:hidden;
     aspect-ratio:1;cursor:pointer}
   .ptile img,.ptile video{width:100%;height:100%;object-fit:cover;display:block}
+  /* Hover-preview clip sits over the poster frame at the same size. */
+  .ptile video.hovervid{position:absolute;inset:0;z-index:1}
   .gback{display:inline-flex;align-items:center;gap:7px;background:var(--panel-2);
     border:1px solid var(--line);color:var(--text);border-radius:9px;
     padding:7px 15px;font-size:13px;cursor:pointer;margin-bottom:14px;font-family:inherit}
@@ -229,6 +231,17 @@
   .ptile .acts button:hover{background:rgba(0,0,0,.9)}
   /* On touch devices there is no hover, so keep the actions visible. */
   @media (hover:none){.ptile .acts{opacity:1}}
+  /* Destructive action (trash / restore) sits alone in the bottom-right corner,
+     far from the favourite button in the top-left, so a fat-finger on a phone
+     cannot land on it by mistake. */
+  .ptile .acts-right{position:absolute;bottom:7px;right:7px;display:flex;gap:4px;
+    opacity:0;transition:.15s}
+  .ptile:hover .acts-right{opacity:1}
+  @media (hover:none){.ptile .acts-right{opacity:1}}
+  .ptile .acts-right button{background:rgba(0,0,0,.7);border:none;color:#fff;
+    border-radius:6px;width:30px;height:30px;font-size:14px;line-height:1;
+    cursor:pointer;padding:0}
+  .ptile .acts-right button:hover{background:rgba(0,0,0,.9)}
   .shead{grid-column:1/-1;color:var(--muted);font-size:12px;font-weight:600;
     text-transform:uppercase;letter-spacing:.6px;margin:14px 0 2px}
   .shead:first-child{margin-top:0}
@@ -1358,7 +1371,8 @@ function confirmClearTrash(n){
   box.className = "box";
   box.innerHTML = `<p>Permanently delete all trash?</p>
     <div class="why">${n} post${n===1?"":"s"} across every profile will be
-    <b>deleted from disk</b>. This cannot be undone.</div>`;
+    <b>deleted from disk</b>. A hidden marker is left so the downloader does
+    not fetch them again.</div>`;
   const row = document.createElement("div");
   row.className = "row";
   const cancel = document.createElement("button");
@@ -1454,20 +1468,44 @@ function tileFor(username, post, section){
   const mkSrc = (item) => `/media?profile=${encodeURIComponent(username)}`
       + `&file=${encodeURIComponent(item.file)}`
       + (srcSection === "main" ? "" : `&section=${srcSection}`);
+  // Grid tiles use the small cached thumbnail; the viewer uses the original.
+  // A video's own file is far too heavy for a tile, so it shows a poster frame
+  // here and the viewer plays the real thing.
+  const mkThumb = (item) => `/thumb?profile=${encodeURIComponent(username)}`
+      + `&file=${encodeURIComponent(item.file)}`
+      + (srcSection === "main" ? "" : `&section=${srcSection}`);
 
+  const img = document.createElement("img");
+  img.loading = "lazy"; img.alt = ""; img.src = mkThumb(first);
+  img.onclick = () => openViewer(username, post, srcSection, 0);
+  tile.appendChild(img);
+
+  // Videos: keep the poster frame, and only start the preview clip when the
+  // cursor actually lands on the tile. Nothing is fetched for tiles you never
+  // hover, so a long grid stays cheap.
   if(first.kind === "video"){
-    const v = document.createElement("video");
-    v.src = mkSrc(first); v.muted = true; v.playsInline = true;
-    v.preload = "metadata";
-    v.onmouseenter = () => v.play().catch(()=>{});
-    v.onmouseleave = () => { v.pause(); v.currentTime = 0; };
-    v.onclick = () => openViewer(username, post, section, 0);
-    tile.appendChild(v);
-  } else {
-    const img = document.createElement("img");
-    img.loading = "lazy"; img.alt = ""; img.src = mkSrc(first);
-    img.onclick = () => openViewer(username, post, section, 0);
-    tile.appendChild(img);
+    const src = `/preview?profile=${encodeURIComponent(username)}`
+      + `&file=${encodeURIComponent(first.file)}`
+      + (srcSection === "main" ? "" : `&section=${srcSection}`);
+    let vid = null;
+    tile.addEventListener("mouseenter", () => {
+      if(vid) { vid.play().catch(()=>{}); return; }
+      vid = document.createElement("video");
+      vid.src = src; vid.muted = true; vid.loop = true;
+      vid.playsInline = true; vid.preload = "auto";
+      vid.className = "hovervid";
+      vid.onclick = () => openViewer(username, post, srcSection, 0);
+      vid.oncanplay = () => {
+        img.style.visibility = "hidden";
+        vid.play().catch(()=>{});
+      };
+      vid.onerror = () => { vid.remove(); vid = null; img.style.visibility = ""; };
+      tile.appendChild(vid);
+    });
+    tile.addEventListener("mouseleave", () => {
+      if(vid){ vid.pause(); vid.currentTime = 0; }
+      img.style.visibility = "";
+    });
   }
 
   // Any click on the tile that wasn't a button opens the viewer.
@@ -1498,6 +1536,8 @@ function tileFor(username, post, section){
 
   const acts = document.createElement("div");
   acts.className = "acts";
+  const actsRight = document.createElement("div");
+  actsRight.className = "acts-right";
   const mkBtn = (label, title, fn) => {
     const b = document.createElement("button");
     b.textContent = label; b.title = title;
@@ -1517,12 +1557,13 @@ function tileFor(username, post, section){
       () => { every("favorites"); toast("Favourited"); refreshAfterMove(username); }));
   }
   if(srcSection === "trash"){
-    acts.appendChild(mkBtn("↩","Restore to main folder",
+    actsRight.appendChild(mkBtn("↩","Restore to main folder",
       () => { every("main"); toast("Restored"); refreshAfterMove(username); }));
   } else {
-    acts.appendChild(mkBtn("🗑","Move to trash", () => confirmTrash(username, names)));
+    actsRight.appendChild(mkBtn("🗑","Move to trash", () => confirmTrash(username, names)));
   }
   tile.appendChild(acts);
+  tile.appendChild(actsRight);
   return tile;
 }
 
@@ -1750,6 +1791,7 @@ function paintViewer(){
   if(cur.item.kind === "video"){
     const v = document.createElement("video");
     v.src = cur.src; v.controls = true; v.autoplay = true;
+    v.muted = true;              // always start muted; unmute via the controls
     v.playsInline = true; v.loop = true;
     stage.appendChild(v);
   } else {

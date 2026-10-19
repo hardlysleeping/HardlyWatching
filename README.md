@@ -19,6 +19,13 @@ Instagram, by instaloader, using your own logged-in session.
 - **Skips what you already have.** Re-running a profile only fetches new posts.
 - **Remembers independently of the files.** Move or delete an archive folder and
   re-runs still know what was already archived (`--latest-stamps`).
+- **Deletions stick.** Trash a post, then delete it for good — it goes to your
+  desktop trash bin, and a hidden marker stops instaloader fetching it again.
+  Delete something straight from your file manager and the app notices on the
+  next look and marks it too. Un-delete any of them from the UI to get it back.
+- **Favourites and trash across every profile.** Star a post to keep it handy;
+  trash one to set it aside. Both have their own view over the whole archive,
+  not just one profile.
 - **Recoverable removals.** Removing a profile never loses it — restore it from
   the Removed list.
 - **Reels as a separate pass.** Optionally queue reels as their own follow-up
@@ -43,7 +50,7 @@ Instagram, by instaloader, using your own logged-in session.
 ## Quick start
 
 ```bash
-git clone https://github.com/YOURNAME/insta-desktop.git
+git clone https://github.com/hardlysleeping/insta-desktop.git
 cd insta-desktop
 python3 server.py
 ```
@@ -63,6 +70,12 @@ Then:
 4. Watch the queue. Downloading goes to `~/instagram/<username>/` in
    instaloader's normal layout.
 
+Want it to start on its own at login? One command:
+
+```bash
+./install-service.sh
+```
+
 ## Install as a service (autostart)
 
 ```bash
@@ -76,6 +89,36 @@ Manage it with:
 systemctl --user status insta-downloader
 journalctl --user -u insta-downloader -f
 ```
+
+## The gallery
+
+Every finished profile gets a browsable grid, plus two archive-wide views:
+
+- **Profiles** — pick a profile, see its posts as tiles. Videos start muted;
+  unmute from the player controls.
+- **♥ All Favourites** — every post you starred, across every profile, in one
+  grid, each tile labelled with whose post it is.
+- **🗑 All Trash** — everything you set aside, with a button to delete it all.
+
+On each tile: **♥** favourites a post, **🗑** sends it to trash. The trash
+button sits in the bottom-right corner on its own, away from the favourite
+button, so it is hard to hit by accident on a phone.
+
+### Deleting for good
+
+"Delete all trash" does two things, both deliberately recoverable:
+
+1. It moves the files to your **desktop trash bin** (`~/.local/share/Trash`),
+   so you can still restore them from your file manager or empty the bin
+   yourself when you're sure.
+2. It leaves a **0-byte placeholder** with the same filename in the profile
+   folder. instaloader decides a post is already downloaded purely by whether
+   that file exists, so the placeholder stops it fetching the post again.
+
+Delete a file straight from your file manager instead, and the app notices the
+next time it lists that profile: it leaves the same kind of placeholder, so the
+post still won't come back. Any post you marked this way can be un-marked from
+the UI, which removes the placeholder so it downloads again on the next run.
 
 ## Settings
 
@@ -102,7 +145,8 @@ unblocked.
 | Path | What |
 | --- | --- |
 | `~/instagram/<username>/` | Downloaded media, in instaloader's layout |
-| `~/.config/insta-desktop/state.json` | Queue, order, settings, cooldowns |
+| `~/instagram/<username>/.insta-index.json` | Hidden record of what was there, used to spot file-manager deletions |
+| `~/.config/insta-desktop/state.json` | Queue, order, settings, cooldowns, deleted-post markers |
 | `~/.config/instaloader/session-<user>` | Instagram session (created by instaloader) |
 | `~/.config/instaloader/latest-stamps.ini` | "What have I already archived" record |
 

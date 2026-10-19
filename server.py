@@ -22,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from engine import Engine, OUTPUT_ROOT, clean_profile_name
+from engine import (Engine, OUTPUT_ROOT, clean_profile_name, make_preview,
+                    make_thumb)
 
 HERE = Path(__file__).resolve().parent
 PORT = int(os.environ.get("INSTA_PORT", "8765"))
@@ -188,6 +189,42 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(404)
             # Allow the browser to cache: these files never change in place.
             return self._serve_file(target, cache=True)
+        if p == "/thumb":
+            # Small cached JPEG for a grid tile. Originals average ~1.9 MB, so
+            # this is what keeps a large gallery scrollable.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            rel = (q.get("file") or [""])[0]
+            sub = (q.get("section") or [""])[0]
+            if not name or not rel:
+                return self.send_error(400)
+            target = get_engine().resolve_media(name, rel, sub)
+            if target is None:
+                return self.send_error(404)
+            thumb = make_thumb(target, target.suffix.lower())
+            if thumb is None:
+                # No thumbnail possible (odd codec, corrupt file): fall back to
+                # the original so the tile still shows something.
+                return self._serve_file(target, cache=True)
+            return self._serve_file(thumb, cache=True)
+        if p == "/preview":
+            # Short silent clip for hover playback on a video tile. Falls back
+            # to the original when a preview cannot be made.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            rel = (q.get("file") or [""])[0]
+            sub = (q.get("section") or [""])[0]
+            if not name or not rel:
+                return self.send_error(400)
+            target = get_engine().resolve_media(name, rel, sub)
+            if target is None:
+                return self.send_error(404)
+            prev = make_preview(target)
+            if prev is None:
+                return self.send_error(404)
+            return self._serve_file(prev, cache=True)
         return self.send_error(404)
 
     def do_POST(self) -> None:
@@ -246,6 +283,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "confirmation required"})
             n, errors = get_engine().clear_trash()
             return self._json({"ok": True, "removed": n, "errors": errors[:20]})
+
+        if p == "/api/gallery/tombstones":
+            # What has been permanently deleted, and the 0-byte placeholders
+            # that stop instaloader re-downloading it.
+            return self._json({"tombstones": get_engine().list_tombstones()})
+
+        if p == "/api/gallery/tombstones/remove":
+            # Drop a tombstone: removes the placeholder so the post is fetched
+            # again on the next run.
+            ok, msg = get_engine().remove_tombstone(
+                str(body.get("profile") or ""), str(body.get("file") or ""))
+            return self._json({"ok": ok, "message": msg})
 
         if p == "/api/gallery/move":
             # Favourite / trash / restore a single photo. Moves, never deletes.

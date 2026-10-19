@@ -8,3 +8,6 @@ state.json.bak*
 instagram/
 session-*
 latest-stamps.ini
+
+# generated thumbnails (also lives in ~/.cache by default)
+thumbs/
