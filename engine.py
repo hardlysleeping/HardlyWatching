@@ -74,7 +74,12 @@ CRASH_IN_OPTIONAL = re.compile(
 FATAL = re.compile(
     r"(Login error|not logged in|Session file does not exist|"
     r"Profile does not exist|Invalid username|"
-    r"\b404\b|does not exist|"
+    # Require an HTTP-ish context for 404 so the progress counter "[404/406]"
+    # is not mistaken for a missing profile. (That bug marked any profile with
+    # 400+ posts as unrecoverable after downloading all of it.)
+    r"(?:HTTP|Error|error|status|code|got)\D{0,12}404\b|"
+    r"404\s+Not\s+Found|"
+    r"does not exist|"
     r"is private|Private profile|"
     r"Wrong login|HTTPError 401)",
     re.IGNORECASE,
@@ -421,6 +426,7 @@ class Job:
     done_count: int = 0   # posts processed so far, from "[ n/m ]"
     total_count: int = 0  # total posts, from "[ n/m ]" (0 = unknown)
     last_line: str = ""   # most recent output line, survives restarts
+    heal_attempts: int = 0  # how many times a partial run was auto-refetched
     _counted_at: float = 0.0  # throttle for the on-disk rescan
 
     def effective(self, base: Settings) -> Settings:
@@ -1180,10 +1186,53 @@ class Engine:
                               error="instaloader reported success but no posts were saved")
                     return
                 msg = "complete" if outcome == "ok" else "complete (with warnings)"
+
+                # Self-heal a fragment: if instaloader said there were more posts
+                # than it fetched, re-queue once with fast_update disabled so the
+                # gap actually gets filled instead of being frozen forever.
+                partial, why = self._is_partial(job, target_dir)
+                if partial and job.heal_attempts < 2:
+                    with self.lock:
+                        self.consecutive_limits = 0
+                    job.heal_attempts += 1
+                    self._set(job,
+                              settings={**(job.settings or {}), "fast_update": False},
+                              status="queued",
+                              started_at=None,
+                              finished_at=None,
+                              done_count=0,
+                              total_count=0,
+                              message=f"partial ({why}) — refetching in full")
+                    self._log(job, f"! only {job.done_count}/{job.total_count} posts; "
+                                   f"re-queueing a full pass")
+                    with self.lock:
+                        self.pending[:] = [x for x in self.pending if x != job.id]
+                        self.pending.append(job.id)
+                    self.save_state()
+                    self._kick()
+                    return
+
+                if partial:
+                    # Gave up healing; record it honestly rather than as success.
+                    self._set(job, status="done", finished_at=time.time(),
+                              message=f"PARTIAL — {why}, gave up after {job.heal_attempts} retries",
+                              error="")
+                    return
+
                 self._set(job, status="done", finished_at=time.time(),
                           message=msg, error="")
                 return
             if outcome == "fatal":
+                # A "fatal" marker can still be a false positive (e.g. an HTTP
+                # error mentioned in a warning line). If media actually landed,
+                # the archive is fine -- record it as done with warnings.
+                if self._count_media(target_dir) > 0:
+                    with self.lock:
+                        self.consecutive_limits = 0
+                    self._set(job, status="done", finished_at=time.time(),
+                              message="complete (warnings ignored)",
+                              error="")
+                    return
                 self._set(job, status="failed", finished_at=time.time(),
                           message="unrecoverable", error=job.error or "unrecoverable error")
                 return
@@ -1195,11 +1244,18 @@ class Engine:
             # than reporting a success that never downloaded anything.
             if outcome == "crash_optional":
                 if cfg.stories or cfg.highlights:
-                    extra = {**(job.settings or {}), "stories": False, "highlights": False}
+                    # IMPORTANT: also disable fast_update for the retry. The
+                    # crashed run may already have written the newest posts, and
+                    # with --fast-update instaloader stops at the first file it
+                    # finds -- so it would stop immediately and leave the profile
+                    # partial (e.g. 6 posts out of 361).
+                    extra = {**(job.settings or {}),
+                             "stories": False, "highlights": False,
+                             "fast_update": False}
                     self._set(job, settings=extra, status="running", error="",
                               message="stories/highlights failed — retrying without them")
                     self._log(job, "! stories/highlights crashed instaloader; "
-                                   "retrying this profile with them disabled")
+                                   "retrying the full profile without them")
                     cfg = job.effective(self.settings)
                     continue
                 # Extras already off and it still crashed: nothing more to try.
@@ -1437,6 +1493,26 @@ class Engine:
         except OSError:
             pass
         return n
+
+    def _is_partial(self, job: Job, target_dir: Path) -> tuple[bool, str]:
+        """Detect a run that clearly did not finish the profile.
+
+        A finished job can still be a fragment: Instagram refuses pagination
+        (`500`/"fail") or instaloader crashes on stories, leaving only the newest
+        page. With --fast-update a later re-run would stop at the first file and
+        never fill the gap, so these must be retried with fast_update OFF.
+
+        Heuristic: instaloader reported a total ("[n/m]") that is far larger than
+        the number of posts actually completed.
+        """
+        total = job.total_count or 0
+        done = job.done_count or 0
+        if total > 0 and done < total:
+            # It stopped short of what instaloader itself said was there.
+            missing = total - done
+            if missing >= 5:
+                return True, f"stopped at {done}/{total} posts"
+        return False, ""
 
     def _parse_counts(self, job: Job, target_dir: Path) -> None:
         """Recount files/size on disk, throttled.
