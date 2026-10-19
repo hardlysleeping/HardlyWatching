@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.bak
+*.bak2
+state.json
+state.json.bak*
+# never commit anyone's downloads or sessions
+instagram/
+session-*
+latest-stamps.ini

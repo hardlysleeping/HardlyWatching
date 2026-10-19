@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instagram Downloader</title>
+<style>
+  :root {
+    --bg:#0b0d12; --panel:#14171f; --panel-2:#1b1f2a; --panel-3:#20242f;
+    --line:#262b38; --line-2:#333a4a; --text:#e7ebf3; --muted:#8b94a7;
+    --accent:#c13584; --accent-2:#f77737;
+    --ok:#34d399; --warn:#fbbf24; --err:#f87171; --run:#60a5fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1120px;margin:0 auto;padding:26px 20px 90px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  h1{font-size:22px;margin:0;font-weight:650;letter-spacing:-.01em}
+  h1 span{background:linear-gradient(90deg,var(--accent),var(--accent-2));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--muted);font-size:13px}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:16px 0 12px}
+  .chip{font-size:12px;padding:4px 10px;border-radius:999px;background:var(--panel-2);
+    border:1px solid var(--line);color:var(--muted);display:inline-flex;align-items:center;gap:6px}
+  .chip b{color:var(--text);font-weight:600}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dot.off{background:var(--err);box-shadow:0 0 8px var(--err)}
+
+  button{font:600 14px ui-sans-serif,system-ui,sans-serif;background:var(--panel-2);color:var(--text);
+    border:1px solid var(--line);border-radius:9px;padding:9px 15px;cursor:pointer;
+    transition:transform .08s,background .15s,border-color .15s}
+  button:hover:not(:disabled){border-color:var(--line-2);background:#232838}
+  button:active:not(:disabled){transform:translateY(1px)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.primary{background:linear-gradient(90deg,var(--accent),var(--accent-2));border-color:transparent;color:#fff}
+  button.small{padding:5px 11px;font-size:12.5px;border-radius:7px}
+  button.icon{padding:5px 9px;font-size:13px;line-height:1;border-radius:7px}
+  button.danger:hover:not(:disabled){background:#3a1d1d;border-color:#5a2b2b;color:#fca5a5}
+
+  .composer{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+  textarea{width:100%;min-height:96px;resize:vertical;background:#0e1117;color:var(--text);
+    border:1px solid var(--line);border-radius:10px;padding:12px 13px;
+    font:14px/1.55 ui-monospace,"SF Mono",Menlo,monospace}
+  textarea:focus{outline:none;border-color:var(--accent)}
+  .row{display:flex;gap:9px;align-items:center;margin-top:11px;flex-wrap:wrap}
+  .hint{color:var(--muted);font-size:12.5px}
+  .err-box{margin-top:12px;padding:10px 13px;border-radius:10px;background:#2a161a;
+    border:1px solid #4a2028;color:#fca5a5;font-size:13px;display:none}
+  .ok-box{margin-top:12px;padding:10px 13px;border-radius:10px;background:#122a1e;
+    border:1px solid #1f5138;color:#6ee7b7;font-size:13px;display:none}
+
+  /* settings */
+  .settings{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:0 14px;margin-top:14px;overflow:hidden}
+  .settings>summary{cursor:pointer;padding:13px 0;font-weight:600;font-size:14px;
+    list-style:none;display:flex;align-items:center;gap:9px}
+  .settings>summary::-webkit-details-marker{display:none}
+  .settings>summary::before{content:"▸";color:var(--muted);transition:transform .15s}
+  .settings[open]>summary::before{transform:rotate(90deg)}
+  .sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));
+    gap:4px 22px;padding:4px 0 15px}
+  .sgroup{grid-column:1/-1;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted);margin:12px 0 4px;font-weight:700}
+  .sgroup:first-child{margin-top:0}
+  .tog{display:flex;align-items:center;gap:9px;padding:4px 0;font-size:13.5px;cursor:pointer}
+  .tog input{appearance:none;width:34px;height:19px;background:#0e1117;border:1px solid var(--line);
+    border-radius:999px;position:relative;cursor:pointer;flex:none;transition:background .15s}
+  .tog input::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;
+    border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
+  .tog input:checked{background:linear-gradient(90deg,var(--accent),var(--accent-2));border-color:transparent}
+  .tog input:checked::after{transform:translateX(15px);background:#fff}
+  .tog span small{display:block;color:var(--muted);font-size:11.5px;font-weight:400}
+  .num{display:flex;align-items:center;gap:9px;padding:4px 0;font-size:13.5px}
+  .num input,.txtin{background:#0e1117;color:var(--text);border:1px solid var(--line);
+    border-radius:7px;padding:5px 8px;font:13px ui-monospace,Menlo,monospace;width:92px}
+  .txtin{width:100%}
+  .num input:focus,.txtin:focus{outline:none;border-color:var(--accent)}
+  .adv{display:none}
+  .settings.show-adv .adv{display:flex}
+
+  /* list */
+  .section-head{display:flex;align-items:center;gap:10px;margin:24px 0 10px;flex-wrap:wrap}
+  .section-head h2{font-size:14px;margin:0;font-weight:650}
+  .section-head .hint{margin-left:auto}
+  .list{display:flex;flex-direction:column;gap:9px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:12px 14px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
+  .card.running{border-color:#2d4a7a;background:#141a26}
+  .thumb{width:40px;height:40px;border-radius:50%;object-fit:cover;flex:none;
+    border:1px solid var(--line-2);background:var(--panel-2)}
+  .thumb.ph{display:flex;align-items:center;justify-content:center;
+    font-size:15px;color:var(--muted);font-weight:600}
+  .name.clickable{cursor:pointer}
+  .name.clickable:hover{color:var(--accent-2);text-decoration:underline}
+
+  /* embedded profile viewer */
+  .viewer{margin-top:14px;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;overflow:hidden}
+  .viewer-head{display:flex;align-items:center;gap:11px;padding:11px 14px;
+    border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .viewer-head img{width:34px;height:34px;border-radius:50%;object-fit:cover}
+  .viewer-body{background:#fff;height:640px}
+  .viewer-body iframe{width:100%;height:100%;border:0;background:#fff}
+  .viewer-note{padding:9px 14px;font-size:12.5px;color:var(--muted);
+    border-top:1px solid var(--line)}
+
+  /* per-card secondary action menu */
+  .card{position:relative}
+  .menu{grid-column:1/-1;display:flex;gap:7px;flex-wrap:wrap;
+    padding-top:9px;margin-top:3px;border-top:1px solid var(--line)}
+  .card.retrying{border-color:#5a4a1e}
+  .card.failed{border-color:#5a2b2b;background:#1c1416}
+  .card.done{opacity:.82}
+  .card.cancelled{opacity:.6}
+  .num-badge{color:var(--muted);font:600 12px ui-monospace,Menlo,monospace;
+    min-width:24px;text-align:center}
+  .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .name{font-weight:650;font-size:15px}
+  .meta{color:var(--muted);font-size:12.5px;margin-top:3px}
+  .actions{display:flex;gap:6px;align-items:center}
+  .pill{font-size:11.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .pill.queued{color:var(--muted)}
+  .pill.running{color:var(--run);border-color:#2d4a7a}
+  .pill.retrying{color:var(--warn);border-color:#5a4a1e}
+  .pill.done{color:var(--ok);border-color:#1f5138}
+  .pill.failed{color:var(--err);border-color:#5a2b2b}
+  .pill.cancelled{color:var(--muted)}
+  .pill.reels{color:#f472b6;border-color:#5a2b4a;background:#24162100}
+  .prog{height:3px;background:#0e1117;border-radius:3px;overflow:hidden;margin-top:8px}
+  .prog i{display:block;height:100%;width:30%;background:linear-gradient(90deg,var(--accent),var(--accent-2));
+    animation:sweep 1.1s linear infinite}
+  .prog.bar{height:5px;margin-top:6px}
+  .prog.bar i{animation:none;width:0;transition:width .4s ease}
+  @keyframes sweep{0%{margin-left:-30%}100%{margin-left:100%}}
+  details{margin-top:6px}
+  details summary{cursor:pointer;color:var(--muted);font-size:12.5px}
+  pre{background:#0a0c11;border:1px solid var(--line);border-radius:9px;padding:10px;
+    max-height:230px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;color:#b9c2d4;margin:8px 0 0;white-space:pre-wrap}
+  .empty{color:var(--muted);text-align:center;padding:44px 0;border:1px dashed var(--line);
+    border-radius:12px;margin-top:14px;font-size:14px}
+  .banner{display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:11px;
+    background:#1c1416;border:1px solid #5a2b2b;color:#fca5a5;font-size:13.5px;margin:14px 0}
+  .banner.warn{background:#241c0f;border-color:#5a4a1e;color:#fcd34d}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:var(--panel-3);border:1px solid var(--line-2);border-radius:10px;
+    padding:11px 18px;font-size:13.5px;opacity:0;transition:.2s;pointer-events:none;z-index:50;max-width:90vw}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Instagram <span>Downloader</span></h1>
+    <div class="sub">paste profiles → queue runs one at a time, auto-resumes on rate limits</div>
+  </header>
+
+  <div class="bar">
+    <span class="chip" id="sessChipWrap"><span id="sessDot" class="dot"></span><span id="sessTxt">checking session…</span></span>
+    <button class="small" id="sessBtn">Sessions</button>
+    <span class="chip" id="statChip">—</span>
+    <button class="small primary" id="runBtn">Start</button>
+    <button class="small" id="openRoot">Open folder</button>
+    <button class="small" id="retryAllBtn" style="display:none">Retry all failed</button>
+    <button class="small" id="clearBtn" style="display:none">Clear finished</button>
+  </div>
+
+  <div class="err-box" id="errBox"></div>
+  <div class="ok-box" id="okBox"></div>
+  <div class="banner" id="sessBox" style="display:none"></div>
+  <div class="banner warn" id="coolBox" style="display:none"></div>
+
+  <div class="composer" id="sessPanel" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b style="font-size:14px">Instagram sessions</b>
+      <span class="hint">Pick which account downloads use.</span>
+      <button class="small" id="refreshSess" style="margin-left:auto">Refresh</button>
+      <button class="small" id="sessPanelClose">Close</button>
+    </div>
+    <div id="sessList" style="margin-top:11px"></div>
+    <div style="margin-top:13px;border-top:1px solid var(--line);padding-top:12px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <b style="font-size:13.5px">Grab from a browser</b>
+        <span class="hint">Uses the Instagram login already in Firefox/Zen.</span>
+        <button class="small primary" id="grabBtn" style="margin-left:auto">Auto-grab best session</button>
+      </div>
+      <div id="browserList" style="margin-top:10px"></div>
+    </div>
+    <div style="margin-top:13px;border-top:1px solid var(--line);padding-top:12px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <b style="font-size:13.5px">Log in to Instagram</b>
+        <span class="hint">Opens a terminal and runs instaloader's login.</span>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <input type="text" id="loginUser" class="txtin" style="max-width:220px"
+               placeholder="your instagram username">
+        <button class="small primary" id="loginBtn">Log in</button>
+        <span class="hint">Handles 2FA — finish it in the terminal window.</span>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        Prefer not to type your password into a terminal? Log in to Instagram in
+        Firefox or Zen, then use <b>Auto-grab</b> above instead.
+      </div>
+    </div>
+    <div class="hint" style="margin-top:11px">
+      Note: if a session was created with an incomplete login it can look fine but fail
+      with 401. Grabbing from your browser avoids that.
+    </div>
+  </div>
+
+  <div class="composer">
+    <textarea id="input" placeholder="One per line — username, @username, or a profile URL:
+some.profile
+@another.profile
+https://www.instagram.com/a.third.profile/"></textarea>
+    <div class="row">
+      <button class="primary" id="startBtn">Add to queue</button>
+      <button class="small" id="pasteBtn">Paste from clipboard</button>
+      <button class="small" id="clearInputBtn">Clear text</button>
+      <span class="hint">Commas work too · Ctrl+Enter to add · duplicates skipped</span>
+    </div>
+    <div class="hint" style="margin-top:7px">
+      New profiles use the settings below. Existing queue items keep their own settings.
+    </div>
+  </div>
+
+  <details class="settings" id="settingsBox">
+    <summary>Download settings <span class="hint" id="setSummary"></span></summary>
+    <div class="row" style="padding:12px 0 2px;gap:8px">
+      <input type="text" id="setSearch" class="txtin" style="max-width:260px"
+             placeholder="Filter settings… (e.g. video, json, stories)">
+      <button class="small" id="showAdv">Show advanced</button>
+      <button class="small" id="resetSettings">Reset to defaults</button>
+    </div>
+    <div class="sgrid" id="sgrid"></div>
+    <div class="hint" id="noMatch" style="display:none;padding-bottom:14px">
+      No settings match that filter.
+    </div>
+  </details>
+
+  <div class="section-head">
+    <h2>Queue</h2>
+    <span class="hint" id="queueHint"></span>
+    <button class="small" id="removedBtn" style="display:none;margin-left:auto">Removed (<span id="removedCount">0</span>)</button>
+  </div>
+  <div id="removedPanel" class="composer" style="display:none;margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b style="font-size:13.5px">Removed profiles</b>
+      <span class="hint">Nothing is lost — restore anything you removed.</span>
+      <button class="small" id="restoreAll" style="margin-left:auto">Restore all</button>
+      <button class="small danger" id="purgeRemoved" title="Permanently delete this archive">Empty</button>
+    </div>
+    <div id="removedList" style="margin-top:10px"></div>
+  </div>
+  <div id="list" class="list"></div>
+  <div id="viewerHost"></div>
+  <div id="empty" class="empty">
+    <b>Nothing queued yet.</b><br>
+    Paste Instagram profiles above and hit <b>Add to queue</b> —
+    then press <b>Start</b> in the top bar to begin.<br>
+    <span class="hint">Downloads land in <span id="emptyPath"></span>, one folder per profile.</span>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function fmtBytes(b){
+  if(!b) return "0 B";
+  const u=["B","KB","MB","GB","TB"]; let i=0,n=b;
+  while(n>=1024&&i<u.length-1){n/=1024;i++}
+  return n.toFixed(n<10&&i>0?1:0)+" "+u[i];
+}
+function fmtDur(s){
+  if(!s) return "";
+  s=Math.round(s);
+  if(s<60) return s+"s";
+  const m=Math.floor(s/60);
+  if(m<60) return m+"m "+(s%60)+"s";
+  return Math.floor(m/60)+"h "+(m%60)+"m";
+}
+function showErr(msg){ const b=$("errBox"); if(!msg){b.style.display="none";return;}
+  b.textContent=msg; b.style.display="block"; clearTimeout(showErr._t);
+  showErr._t=setTimeout(()=>{b.style.display="none"},7000); }
+function showOk(msg){ const b=$("okBox"); if(!msg){b.style.display="none";return;}
+  b.textContent=msg; b.style.display="block"; clearTimeout(showOk._t);
+  showOk._t=setTimeout(()=>{b.style.display="none"},5000); }
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),2600); }
+
+async function post(path, body){
+  const r = await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body||{})});
+  return r.json();
+}
+
+/* ---------- session panel ---------- */
+
+async function loadSessions(){
+  const r = await fetch("/api/state");
+  const st = await r.json();
+  renderSessions(st.sessions||[], st.active_session, st.session_ok, st.session_username);
+  const br = await post("/api/session/browsers", {});
+  renderBrowsers(br.browsers||[]);
+}
+
+function renderSessions(sessions, active, ok, username){
+  const el = $("sessList");
+  if(!sessions.length){ el.innerHTML = '<div class="hint">No instaloader sessions yet. Grab one from your browser below.</div>'; return; }
+  el.innerHTML = sessions.map(s=>{
+    const isActive = ok && s.username===username;
+    const badge = s.valid
+      ? '<span class="pill done">ready</span>'
+      : '<span class="pill failed" title="'+esc(s.problem||"")+'">incomplete</span>';
+    const when = s.mtime ? new Date(s.mtime*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "";
+    return `<div class="card" style="padding:10px 12px">
+      <div class="num-badge">${isActive?"✓":""}</div>
+      <div>
+        <div class="top"><span class="name">${esc(s.username)}</span>${badge}
+          ${isActive?'<span class="pill running">in use</span>':""}</div>
+        <div class="meta">${esc(s.problem||"session ok")}${when?" · saved "+esc(when):""}</div>
+      </div>
+      <div class="actions">
+        <button class="small" data-usesess="${esc(s.username)}" ${isActive?"disabled":""}>Use</button>
+        <button class="small danger" data-delsess="${esc(s.username)}" title="Delete this session file">✕</button>
+      </div>
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-usesess]").forEach(b=>b.onclick=async()=>{
+    await post("/api/session/select",{username:b.dataset.usesess});
+    toast("Switched to "+b.dataset.usesess); loadSessions(); tick();
+  });
+  el.querySelectorAll("[data-delsess]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Delete the saved session for "+b.dataset.delsess+"?")) return;
+    await post("/api/session/forget",{username:b.dataset.delsess});
+    toast("Deleted"); loadSessions(); tick();
+  });
+}
+
+function renderBrowsers(list){
+  const el = $("browserList");
+  if(!list.length){ el.innerHTML = '<div class="hint">No Firefox/Zen cookie stores found on this machine.</div>'; return; }
+  el.innerHTML = list.map(b=>{
+    const state = b.has_sessionid
+      ? '<span class="pill done">logged in</span>'
+      : '<span class="pill">no login</span>';
+    const when = b.mtime ? new Date(b.mtime*1000).toLocaleDateString([], {month:"short",day:"numeric"}) : "";
+    return `<div class="card" style="padding:9px 12px">
+      <div class="num-badge">${b.has_sessionid?"●":""}</div>
+      <div>
+        <div class="top"><span class="name">${esc(b.browser)}</span>${state}</div>
+        <div class="meta">${b.cookies} instagram cookies${when?" · updated "+esc(when):""}</div>
+      </div>
+      <div class="actions">
+        <button class="small" data-grab="${esc(b.path)}" ${b.has_sessionid?"":"disabled"}>Grab</button>
+      </div>
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-grab]").forEach(b=>b.onclick=async()=>{
+    b.disabled = true; b.textContent = "…";
+    const r = await post("/api/session/import-browser",{path:b.dataset.grab});
+    if(r.ok){ toast("Imported session for "+r.username); showOk("Grabbed Instagram session for "+r.username+" from that browser."); }
+    else { showErr(r.error||"Could not import that session."); b.disabled=false; b.textContent="Grab"; }
+    loadSessions(); tick();
+  });
+}
+
+$("sessBtn").onclick = () => {
+  const p = $("sessPanel");
+  const show = p.style.display === "none";
+  p.style.display = show ? "block" : "none";
+  if(show) loadSessions();
+};
+$("sessPanelClose").onclick = () => { $("sessPanel").style.display = "none"; };
+$("grabBtn").onclick = async () => {
+  const b = $("grabBtn"); b.disabled=true; b.textContent="Looking…";
+  const r = await post("/api/session/import-browser",{});
+  b.disabled=false; b.textContent="Auto-grab best session";
+  if(r.ok){ toast("Imported "+r.username); showOk("Grabbed Instagram session for "+r.username+"."); }
+  else showErr(r.error||"No browser session found.");
+  loadSessions(); tick();
+};
+
+/* ---------- removed-profiles archive ---------- */
+
+function renderRemoved(list){
+  const btn = $("removedBtn"), panel = $("removedPanel"), el = $("removedList");
+  $("removedCount").textContent = (list||[]).length;
+  btn.style.display = (list && list.length) ? "" : "none";
+  if(!list || !list.length){ el.innerHTML=""; panel.style.display="none"; return; }
+  el.innerHTML = list.map(r=>{
+    const when = r.removed_at
+      ? new Date(r.removed_at*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})
+      : "";
+    return `<div class="card" style="padding:9px 12px">
+      <div class="num-badge">↩</div>
+      <div>
+        <div class="top"><span class="name">${esc(r.username)}</span>
+          ${r.kind==="reels"?'<span class="pill reels">reels</span>':""}
+          <span class="pill">${esc(r.status||"removed")}</span></div>
+        <div class="meta">removed ${esc(when)}${r.total_files?" · "+r.total_files+" files":""}</div>
+      </div>
+      <div class="actions">
+        <button class="small" data-restore="${esc(r.id)}">Restore</button>
+      </div>
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-restore]").forEach(b=>b.onclick=async()=>{
+    const r = await post("/api/restore",{id:b.dataset.restore});
+    toast(r.ok ? "Restored" : "Could not restore"); tick();
+  });
+}
+
+$("removedBtn").onclick = () => {
+  const p = $("removedPanel");
+  p.style.display = (p.style.display === "none") ? "block" : "none";
+};
+$("restoreAll").onclick = async () => {
+  const r = await post("/api/restore-all",{});
+  toast("Restored "+r.restored); tick();
+};
+$("purgeRemoved").onclick = async () => {
+  if(!confirm("Permanently delete the removed-profiles archive?")) return;
+  const r = await post("/api/purge-removed",{});
+  toast("Cleared "+r.purged); tick();
+};
+
+/* ---------- profile thumbnail ---------- */
+
+// Usernames known to have a picture on disk, and those known not to.
+// Decoding is the expensive part, so remember the answer per profile: the list
+// re-renders every poll, and re-creating an <img> each time would restart the
+// load forever.
+const hasThumb = new Set();
+const noThumb = new Set();
+
+function thumbHtml(username, nonce){
+  if(!hasThumb.has(username)){
+    // Probe once per username with a throwaway Image; cache the verdict.
+    if(!noThumb.has(username)){
+      const probe = new Image();
+      probe.onload = () => { hasThumb.add(username); tick(); };
+      probe.onerror = () => { noThumb.add(username); };
+      probe.src = `/api/profile-pic?profile=${encodeURIComponent(username)}`;
+    }
+    return "";
+  }
+  return `<img class="thumb" alt=""
+    src="/api/profile-pic?profile=${encodeURIComponent(username)}">`;
+}
+
+/* ---------- embedded profile viewer ---------- */
+
+function openProfile(username){
+  const host = $("viewerHost");
+  host.innerHTML = `<div class="viewer">
+    <div class="viewer-head">
+      ${thumbHtml(username)}
+      <b style="font-size:14.5px">${esc(username)}</b>
+      <a class="hint" target="_blank" rel="noopener noreferrer"
+         href="https://www.instagram.com/${encodeURIComponent(username)}/">open on instagram ↗</a>
+      <button class="small" id="viewerClose" style="margin-left:auto">Close</button>
+    </div>
+    <div class="viewer-body">
+      <iframe src="https://www.instagram.com/${encodeURIComponent(username)}/embed/"
+              title="${esc(username)} on Instagram"
+              referrerpolicy="strict-origin-when-cross-origin"
+              sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
+    </div>
+    <div class="viewer-note">
+      Instagram decides what an embed shows, and may refuse or ask you to log in.
+      Use the link above if the frame stays blank.
+    </div>
+  </div>`;
+  $("viewerClose").onclick = () => { host.innerHTML = ""; };
+  host.scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+let paused=false, settings=null, adv=false, lastHash="";
+
+/* ---------- settings panel ---------- */
+
+const SPEC = [
+  {group:"What to download"},
+  {k:"posts", l:"Posts", d:"regular feed posts", t:"bool", flag:"(default)"},
+  {k:"profile_pic", l:"Profile picture", d:"avatar + bio metadata", t:"bool", flag:"--no-profile-pic"},
+  {k:"stories", l:"Stories", d:"current stories (needs login)", t:"bool", flag:"--stories"},
+  {k:"highlights", l:"Highlights", d:"saved highlight reels", t:"bool", flag:"--highlights"},
+  {k:"reels", l:"Reels", d:"queued as a separate job after the main download", t:"bool", flag:"--reels", note:true},
+  {k:"tagged", l:"Tagged posts", d:"posts they're tagged in", t:"bool", flag:"--tagged"},
+  {k:"igtv", l:"IGTV", d:"older long-form videos", t:"bool", flag:"--igtv"},
+  {group:"Media"},
+  {k:"pictures", l:"Pictures", d:"images in posts", t:"bool", flag:"--no-pictures"},
+  {k:"videos", l:"Videos", d:"video files", t:"bool", flag:"--no-videos"},
+  {k:"video_thumbnails", l:"Video thumbnails", d:"extra jpg per video", t:"bool", flag:"--no-video-thumbnails"},
+  {group:"Metadata"},
+  {k:"captions", l:"Captions", d:"txt file per post", t:"bool", flag:"--no-captions"},
+  {k:"metadata_json", l:"JSON metadata", d:"full data per post", t:"bool", flag:"--no-metadata-json"},
+  {k:"comments", l:"Comments", d:"slower — extra request per post", t:"bool", flag:"--comments"},
+  {k:"geotags", l:"Geotags", d:"slower — extra request per post", t:"bool", flag:"--geotags"},
+  {k:"compress_json", l:"Compress JSON", d:".xz instead of readable json", t:"bool", flag:"--no-compress-json"},
+  {group:"Which posts"},
+  {k:"fast_update", l:"Only new posts", d:"skip already-downloaded (recommended)", t:"bool", flag:"--fast-update"},
+  {k:"latest_stamps", l:"Remember what's archived", d:"keeps tracking even if you move the folder to another drive", t:"bool", flag:"--latest-stamps", note2:true},
+  {k:"count", l:"Max posts per profile", d:"0 = unlimited", t:"num", flag:"--count"},
+  {k:"post_filter", l:"Post filter", d:"python expr, e.g. viewer_has_liked", t:"str", flag:"--post-filter"},
+  {k:"storyitem_filter", l:"Story filter", d:"python expr", t:"str", flag:"--storyitem-filter"},
+  {group:"How"},
+  {k:"between_profiles", l:"Seconds between profiles", d:"600 = 10 min. Longer is much safer", t:"num", flag:"(app)"},
+  {k:"max_connection_attempts", l:"Connection attempts", d:"retries per request", t:"num", flag:"--max-connection-attempts"},
+  {k:"request_timeout", l:"Request timeout (s)", d:"per connection", t:"num", flag:"--request-timeout"},
+  {k:"sanitize_paths", l:"Sanitize filenames", d:"safe on all systems", t:"bool", flag:"--sanitize-paths"},
+  {k:"resume", l:"Resume interrupted", d:"continue partial downloads", t:"bool", flag:"--no-resume"},
+  {k:"iphone", l:"Prefer iPhone versions", d:"better quality when available", t:"bool", flag:"--no-iphone"},
+  {k:"slide", l:"Sidecar slide index", d:"which image of a carousel", t:"str", flag:"--slide"},
+];
+
+function buildSettings(){
+  $("sgrid").innerHTML = SPEC.map((s)=>{
+    if(s.group) return `<div class="sgroup" data-group="${esc(s.group)}">${esc(s.group)}</div>`;
+    const hint = s.note ? `<div class="hint" style="color:var(--warn);font-size:11.5px;margin-top:4px">
+        Queued as its own job just after this profile finishes.</div>` : "";
+    if(s.t==="bool"){
+      return `<label class="tog" data-row="${esc(s.k)}"
+        data-terms="${esc((s.l+" "+(s.d||"")+" "+(s.flag||"")+" "+(s.group||"")).toLowerCase())}">
+        <input type="checkbox" data-k="${s.k}" data-t="bool">
+        <span>${esc(s.l)}<small>${esc(s.d||"")}</small></span></label>`;
+    }
+    return `<div class="num" data-row="${esc(s.k)}"
+      data-terms="${esc((s.l+" "+(s.d||"")+" "+(s.flag||"")+" "+(s.group||"")).toLowerCase())}">
+      <span style="min-width:0">${esc(s.l)}
+        <small class="hint" style="display:block">${esc(s.d||"")}</small></span>
+      <input type="text" data-k="${s.k}" data-t="${s.t}" style="margin-left:auto"
+             title="${esc(s.flag||"")}">
+    </div>`;
+  }).join("");
+
+  $("sgrid").querySelectorAll("input").forEach((el)=>{
+    el.onchange = async () => {
+      const patch = {};
+      const k = el.dataset.k;
+      if(el.dataset.t==="bool") patch[k] = el.checked;
+      else if(el.dataset.t==="num") patch[k] = parseInt(el.value||"0",10)||0;
+      else patch[k] = el.value;
+      const r = await post("/api/settings",{settings:patch});
+      settings = r.settings;
+      document.querySelectorAll(`input[data-k="${k}"]`).forEach(i=>{
+        if(i.dataset.t==="bool") i.checked = !!r.settings[k];
+        else i.value = r.settings[k] ?? "";
+      });
+      refreshSummary();
+      toast("Saved");
+    };
+  });
+}
+
+/* Filter the settings list by any word in the label, description or flag. */
+function filterSettings(){
+  const q = ($("setSearch").value||"").trim().toLowerCase();
+  let shown = 0;
+  const visibleKeys = new Set();
+  $("sgrid").querySelectorAll("[data-row]").forEach(row=>{
+    const hit = !q || row.dataset.terms.includes(q);
+    row.style.display = hit ? "" : "none";
+    if(hit){ shown++; visibleKeys.add(row.dataset.row); }
+  });
+  // hide a group heading when none of its rows are visible
+  const rows = [...$("sgrid").querySelectorAll("[data-row],[data-group]")];
+  rows.forEach((el,i)=>{
+    if(!el.dataset.group) return;
+    let any = false;
+    for(let k=i+1;k<rows.length;k++){
+      if(rows[k].dataset.group) break;
+      if(rows[k].style.display !== "none"){ any = true; break; }
+    }
+    el.style.display = any ? "" : "none";
+  });
+  $("noMatch").style.display = shown ? "none" : "";
+}
+
+function fillSettings(s){
+  settings = s;
+  // only fill fields when they differ, so typing is not interrupted by a poll
+  $("sgrid").querySelectorAll("input").forEach((el)=>{
+    const k = el.dataset.k;
+    if(document.activeElement === el) return;  // don't fight the user
+    if(el.dataset.t==="bool") el.checked = !!s[k];
+    else el.value = s[k] ?? "";
+  });
+  refreshSummary();
+}
+
+function refreshSummary(){
+  if(!settings) return;
+  const on = [];
+  if(settings.stories) on.push("stories");
+  if(settings.highlights) on.push("highlights");
+  if(settings.reels) on.push("reels");
+  if(settings.tagged) on.push("tagged");
+  if(settings.igtv) on.push("IGTV");
+  if(settings.comments) on.push("comments");
+  const mode = settings.fast_update ? "new only" : "full scan";
+  $("setSummary").textContent =
+    `· ${mode}${on.length ? " · " + on.join(", ") : " · posts only"}` +
+    `${settings.count ? " · max " + settings.count : ""}`;
+}
+
+/* ---------- queue render ---------- */
+
+// Which job logs the user has open. The list is rebuilt on every poll, which
+// would otherwise destroy <details> and make an opened log appear to shut.
+let openLogs = new Set();
+// Same idea for the per-card "⋯" action menus.
+let openMenus = new Set();
+
+function render(st){
+  // preserve which log panels are expanded (+ scroll offsets) across re-render
+  const list = $("list");
+  list.querySelectorAll("details[data-log]").forEach(d=>{
+    if(d.open) openLogs.add(d.dataset.log); else openLogs.delete(d.dataset.log);
+  });
+  const scrolls = {};
+  list.querySelectorAll("pre[data-scroll]").forEach(p=>{
+    scrolls[p.dataset.scroll] = p.scrollTop;
+  });
+  list.querySelectorAll("[data-menu]").forEach(m=>{
+    if(m.style.display !== "none") openMenus.add(m.dataset.menu);
+    else openMenus.delete(m.dataset.menu);
+  });
+  // session + stats
+  const dot=$("sessDot"), txt=$("sessTxt");
+  if(st.session_ok){ dot.className="dot on"; txt.textContent="logged in as "+st.session_username; }
+  else if(st.session_present){ dot.className="dot off"; txt.textContent="session invalid — see warning below"; }
+  else { dot.className="dot off"; txt.textContent="not logged in"; }
+
+  // Session problem banner (empty sessionid, expired login, etc.)
+  const sb = $("sessBox");
+  if(!st.session_ok && st.session_problem){
+    sb.innerHTML = `<b>Instagram login problem.</b> ${esc(st.session_problem)}`;
+    sb.style.display = "block";
+  } else {
+    sb.style.display = "none";
+  }
+
+  const c = st.counts||{};
+  $("statChip").innerHTML =
+    `<b>${c.queued||0}</b> queued · <b>${c.done||0}</b> done` +
+    (c.failed?` · <b style="color:var(--err)">${c.failed} failed</b>`:"");
+  $("queueHint").textContent = st.current ? "downloading: "+st.current : "";
+
+  // Only show cleanup actions when there is something to clean up.
+  $("retryAllBtn").style.display = (c.failed>0) ? "" : "none";
+  $("clearBtn").style.display = ((c.done||0)+(c.failed||0)+(c.cancelled||0)) ? "" : "none";
+  const ep = $("emptyPath"); if(ep) ep.textContent = st.output_root;
+  renderRemoved(st.removed || []);
+
+  // One button whose label always matches what clicking it does.
+  paused = st.paused;
+  const cd = st.cooldown_remaining || 0;
+  const run = $("runBtn");
+  if(st.current){
+    run.textContent = "Pause";
+    run.className = "small";
+    run.title = "Pause after the current profile finishes";
+  } else if(paused){
+    run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
+    run.className = "small primary";
+    run.title = cd > 0 ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min` : "Resume the queue";
+  } else if((c.queued||0) > 0){
+    run.textContent = "Start";
+    run.className = "small primary";
+    run.title = "Start downloading the queue";
+  } else {
+    run.textContent = "Start";
+    run.className = "small primary";
+    run.disabled = true;
+    run.title = "Nothing queued yet";
+  }
+  if((c.queued||0) > 0 || st.current || paused) run.disabled = false;
+
+  // Loud, plain explanation when Instagram has limited us.
+  const cb = $("coolBox");
+  if(cd > 0){
+    const mins = Math.ceil(cd/60);
+    cb.innerHTML = `<b>Instagram rate-limited this IP.</b> Pausing ${mins} min before trying
+      again — retrying sooner extends the block. Nothing is being downloaded meanwhile.`;
+    cb.style.display = "block";
+  } else cb.style.display = "none";
+
+  if(!settings) fillSettings(st.settings||{});
+
+  const listEl = $("list");
+  $("empty").style.display = st.jobs.length ? "none" : "block";
+
+  // position numbers only for queued items
+  let qpos = 0;
+  listEl.innerHTML = st.jobs.map((j)=>{
+    const isQ = (j.status==="queued"||j.status==="retrying");
+    if(isQ) qpos++;
+    const pos = isQ ? qpos : "";
+    const bits=[];
+    if(j.posts) bits.push(j.posts+" files");
+    if(j.total_bytes) bits.push(fmtBytes(j.total_bytes));
+    if(j.last_run_seconds) bits.push(fmtDur(j.last_run_seconds));
+    const detail = (j.status==="failed" ? j.error : "") || j.message;
+
+    // Real progress: instaloader's own "[ n/m ]".
+    let prog = "";
+    if(j.total_count>0){
+      const pct = Math.min(100, Math.round(100*j.done_count/j.total_count));
+      prog = `<div class="meta" style="margin-top:5px"><b>${j.done_count} / ${j.total_count}</b>
+        posts · ${pct}%</div><div class="prog bar"><i style="width:${pct}%"></i></div>`;
+    } else if(j.status==="running"||j.status==="retrying"){
+      prog = '<div class="prog"><i></i></div>';
+    }
+
+    const isOpen = openLogs.has(j.id);
+    const tail = (j.tail||[]).length
+      ? `<details data-log="${j.id}" ${isOpen?"open":""}>
+           <summary>log (${j.tail.length} lines)</summary>
+           <pre data-scroll="${j.id}">${esc(j.tail.join("\n"))}</pre>
+         </details>`:"";
+    const running = j.status==="running"||j.status==="retrying";
+
+    const btns=[];
+    // Reorder controls only where they are useful: the next few jobs that will
+    // actually run. Everything further down keeps its position implicitly.
+    const nearFront = isQ && qpos <= 3;
+    if(nearFront){
+      btns.push(`<button class="icon" data-top="${j.id}" title="Move to front">⤒</button>`);
+      btns.push(`<button class="icon" data-up="${j.id}" title="Move up">↑</button>`);
+      btns.push(`<button class="icon" data-down="${j.id}" title="Move down">↓</button>`);
+    }
+    btns.push(`<button class="small" data-open="${esc(j.username)}" title="Open the download folder">Open</button>`);
+
+    // Secondary actions live behind one menu so the row stays readable.
+    const more=[];
+    if(j.status==="failed"||j.status==="done"||j.status==="cancelled"){
+      more.push(`<button class="small" data-requeue="${j.id}">${j.status==="failed"?"Retry":"Re-run"}</button>`);
+      if(j.status==="done") more.push(`<button class="small" data-full="${j.id}">Re-download all</button>`);
+    }
+    more.push(`<button class="small" data-profile="${esc(j.username)}">View on Instagram</button>`);
+    if(j.status==="running"||isQ){
+      more.push(`<button class="small danger" data-remove="${j.id}">Remove</button>`);
+    } else {
+      more.push(`<button class="small danger" data-forget="${j.id}">Remove from list</button>`);
+    }
+    btns.push(`<button class="small" data-more="${j.id}" title="More actions">⋯</button>`);
+    const moreMenu = `<div class="menu" data-menu="${j.id}" style="display:none">${more.join("")}</div>`;
+
+    return `<div class="card ${esc(j.status)}">
+      <div class="num-badge" style="gap:6px;display:flex;flex-direction:column;align-items:center">
+        ${pos?`<span style="font-size:11px">${pos}</span>`:""}${thumbHtml(j.username)}</div>
+      <div>
+        <div class="top">
+          <span class="name clickable" data-profile="${esc(j.username)}"
+                title="Show ${esc(j.username)} on Instagram">${esc(j.username)}</span>
+          ${j.kind==="reels"?'<span class="pill reels" title="Separate reels-only pass">reels</span>':""}
+          <span class="pill ${esc(j.status)}">${esc(j.status)}</span>
+          ${j.attempts>1?`<span class="pill">try ${j.attempts}</span>`:""}
+          ${j.settings&&j.settings.fast_update===false?`<span class="pill">full</span>`:""}
+        </div>
+        <div class="meta">${esc(detail||"")}${bits.length?" · "+esc(bits.join(" · ")):""}</div>
+        ${prog}
+        ${tail}
+      </div>
+      <div class="actions">${btns.join("")}</div>
+      ${moreMenu}
+    </div>`;
+  }).join("");
+
+  // restore expanded logs + their scroll positions (the innerHTML rebuild drops both)
+  listEl.querySelectorAll("pre[data-scroll]").forEach(p=>{
+    const k = p.dataset.scroll;
+    if(scrolls[k] != null) p.scrollTop = scrolls[k];
+    else p.scrollTop = p.scrollHeight;  // first view: jump to newest
+  });
+
+  const on = (sel, fn) => listEl.querySelectorAll(sel).forEach(fn);
+  on("[data-more]", b=>b.onclick=()=>{
+    const m = listEl.querySelector(`[data-menu="${b.dataset.more}"]`);
+    if(!m) return;
+    const open = m.style.display !== "none";
+    m.style.display = open ? "none" : "flex";
+    if(open) openMenus.delete(b.dataset.more); else openMenus.add(b.dataset.more);
+  });
+  // restore menus that were open before the re-render
+  listEl.querySelectorAll("[data-menu]").forEach(m=>{
+    if(openMenus.has(m.dataset.menu)) m.style.display = "flex";
+  });
+  on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile));
+  on("[data-open]", b=>b.onclick=()=>post("/api/open-folder",{profile:b.dataset.open}));
+  on("[data-requeue]", b=>b.onclick=async()=>{ await post("/api/requeue",{id:b.dataset.requeue});
+    toast("Re-queued"); tick(); });
+  on("[data-full]", b=>b.onclick=async()=>{ await post("/api/requeue",{id:b.dataset.full,full:true});
+    toast("Queued full re-check"); tick(); });
+  on("[data-remove]", b=>b.onclick=async()=>{ await post("/api/remove",{id:b.dataset.remove});
+    toast("Removed"); tick(); });
+  on("[data-forget]", b=>b.onclick=async()=>{ await post("/api/forget",{id:b.dataset.forget}); tick(); });
+  on("[data-top]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.top,index:0}); tick(); });
+  on("[data-up]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.up,delta:-1}); tick(); });
+  on("[data-down]", b=>b.onclick=async()=>{ await post("/api/move",{id:b.dataset.down,delta:1}); tick(); });
+}
+
+async function tick(){
+  try{
+    const r = await fetch("/api/state");
+    const st = await r.json();
+    render(st);
+  }catch(e){}
+}
+
+/* ---------- actions ---------- */
+
+$("startBtn").onclick = async () => {
+  const val = $("input").value.trim();
+  if(!val){ showErr("Paste at least one profile first."); return; }
+  const res = await post("/api/add",{profiles:val});
+  if(res.rejected&&res.rejected.length) showErr("Skipped: "+res.rejected.join(", "));
+  if(res.added&&res.added.length){
+    $("input").value="";
+    showOk(`Added ${res.added.length} profile${res.added.length>1?"s":""} to the queue.`);
+  }
+  tick();
+};
+
+$("runBtn").onclick = async () => {
+  // Label tells us what this click means; act on the live state.
+  const st = await (await fetch("/api/state")).json();
+  if(st.current){ await post("/api/pause",{}); toast("Pausing after this profile"); }
+  else if(st.paused){ await post("/api/resume",{}); toast("Resumed"); }
+  else { await post("/api/resume",{}); toast("Started"); }
+  tick();
+};
+$("openRoot").onclick = () => post("/api/open-folder",{});
+$("retryAllBtn").onclick = async () => {
+  const r = await post("/api/retry-all",{});
+  toast(`Re-queued ${r.requeued}`); tick();
+};
+$("clearBtn").onclick = async () => {
+  const r = await post("/api/clear-finished",{});
+  toast(`Cleared ${r.removed} entries`); tick();
+};
+$("clearInputBtn").onclick = () => { $("input").value=""; $("input").focus(); };
+$("pasteBtn").onclick = async () => {
+  try{
+    const t = await navigator.clipboard.readText();
+    if(!t.trim()){ showErr("Clipboard is empty."); return; }
+    $("input").value = ($("input").value ? $("input").value.trim()+"\n" : "") + t.trim();
+    toast("Pasted");
+  }catch(e){ showErr("Clipboard blocked by the browser — paste manually with Ctrl+V."); }
+};
+$("setSearch").addEventListener("input", filterSettings);
+
+$("loginBtn").onclick = async () => {
+  const u = ($("loginUser").value||"").trim().replace(/^@/,"");
+  if(!u){ showErr("Enter your Instagram username first."); return; }
+  const b = $("loginBtn"); b.disabled=true; b.textContent="Opening…";
+  const r = await post("/api/session/login",{username:u});
+  b.disabled=false; b.textContent="Log in";
+  if(r.ok){
+    showOk("A terminal window opened. Enter your password (and 2FA code) there, " +
+           "then click Refresh below.");
+    toast("Terminal opened");
+  } else {
+    showErr(r.error || "Could not open a terminal.");
+  }
+};
+
+$("refreshSess").onclick = async () => { await loadSessions(); toast("Refreshed"); };
+$("resetSettings").onclick = async () => {
+  const def = {posts:true,profile_pic:true,stories:true,highlights:true,tagged:false,
+    reels:false,igtv:false,videos:true,video_thumbnails:false,pictures:true,captions:true,
+    metadata_json:true,compress_json:false,comments:false,geotags:false,fast_update:true,
+    latest_stamps:true,
+    count:0,post_filter:"",storyitem_filter:"",sanitize_paths:true,resume:true,
+    max_connection_attempts:3,request_timeout:300,iphone:true,slide:"",between_profiles:240};
+  const r = await post("/api/settings",{settings:def});
+  fillSettings(r.settings);
+  toast("Defaults restored");
+};
+
+$("input").addEventListener("keydown",(e)=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==="Enter") $("startBtn").click();
+});
+
+buildSettings();
+tick();
+setInterval(tick,1200);
+</script>
+</body>
+</html>
