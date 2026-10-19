@@ -5,6 +5,7 @@ Then open http://127.0.0.1:8765
 
 Environment:
   INSTA_PORT    port to bind (default 8765)
+  INSTA_HOST    address to bind (default 127.0.0.1; use 0.0.0.0 for LAN/tailnet)
   INSTA_OUTPUT  where downloads go (default ~/instagram)
   INSTA_STATE   where app state is kept (default ~/.config/insta-desktop/state.json)
 """
@@ -25,10 +26,19 @@ from engine import Engine, OUTPUT_ROOT, clean_profile_name
 
 HERE = Path(__file__).resolve().parent
 PORT = int(os.environ.get("INSTA_PORT", "8765"))
-HOST = "127.0.0.1"
+HOST = os.environ.get("INSTA_HOST", "127.0.0.1")
 
-engine = Engine()
-engine.kick_if_work()  # resume queued work after a service restart
+# The Engine is created lazily so that importing this module (tests, tooling,
+# anything that just wants Handler) never constructs a worker or touches the
+# user's real state file. Use get_engine() everywhere instead of a global.
+_engine: Engine | None = None
+
+
+def get_engine() -> Engine:
+    global _engine
+    if _engine is None:
+        _engine = Engine()
+    return _engine
 
 
 def _open_folder(path: Path) -> None:
@@ -101,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    def _serve_file(self, path: Path) -> None:
+    def _serve_file(self, path: Path, cache: bool = False) -> None:
         if not path.is_file():
             self.send_error(404)
             return
@@ -110,7 +120,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control",
+                         "private, max-age=86400" if cache else "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -123,8 +134,8 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/state":
             # The UI polls this every ~1.2s, so it doubles as a worker watchdog:
             # if the worker died with work still queued, revive it.
-            engine.watchdog()
-            return self._json(engine.snapshot())
+            get_engine().watchdog()
+            return self._json(get_engine().snapshot())
         if p == "/api/profile-pic":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -142,6 +153,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_file(hits[0])
         if p == "/api/health":
             return self._json({"ok": True})
+        if p == "/api/gallery":
+            # Profiles whose archive is finished and still on disk.
+            return self._json({"profiles": get_engine().gallery_profiles()})
+        if p == "/api/gallery/all":
+            # Overarching Favourites / Trash across every profile.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            section = (q.get("section") or [""])[0]
+            if section not in ("favorites", "trash"):
+                return self.send_error(400)
+            return self._json({"section": section,
+                               "profiles": get_engine().gallery_profiles(),
+                               "posts": get_engine().gallery_all(section)})
+        if p == "/api/photos":
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            if not name:
+                return self.send_error(400)
+            return self._json({"profile": name,
+                               "sections": get_engine().gallery_sections(name)})
+        if p == "/media":
+            # Serve a file, but only one inside a finished profile's folder.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            rel = (q.get("file") or [""])[0]
+            sub = (q.get("section") or [""])[0]
+            if not name or not rel:
+                return self.send_error(400)
+            target = get_engine().resolve_media(name, rel, sub)
+            if target is None:
+                return self.send_error(404)
+            # Allow the browser to cache: these files never change in place.
+            return self._serve_file(target, cache=True)
         return self.send_error(404)
 
     def do_POST(self) -> None:
@@ -158,83 +204,101 @@ class Handler(BaseHTTPRequestHandler):
                 names = []
             names = [n for n in names if n.strip()]
             overrides = body.get("overrides") or None
-            added, rejected = engine.add(names, overrides)
+            added, rejected = get_engine().add(names, overrides)
             return self._json({"added": [j.username for j in added], "rejected": rejected})
 
         if p == "/api/remove":
-            return self._json({"ok": engine.remove(body.get("id", ""))})
+            return self._json({"ok": get_engine().remove(body.get("id", ""))})
 
         if p == "/api/forget":
-            return self._json({"ok": engine.forget(body.get("id", ""))})
+            return self._json({"ok": get_engine().forget(body.get("id", ""))})
 
         if p == "/api/extra-pass":
-            return self._json(engine.add_extra_pass(
+            return self._json(get_engine().add_extra_pass(
                 str(body.get("id") or body.get("username") or ""),
                 str(body.get("kind") or "")))
 
         if p == "/api/restore":
-            return self._json({"ok": engine.restore(body.get("id", ""))})
+            return self._json({"ok": get_engine().restore(body.get("id", ""))})
 
         if p == "/api/restore-all":
-            return self._json({"restored": engine.restore_all()})
+            return self._json({"restored": get_engine().restore_all()})
 
         if p == "/api/purge-removed":
-            return self._json({"purged": engine.purge_removed()})
+            return self._json({"purged": get_engine().purge_removed()})
 
         if p == "/api/requeue":
             return self._json({
-                "ok": engine.requeue(body.get("id", ""), bool(body.get("full")))
+                "ok": get_engine().requeue(body.get("id", ""), bool(body.get("full")))
             })
 
         if p == "/api/move":
             jid = body.get("id", "")
             if "index" in body:
-                ok = engine.move_to(jid, int(body["index"]))
+                ok = get_engine().move_to(jid, int(body["index"]))
             else:
-                ok = engine.move(jid, int(body.get("delta", 0)))
+                ok = get_engine().move(jid, int(body.get("delta", 0)))
             return self._json({"ok": ok})
 
+        if p == "/api/gallery/trash/clear":
+            # Permanent. Requires an explicit confirm token in the body.
+            if body.get("confirm") != "DELETE":
+                return self._json({"ok": False, "error": "confirmation required"})
+            n, errors = get_engine().clear_trash()
+            return self._json({"ok": True, "removed": n, "errors": errors[:20]})
+
+        if p == "/api/gallery/move":
+            # Favourite / trash / restore a single photo. Moves, never deletes.
+            section = str(body.get("section") or "")
+            if section not in ("main", "favorites", "trash"):
+                return self._json({"ok": False, "error": "bad section"})
+            ok, msg = get_engine().move_media(
+                clean_profile_name(str(body.get("profile") or "")) or "",
+                str(body.get("file") or ""),
+                section)
+            return self._json({"ok": ok, "message": msg})
+
         if p == "/api/clear-finished":
-            return self._json({"removed": engine.clear_finished()})
+            return self._json({"removed": get_engine().clear_finished()})
 
         if p == "/api/retry-all":
-            return self._json({"requeued": engine.retry_all_failed()})
+            return self._json({"requeued": get_engine().retry_all_failed()})
 
         if p == "/api/pause":
-            engine.pause()
+            get_engine().pause()
             return self._json({"ok": True})
 
         if p == "/api/resume":
-            engine.resume()
+            get_engine().resume()
             return self._json({"ok": True})
 
         if p == "/api/cooldown/clear":
-            engine.clear_cooldown()
+            get_engine().clear_cooldown()
             return self._json({"ok": True})
 
         if p == "/api/check-block":
-            blocked = engine.check_ip_block()
+            blocked = get_engine().check_ip_block()
             return self._json({"blocked": blocked})
 
         if p == "/api/settings":
-            return self._json({"settings": engine.update_settings(body.get("settings") or {}).to_dict()})
+            return self._json({"settings": get_engine().update_settings(body.get("settings") or {}).to_dict()})
 
         if p == "/api/session/select":
-            ok = engine.set_session(str(body.get("username") or ""))
+            ok = get_engine().set_session(str(body.get("username") or ""))
             return self._json({"ok": ok})
 
         if p == "/api/session/forget":
-            ok = engine.forget_session(str(body.get("username") or ""))
+            ok = get_engine().forget_session(str(body.get("username") or ""))
             return self._json({"ok": ok})
 
         if p == "/api/session/refresh":
-            return self._json({"sessions": engine.list_sessions()})
+            return self._json({"sessions": get_engine().list_sessions()})
 
         if p == "/api/session/browsers":
-            return self._json({"browsers": engine.browser_sessions()})
+            return self._json({"browsers": get_engine().browser_sessions()})
 
         if p == "/api/session/import-browser":
-            return self._json(engine.import_from_browser(body.get("path") or None))
+            return self._json(get_engine().import_from_browser(body.get("path") or None))
 
         if p == "/api/session/login":
             # Run instaloader's interactive login in the user's own terminal.
@@ -270,9 +334,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    # Resume queued work -- only when actually run as the server. Importing
+    # this module must never start a worker against the user's real queue.
+    get_engine().kick_if_work()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    url = f"http://{HOST}:{PORT}"
+    url = f"http://{'127.0.0.1' if HOST in ('0.0.0.0', '::') else HOST}:{PORT}"
     print(f"Instaloader queue UI running at {url}")
+    if HOST in ("0.0.0.0", "::"):
+        print(f"Reachable from other devices at http://<this-box-ip>:{PORT}")
     print(f"Downloads land in: {OUTPUT_ROOT}")
     print("Ctrl-C to stop.")
     try:

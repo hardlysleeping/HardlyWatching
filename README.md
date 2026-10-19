@@ -109,6 +109,40 @@ unblocked.
 Override the first two with `INSTA_OUTPUT` and `INSTA_STATE`. Also honours
 `INSTA_PORT`.
 
+## Reaching it from your phone or another device
+
+By default the server binds `127.0.0.1`, which means only this machine can
+reach it. Set `INSTA_HOST=0.0.0.0` to listen on every interface:
+
+```bash
+INSTA_HOST=0.0.0.0 python3 server.py
+```
+
+Then open `http://<this-machine's-ip>:8765` — e.g. `http://100.x.y.z:8765` over
+Tailscale, or `http://192.168.1.50:8765` on the same Wi-Fi. Local
+`http://127.0.0.1:8765` keeps working.
+
+For the systemd user service, add a drop-in:
+
+```bash
+systemctl --user edit insta-downloader
+```
+
+```ini
+[Service]
+Environment=INSTA_HOST=0.0.0.0
+```
+
+then `systemctl --user restart insta-downloader` and open the port in your
+firewall.
+
+**There is no authentication of any kind.** The UI can add, remove and requeue
+jobs and start Instagram logins. Bind it to `0.0.0.0` only on a network you
+trust (Tailscale, your own LAN), and don't port-forward it to the internet.
+
+Note the browser-login endpoint opens a terminal on the *server* machine, so
+session login only makes sense from the machine the service runs on.
+
 ## Honest limitations
 
 - **Instagram fights this.** Even logged in, large profiles can hit rate limits

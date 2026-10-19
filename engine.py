@@ -13,9 +13,12 @@ common ones and hides the rest behind "Advanced".
 
 from __future__ import annotations
 
+import calendar
+import datetime
 import json
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -326,6 +329,341 @@ def clean_profile_name(raw: str) -> str | None:
     return s
 
 
+# ---------- gallery ----------
+
+# Media instaloader writes that are worth showing in a browser grid. `.temp`
+# and `.json` are deliberately absent: a killed download leaves 0-byte temps.
+GALLERY_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov"}
+GALLERY_VIDEO_EXTS = {".mp4", ".mov"}
+
+
+def _gallery_media(folder: Path) -> list[str]:
+    """Names of displayable media directly inside `folder` (sorted)."""
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return []
+    names = []
+    for entry in entries:
+        if not entry.is_file():
+            continue
+        if entry.suffix.lower() not in GALLERY_EXTS:
+            continue
+        if entry.stat().st_size == 0:  # truncated by an interrupted download
+            continue
+        names.append(entry.name)
+    return sorted(names)
+
+
+def _parse_filename_date(name: str) -> float:
+    """Epoch seconds from instaloader's `<YYYY-MM-DD>_<HH-MM-SS>_UTC.ext`."""
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})", name)
+    if not m:
+        return 0.0
+    try:
+        y, mo, d, h, mi, s = (int(x) for x in m.groups())
+        return calendar.timegm((y, mo, d, h, mi, s, 0, 0, 0))
+    except ValueError:
+        return 0.0
+
+
+def _media_info(folder: Path, name: str) -> dict:
+    """One gallery item: name, kind, timestamp and optional caption.
+
+    The sidecar JSON instaloader writes next to each post carries the true
+    `date` and the caption, which beats parsing the filename. It is not
+    guaranteed to exist, so the filename is the fallback.
+    """
+    path = folder / name
+    kind = "video" if path.suffix.lower() in GALLERY_VIDEO_EXTS else "image"
+    ts = _parse_filename_date(name)
+    caption = ""
+    title = ""
+    is_video = None
+    try:
+        raw = path.with_suffix(".json").read_bytes()
+        node = (json.loads(raw) or {}).get("node") or {}
+        ts = float(node.get("date") or ts)
+        cap = node.get("caption")
+        if isinstance(cap, str):
+            caption = cap.strip()
+        title = (node.get("title") or "").strip()
+        if node.get("is_video") is not None:
+            is_video = bool(node["is_video"])
+    except (OSError, ValueError, TypeError):
+        pass
+    if is_video is not None:
+        kind = "video" if is_video else "image"
+    post_id = name.split("_UTC")[0]
+    return {
+        "file": name,
+        "kind": kind,
+        "ts": ts,
+        "date": (datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+                 .strftime("%Y-%m-%d %H:%M UTC") if ts else ""),
+        "caption": caption[:300],
+        "title": title[:200],
+        "post": post_id,
+    }
+
+
+# instaloader names a carousel's parts `<stamp>_UTC_1.jpg`, `_2.jpg`, ...
+# A single-item post has no numeric suffix at all. This matches both.
+POST_RE = re.compile(r"^(?P<stamp>.+?_UTC)(?:_(?P<part>\d+))?\.(?P<ext>[A-Za-z0-9]+)$")
+
+
+def _post_key(name: str) -> tuple[str, int]:
+    """(post stamp, part number) for a media filename."""
+    m = POST_RE.match(name)
+    if not m:
+        return (name, 1)
+    return (m.group("stamp"), int(m.group("part") or 1))
+
+
+def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
+    """Group one section's media into posts, carousel parts in order.
+
+    Each post is one Instagram post: a single image/video, or a carousel of
+    up to 20. Parts are ordered by their numeric suffix, not by string --
+    otherwise `_10` would sort before `_2`.
+    """
+    folder = self.output_root / username
+    if section in SUBDIRS:
+        folder = folder / section
+    if not folder.is_dir():
+        return []
+
+    grouped: dict[str, list[dict]] = {}
+    for name in _gallery_media(folder):
+        info = _media_info(folder, name)
+        stamp, part = _post_key(name)
+        info["part"] = part
+        grouped.setdefault(stamp, []).append(info)
+
+    posts = []
+    for stamp, items in grouped.items():
+        items.sort(key=lambda i: i["part"])
+        first = items[0]
+        posts.append({
+            "post": stamp,
+            "ts": first["ts"],
+            "date": first["date"],
+            "caption": first["caption"],
+            "title": first["title"],
+            "items": items,
+            "count": len(items),
+        })
+    posts.sort(key=lambda p: p["ts"])
+    return posts
+
+
+
+# Subfolders inside a profile's own directory. Their location IS the state:
+# no sidecar file to fall out of sync with what is actually on disk.
+FAVORITES_DIR = "favorites"
+TRASH_DIR = "trash"
+SUBDIRS = (FAVORITES_DIR, TRASH_DIR)
+
+
+def gallery_sections(self, username: str) -> dict:
+    """Per-section gallery posts for one profile: main, favorites, trash.
+
+    Media is grouped into posts, so a carousel's parts stay together and can
+    be flipped through in the viewer. Nothing is sampled away.
+
+    Each post carries a `section` so the UI can merge favorites into the main
+    grid (a favourited photo stays visible in All, marked as favourited)
+    without losing track of where the file physically lives.
+    """
+    out = {}
+    for key in ("main", "favorites", "trash"):
+        posts = self.gallery_posts(username, key)
+        for p in posts:
+            p["section"] = key
+        out[key] = posts
+    return out
+
+
+def gallery_profiles(self) -> list[dict]:
+    """Profiles whose archive is done and still present on disk."""
+    out = []
+    with self.lock:
+        jobs = list(self.jobs.values())
+    for job in jobs:
+        if job.status != "done" or job.kind != "main":
+            continue
+        folder = self.output_root / job.username
+        if not folder.is_dir():
+            continue
+        media = _gallery_media(folder)
+        if not media:
+            continue
+        out.append({
+            "username": job.username,
+            "id": job.id,
+            "count": len(media),
+            "posts": job.posts,
+        })
+    out.sort(key=lambda p: p["username"].lower())
+    return out
+
+
+def gallery_all(self, section: str) -> list[dict]:
+    """Every profile's posts for one section, across the whole archive.
+
+    Backs the overarching Favourites and Trash views. Each post gains a
+    `username` so the UI can label and link it back to its profile.
+    """
+    if section not in SUBDIRS:
+        return []
+    with self.lock:
+        done = {j.username for j in self.jobs.values() if j.status == "done"}
+    out = []
+    for username in sorted(done):
+        for p in self.gallery_posts(username, section):
+            p["section"] = section
+            p["username"] = username
+            out.append(p)
+    out.sort(key=lambda p: p["ts"])
+    return out
+
+
+def clear_trash(self) -> tuple[int, list[str]]:
+    """Delete every trashed file across all profiles. Returns (n, errors).
+
+    Only files inside a profile's own trash/ subfolder are touched, symlinks
+    are skipped rather than followed, and each removed media file takes its
+    sidecar siblings (json/txt) with it.
+    """
+    removed = 0
+    errors: list[str] = []
+    with self.lock:
+        usernames = [j.username for j in self.jobs.values()]
+    for username in usernames:
+        trash = self.output_root / username / TRASH_DIR
+        if not trash.is_dir():
+            continue
+        for name in _gallery_media(trash):
+            target = trash / name
+            if target.is_symlink():
+                errors.append(f"{username}/{name}: symlink skipped")
+                continue
+            stem = name.rsplit(".", 1)[0]
+            try:
+                target.unlink()
+                for sib in trash.glob(f"{stem}.*"):
+                    if sib.is_file() and not sib.is_symlink():
+                        sib.unlink()
+                removed += 1
+            except OSError as e:
+                errors.append(f"{username}/{name}: {e}")
+        # Drop the folder when it is empty.
+        try:
+            if not any(trash.iterdir()):
+                trash.rmdir()
+        except OSError:
+            pass
+    return removed, errors
+
+
+def gallery_photos(self, username: str, limit: int = 60) -> list[str]:
+    """A random sample of a finished profile's media, as relative paths.
+
+    Reshuffled on every call, so re-opening a profile shows different photos.
+    """
+    folder = self.output_root / username
+    if not folder.is_dir():
+        return []
+    media = _gallery_media(folder)
+    if len(media) > limit:
+        media = random.sample(media, limit)
+    else:
+        random.shuffle(media)
+    return media
+
+
+def resolve_media(self, username: str, rel: str, section: str = "") -> Path | None:
+    """Map a requested gallery filename to a real file, or None.
+
+    Only completed profiles are served. The file may live in the profile's own
+    folder or in favorites/ or trash/, and must stay inside that profile.
+    """
+    with self.lock:
+        done = any(j.username == username and j.status == "done"
+                   for j in self.jobs.values())
+    if not done:
+        return None
+    folder = self.output_root / username
+    # `rel` is a bare filename, not a path.
+    if rel != Path(rel).name or Path(rel).suffix.lower() not in GALLERY_EXTS:
+        return None
+    # Only these three locations are servable.
+    if section in SUBDIRS:
+        target = folder / section / rel
+    else:
+        target = folder / rel
+    try:
+        folder_real = folder.resolve(strict=True)
+        target_real = target.resolve(strict=True)
+    except OSError:
+        return None
+    if target_real.parent not in (folder_real,
+                                  folder_real / FAVORITES_DIR,
+                                  folder_real / TRASH_DIR):
+        return None
+    return target_real
+
+
+def move_media(self, username: str, name: str, section: str) -> tuple[bool, str]:
+    """Move one file between a profile's main folder, favorites/ and trash/.
+
+    `section` is "main" (un-favourite / restore), "favorites", or "trash".
+    Never deletes: trashing is a move into trash/, and restoring moves back.
+    Returns (ok, message).
+    """
+    if section not in ("main",) + SUBDIRS:
+        return False, f"unknown section {section!r}"
+    if not clean_profile_name(username):
+        return False, "bad profile"
+    if name != Path(name).name or Path(name).suffix.lower() not in GALLERY_EXTS:
+        return False, "bad filename"
+
+    root = self.output_root / username
+    try:
+        root_real = root.resolve(strict=True)
+    except OSError:
+        return False, "profile folder missing"
+
+    # Where the file is now (main, favorites/ or trash/) -> where it should go.
+    dest_dir = root if section == "main" else root / section
+    src = next((p for p in [root / name,
+                            root / FAVORITES_DIR / name,
+                            root / TRASH_DIR / name] if p.is_file()), None)
+    if src is None:
+        return False, "file not found"
+    # The source must be the profile folder itself or one of its two subdirs.
+    if src.parent not in (root, root / FAVORITES_DIR, root / TRASH_DIR):
+        return False, "outside profile folder"
+
+    if src.parent == dest_dir:
+        return True, "already there"
+
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return False, f"could not create {dest_dir.name}/: {e}"
+
+    target = dest_dir / name
+    if target.exists():
+        return False, f"{dest_dir.name}/{name} already exists"
+    try:
+        src.rename(target)
+    except OSError as e:
+        return False, f"move failed: {e}"
+    return True, f"moved to {dest_dir.name}/"
+
+
+
 # ---------- settings ----------
 
 @dataclass
@@ -465,7 +803,23 @@ class Engine:
         # Jobs the user removed, kept so they can be restored.
         self.removed: list[dict] = []
         self._limit_paused: bool = False
+        # While the worker sleeps out `between_profiles`, these hold the wait's
+        # start and deadline (epoch seconds, 0 when not waiting). The UI counts
+        # down from wait_until so the number it shows is the real one.
+        self.wait_started: float = 0.0
+        self.wait_until: float = 0.0
         self._load_state()
+
+    # ---------- gallery ----------
+
+    gallery_profiles = gallery_profiles
+    gallery_photos = gallery_photos
+    gallery_sections = gallery_sections
+    gallery_posts = gallery_posts
+    gallery_all = gallery_all
+    clear_trash = clear_trash
+    resolve_media = resolve_media
+    move_media = move_media
 
     # ---------- persistence ----------
 
@@ -808,6 +1162,32 @@ class Engine:
     def cooldown_remaining(self) -> int:
         return max(0, int(self.cooldown_until - time.time()))
 
+    def wait_reason(self) -> dict:
+        """What (if anything) is holding the queue up, with a real deadline.
+
+        Three distinct causes, deliberately kept apart so a countdown can say
+        which one it is:
+          paused       -- user action; no deadline, waits for a human
+          rate_limit   -- Instagram told us to back off; deadline is real
+          pacing       -- the normal between_profiles gap; deadline is real
+        Returns {} when the worker is free to run.
+        """
+        now = time.time()
+        if self.paused:
+            return {"kind": "paused", "remaining": 0, "total": 0,
+                    "until": 0, "label": "paused"}
+        cd = int(self.cooldown_until - now)
+        if cd > 0:
+            return {"kind": "rate_limit", "remaining": cd,
+                    "total": cd, "until": self.cooldown_until,
+                    "label": "rate limited"}
+        if self.wait_until > now:
+            total = int(self.settings.between_profiles) or 0
+            return {"kind": "pacing", "remaining": int(self.wait_until - now),
+                    "total": total, "until": self.wait_until,
+                    "label": "pacing"}
+        return {}
+
     def check_ip_block(self) -> bool:
         """One-shot check whether Instagram is refusing this IP (429)."""
         blocked = probe_ip_block()
@@ -1017,6 +1397,11 @@ class Engine:
             "active_session": self.active_session,
             "settings": self.settings.to_dict(),
             "cooldown_remaining": self.cooldown_remaining(),
+            # Two unrelated waits can make the queue look idle. Report both,
+            # labelled, so a countdown never implies the wrong one:
+            #   "pacing"   -- the between_profiles gap (short, routine)
+            #   "rate_limit" -- Instagram asked us to back off (long, an issue)
+            "wait": self.wait_reason(),
             "consecutive_limits": self.consecutive_limits,
             "removed": list(reversed(self.removed))[-100:],
             "jobs": jobs,
@@ -1151,10 +1536,18 @@ class Engine:
                 has_more = bool(self.pending)
             if has_more:
                 delay = max(0, int(self.settings.between_profiles))
+                # Publish the deadline so the UI can count down honestly,
+                # rather than guessing from the last job's finish time.
+                with self.lock:
+                    self.wait_started = time.time()
+                    self.wait_until = self.wait_started + delay
                 for _ in range(delay):
                     if self.stop_requested or self.cancel_current:
                         break
                     time.sleep(1.0)
+                with self.lock:
+                    self.wait_started = 0.0
+                    self.wait_until = 0.0
 
     def _process(self, job: Job) -> None:
         target_dir = self.output_root / job.username

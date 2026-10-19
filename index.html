@@ -86,6 +86,22 @@
   .section-head h2{font-size:14px;margin:0;font-weight:650}
   .section-head .hint{margin-left:auto}
   .list{display:flex;flex-direction:column;gap:9px}
+
+  /* ---------- two-column queue layout ---------- */
+  .layout{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);
+    gap:0 26px;align-items:start}
+  .layout .span2{grid-column:1/-1}
+  .col{min-width:0}
+  /* "Needs attention" sits inside the left column already, so it needs no
+     extra top margin beyond the usual section spacing. */
+  .col-left > #failSection > .section-head{margin-top:24px}
+  .col-left > .section-head:first-child,
+  .col-right > #doneSection > .section-head{margin-top:0}
+  /* Stack on narrow screens (phones, split windows). */
+  @media (max-width:900px){
+    .layout{grid-template-columns:minmax(0,1fr);gap:0}
+    .col-left,.col-right{margin-bottom:8px}
+  }
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
     padding:12px 14px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
   .card.running{border-color:#2d4a7a;background:#141a26}
@@ -119,6 +135,17 @@
     padding-top:9px;margin-top:3px;border-top:1px solid var(--line)}
   .card.retrying{border-color:#5a4a1e}
   .card.failed{border-color:#5a2b2b;background:#1c1416}
+  /* ---------- wait countdown ---------- */
+  .wait-kind{color:var(--muted)}
+  .wait-timer{font:600 13px ui-monospace,Menlo,monospace;color:var(--text);
+    font-variant-numeric:tabular-nums}
+  #nowSection.waiting .wait-kind{color:var(--muted)}
+  /* A rate-limit wait is an issue, not routine pacing -- make it look like one. */
+  #nowSection.rate-limited .wait-kind{color:var(--warn)}
+  #nowSection.rate-limited .wait-timer{color:var(--warn)}
+  #nowSection.rate-limited{border-left:3px solid var(--warn);padding-left:12px}
+  /* A finished card must never read like a stuck or failed one. */
+  .card .done-tally{color:var(--ok);font-weight:600}
   .card.done{opacity:.82}
   .card.cancelled{opacity:.6}
   .num-badge{color:var(--muted);font:600 12px ui-monospace,Menlo,monospace;
@@ -155,6 +182,114 @@
     background:var(--panel-3);border:1px solid var(--line-2);border-radius:10px;
     padding:11px 18px;font-size:13.5px;opacity:0;transition:.2s;pointer-events:none;z-index:50;max-width:90vw}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  /* ---------- tabs ---------- */
+  .tabs{display:flex;gap:6px;margin:0 0 16px}
+  .tab{background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
+    border-radius:9px;padding:8px 18px;font-size:13.5px;cursor:pointer;
+    font-family:inherit;transition:.15s}
+  .tab:hover{border-color:var(--line-2);color:var(--text)}
+  .tab.active{background:var(--panel-3);border-color:var(--accent);color:var(--text);font-weight:600}
+
+  /* ---------- gallery grid ---------- */
+  .gallery-head{display:flex;align-items:center;gap:10px;margin:0 0 14px}
+  .profile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));
+    gap:12px;margin-bottom:26px}
+  .pcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:10px 6px 9px;text-align:center;cursor:pointer;transition:.15s;overflow:hidden}
+  .pcard:hover{border-color:var(--accent);transform:translateY(-2px)}
+  .pcard .av{width:64px;height:64px;border-radius:50%;object-fit:cover;
+    background:var(--panel-3);display:block;margin:0 auto 8px;border:1px solid var(--line-2)}
+  .pcard .nm{font-size:12px;color:var(--text);word-break:break-all;line-height:1.3}
+  .pcard .ct{font-size:11px;color:var(--muted);margin-top:3px}
+  .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:9px}
+  .ptile{position:relative;background:var(--panel-3);border-radius:9px;overflow:hidden;
+    aspect-ratio:1;cursor:pointer}
+  .ptile img,.ptile video{width:100%;height:100%;object-fit:cover;display:block}
+  .gback{display:inline-flex;align-items:center;gap:7px;background:var(--panel-2);
+    border:1px solid var(--line);color:var(--text);border-radius:9px;
+    padding:7px 15px;font-size:13px;cursor:pointer;margin-bottom:14px;font-family:inherit}
+  .gback:hover{border-color:var(--line-2)}
+  .gempty{color:var(--muted);font-size:13.5px;padding:22px 0}
+
+  /* ---------- gallery filters + per-photo actions ---------- */
+  .gbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
+  .fchip{background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
+    border-radius:20px;padding:5px 14px;font-size:12.5px;cursor:pointer;
+    font-family:inherit;transition:.15s}
+  .fchip:hover{border-color:var(--line-2);color:var(--text)}
+  .fchip.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .fchip .n{opacity:.7;margin-left:5px}
+  .ptile .acts{position:absolute;top:7px;left:7px;display:flex;gap:4px;
+    opacity:0;transition:.15s}
+  .ptile:hover .acts{opacity:1}
+  .ptile .acts button{background:rgba(0,0,0,.7);border:none;color:#fff;
+    border-radius:6px;width:26px;height:26px;font-size:13px;line-height:1;
+    cursor:pointer;padding:0}
+  .ptile .acts button:hover{background:rgba(0,0,0,.9)}
+  /* On touch devices there is no hover, so keep the actions visible. */
+  @media (hover:none){.ptile .acts{opacity:1}}
+  .shead{grid-column:1/-1;color:var(--muted);font-size:12px;font-weight:600;
+    text-transform:uppercase;letter-spacing:.6px;margin:14px 0 2px}
+  .shead:first-child{margin-top:0}
+  .confirm{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:60;
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  .confirm .box{background:var(--panel-2);border:1px solid var(--line-2);
+    border-radius:14px;padding:22px;max-width:420px;width:100%}
+  .confirm .box p{margin:0 0 6px;font-size:14.5px;line-height:1.45}
+  .confirm .box .why{color:var(--muted);font-size:12.5px;margin-bottom:18px}
+  .confirm .row{display:flex;gap:8px;justify-content:flex-end}
+  .sortgroup{display:inline-flex;gap:4px;margin-left:4px}
+  .pmeta{position:absolute;left:0;right:0;bottom:0;display:flex;gap:6px;
+    align-items:center;justify-content:space-between;padding:16px 7px 6px;
+    background:linear-gradient(transparent,rgba(0,0,0,.78));
+    font-size:10.5px;color:#e9edf5;opacity:0;transition:.15s;pointer-events:none}
+  .ptile:hover .pmeta{opacity:1}
+  @media (hover:none){.pmeta{opacity:1}}
+  .ptile .vbadge{position:static;background:rgba(0,0,0,.55);border-radius:4px;
+    padding:1px 5px;font-size:10px;white-space:nowrap}
+  .pdate{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* ---------- carousel badge + post viewer ---------- */
+  .ptile .stack{position:absolute;top:7px;right:7px;background:rgba(0,0,0,.7);
+    color:#fff;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600}
+  /* A favourited tile stays visible in All, marked so it reads as favourited. */
+  /* Cross-profile views label each tile with whose post it is. */
+  .ptile-user{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.72);
+    color:#fff;border-radius:5px;padding:2px 7px;font-size:10.5px;
+    max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ptile.faved{border:2px solid var(--accent)}
+  .ptile.faved::after{content:"♥";position:absolute;top:5px;left:7px;
+    color:var(--accent);font-size:15px;line-height:1;
+    text-shadow:0 1px 3px rgba(0,0,0,.85);pointer-events:none}
+  .viewwrap{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:70;
+    display:none;align-items:center;justify-content:center;padding:14px}
+  .vbox{display:flex;flex-direction:column;max-width:1000px;width:100%;
+    max-height:100%;background:var(--panel);border:1px solid var(--line-2);
+    border-radius:14px;overflow:hidden}
+  .vbar{display:flex;gap:12px;align-items:center;padding:11px 15px;
+    border-bottom:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+  .vcount{color:var(--text);font-weight:600}
+  .vstage{position:relative;flex:1;min-height:0;display:flex;
+    align-items:center;justify-content:center;background:#000}
+  .vmedia{display:flex;align-items:center;justify-content:center;
+    width:100%;height:100%;min-height:0}
+  .vmedia img,.vmedia video{max-width:100%;max-height:76vh;object-fit:contain;
+    display:block}
+  .vnav{position:absolute;top:50%;transform:translateY(-50%);width:46px;height:70px;
+    background:rgba(0,0,0,.5);border:none;color:#fff;font-size:30px;line-height:1;
+    cursor:pointer;border-radius:10px;z-index:2}
+  .vnav:hover{background:rgba(0,0,0,.82)}
+  .vnav.prev{left:8px}
+  .vnav.next{right:8px}
+  .vcap{padding:11px 15px;font-size:13px;color:var(--muted);
+    max-height:110px;overflow-y:auto;border-top:1px solid var(--line)}
+  .vcap:empty{display:none}
+  /* On phones the arrows sit over the image; keep them usable. */
+  @media (max-width:640px){
+    .vnav{width:40px;height:60px;font-size:26px}
+    .vmedia img,.vmedia video{max-height:60vh}
+  }
 </style>
 </head>
 <body>
@@ -163,6 +298,20 @@
     <h1>Instagram <span>Downloader</span></h1>
     <div class="sub">paste profiles → queue runs one at a time, auto-resumes on rate limits</div>
   </header>
+
+  <div class="tabs">
+    <button class="tab active" id="tabQueue">Queue</button>
+    <button class="tab" id="tabGallery">Gallery</button>
+  </div>
+
+  <div id="galleryPane" class="pane" style="display:none">
+    <div class="gallery-head">
+      <b style="font-size:16px">Gallery — select a profile</b>
+      <span class="hint" id="galleryHint" style="margin-left:auto">done archives only</span>
+    </div>
+    <div class="gbar" id="allBar" style="margin-bottom:16px"></div>
+    <div class="profile-grid" id="profileGrid"></div>
+  </div>
 
   <div class="bar">
     <span class="chip" id="sessChipWrap"><span id="sessDot" class="dot"></span><span id="sessTxt">checking session…</span></span>
@@ -248,53 +397,59 @@ https://www.instagram.com/a.third.profile/"></textarea>
   </details>
 
     <div class="layout">
-      <!-- Finished: below "Downloading now", above "Waiting" -->
-      <div id="doneSection" style="display:none">
-        <div class="section-head"><h2>Finished</h2>
-          <span class="hint" id="doneHint"></span>
-          <button class="small" id="clearFinishedBtn" style="margin-left:auto">Clear</button></div>
-        <div id="doneList" class="list"></div>
-      </div>
-
-      <!-- Downloading now: pinned above everything so it is never scrolled away -->
-      <div id="nowSection" style="display:none">
+      <!-- Downloading now: pinned full-width above both columns -->
+      <div id="nowSection" style="display:none" class="span2">
         <div class="section-head"><h2>Downloading now</h2>
-          <span class="hint" id="nowHint"></span></div>
+          <span class="hint" id="nowHint"></span>
+          <span class="hint" id="waitNext" style="margin-left:10px"></span></div>
         <div id="nowList" class="list"></div>
       </div>
 
-      <!-- Needs attention: failed jobs, above the waiting queue -->
-      <div id="failSection" style="display:none">
-        <div class="section-head"><h2>Needs attention</h2>
-          <span class="hint" id="failHint"></span>
-          <button class="small" id="retryFailBtn" style="margin-left:auto">Retry all</button></div>
-        <div id="failList" class="list"></div>
+      <!-- Left column: the queue -->
+      <div class="col col-left">
+        <!-- Needs attention: failed jobs, above the waiting queue -->
+        <div id="failSection" style="display:none">
+          <div class="section-head"><h2>Needs attention</h2>
+            <span class="hint" id="failHint"></span>
+            <button class="small" id="retryFailBtn" style="margin-left:auto">Retry all</button></div>
+          <div id="failList" class="list"></div>
+        </div>
+
+        <!-- Waiting: the queue proper, ordered -->
+        <div class="section-head">
+          <h2>Waiting</h2>
+          <span class="hint" id="queueHint"></span>
+          <button class="small" id="removedBtn" style="display:none;margin-left:auto">Removed (<span id="removedCount">0</span>)</button>
+        </div>
+        <div id="removedPanel" class="composer" style="display:none;margin-bottom:12px">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <b style="font-size:13.5px">Removed profiles</b>
+            <span class="hint">Nothing is lost — restore anything you removed.</span>
+            <button class="small" id="restoreAll" style="margin-left:auto">Restore all</button>
+            <button class="small danger" id="purgeRemoved" title="Permanently delete this archive">Empty</button>
+          </div>
+          <div id="removedList" style="margin-top:10px"></div>
+        </div>
+        <div id="list" class="list"></div>
+        <div id="viewerHost"></div>
+        <div id="empty" class="empty">
+          <b>Nothing queued yet.</b><br>
+          Paste Instagram profiles above and hit <b>Add to queue</b> —
+          then press <b>Start</b> in the top bar to begin.<br>
+          <span class="hint">Downloads land in <span id="emptyPath"></span>, one folder per profile.</span>
+        </div>
       </div>
 
-      <!-- Waiting: the queue proper, ordered -->
-      <div class="section-head">
-        <h2>Waiting</h2>
-        <span class="hint" id="queueHint"></span>
-        <button class="small" id="removedBtn" style="display:none;margin-left:auto">Removed (<span id="removedCount">0</span>)</button>
-      </div>
-      <div id="removedPanel" class="composer" style="display:none;margin-bottom:12px">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <b style="font-size:13.5px">Removed profiles</b>
-          <span class="hint">Nothing is lost — restore anything you removed.</span>
-          <button class="small" id="restoreAll" style="margin-left:auto">Restore all</button>
-          <button class="small danger" id="purgeRemoved" title="Permanently delete this archive">Empty</button>
+      <!-- Right column: finished -->
+      <div class="col col-right">
+        <div id="doneSection" style="display:none">
+          <div class="section-head"><h2>Finished</h2>
+            <span class="hint" id="doneHint"></span>
+            <button class="small" id="clearFinishedBtn" style="margin-left:auto">Clear</button></div>
+          <div id="doneList" class="list"></div>
         </div>
-        <div id="removedList" style="margin-top:10px"></div>
       </div>
-          <div id="list" class="list"></div>
-          <div id="viewerHost"></div>
-          <div id="empty" class="empty">
-            <b>Nothing queued yet.</b><br>
-            Paste Instagram profiles above and hit <b>Add to queue</b> —
-            then press <b>Start</b> in the top bar to begin.<br>
-            <span class="hint">Downloads land in <span id="emptyPath"></span>, one folder per profile.</span>
-          </div>
-        </div>
+    </div>
                 <div class="toast" id="toast"></div>
 
 <script>
@@ -736,25 +891,48 @@ function render(st){
 
   const listEl = $("list");
 
-  // Split the jobs into three visually distinct groups:
-  //   1. what's downloading right now  (pinned, always visible)
-  //   2. what needs attention          (failed, pinned above the queue)
-  //   3. everything else: running wait + recent history
+  // Split the jobs into four groups:
+  //   1. what's downloading right now  (pinned, full width)
+  //   2. what needs attention          (failed)
+  //   3. waiting                       (queued)          -> left column
+  //   4. finished                      (done/cancelled)  -> right column
   const jobs = st.jobs || [];
   const current = jobs.filter(j => j.status === "running" || j.status === "retrying");
   const failed  = jobs.filter(j => j.status === "failed");
-  const restq   = jobs.filter(j => j.status !== "running" && j.status !== "retrying"
-                                    && j.status !== "failed");
+  const queued  = jobs.filter(j => j.status === "queued");
+  const finished = jobs.filter(j => j.status === "done" || j.status === "cancelled"
+                                    || j.status === "skipped");
 
-  // "Downloading now" section
+  // "Downloading now" section. When nothing is running the worker may be
+  // waiting; the engine says which kind and until when, so the countdown is
+  // never ambiguous.
+  //   pacing      -> the normal gap between profiles (short)
+  //   rate_limit  -> Instagram told us to back off (usually 15 min)
+  //   paused      -> waiting on a human, no deadline to count
   const nowSec = $("nowSection");
-  if(current.length){
+  const wait = st.wait || {};
+  const waiting = (!current.length && wait.remaining > 0);
+  if(current.length || waiting){
     nowSec.style.display = "block";
-    $("nowHint").textContent = st.paused ? "paused" : (st.cooldown_remaining>0
-      ? "cooling down " + Math.ceil(st.cooldown_remaining/60) + " min"
-      : "working");
+    if(waiting){
+      nowSec.classList.add("waiting");
+      nowSec.classList.toggle("rate-limited", wait.kind === "rate_limit");
+      $("nowHint").innerHTML =
+        `<span class="wait-kind">${esc(wait.label || "waiting")}</span>`
+        + `<span class="wait-timer" id="waitTimer"></span>`;
+      startWaitTimer(wait.until);
+      const next = queued[0];
+      $("waitNext").textContent = next ? `next: ${next.username}` : "";
+    } else {
+      stopWaitTimer();
+      nowSec.classList.remove("waiting", "rate-limited");
+      $("waitNext").textContent = "";
+      $("nowHint").textContent = "working";
+    }
     $("nowList").innerHTML = current.map(j=>cardHtml(j, "", 1)).join("");
   } else {
+    stopWaitTimer();
+    nowSec.classList.remove("waiting", "rate-limited");
     nowSec.style.display = "none";
     $("nowList").innerHTML = "";
   }
@@ -770,19 +948,30 @@ function render(st){
     $("failList").innerHTML = "";
   }
 
-  $("empty").style.display = (jobs.length || current.length || failed.length) ? "none" : "block";
+  // "Finished" section (right column)
+  const doneSec = $("doneSection");
+  if(finished.length){
+    doneSec.style.display = "block";
+    $("doneHint").textContent = finished.length + " done";
+    $("doneList").innerHTML = finished.map(j=>cardHtml(j, "", 0)).join("");
+  } else {
+    doneSec.style.display = "none";
+    $("doneList").innerHTML = "";
+  }
+
+  $("empty").style.display = jobs.length ? "none" : "block";
   $("removedBtn").style.display = (st.removed && st.removed.length) ? "" : "none";
 
   // position numbers only for queued items
   let qpos = 0;
-  listEl.innerHTML = restq.map((j)=>{
-    const isQ = (j.status==="queued");
-    if(isQ) qpos++;
-    return cardHtml(j, isQ ? String(qpos) : "", qpos);
+  listEl.innerHTML = queued.map((j)=>{
+    qpos++;
+    return cardHtml(j, String(qpos), qpos);
   }).join("");
   wireCards(listEl);
   wireCards($("nowList"));
   wireCards($("failList"));
+  wireCards($("doneList"));
 }
 
 /* Build one job card. `pos` is the queue position label ("" for pinned rows);
@@ -795,14 +984,26 @@ function cardHtml(j, pos, qpos){
     if(j.last_run_seconds) bits.push(fmtDur(j.last_run_seconds));
     const detail = (j.status==="failed" ? j.error : "") || j.message;
 
-    // Real progress: instaloader's own "[ n/m ]".
+    // Progress. `done_count/total_count` is instaloader's counter for the run
+    // that just happened, so on a finished job a final incremental pass can
+    // report "1/1" on an archive holding thousands of files. Only show the
+    // counter while a run is live; a finished card states its totals instead.
+    const live = (j.status==="running"||j.status==="retrying");
     let prog = "";
-    if(j.total_count>0){
+    if(j.status === "done"){
+      const total = j.total_files || j.posts || 0;
+      prog = `<div class="meta done-tally" style="margin-top:5px">✓ `
+           + (total ? `<b>${total}</b> files archived` : "finished")
+           + `</div>`;
+    } else if(live && j.total_count > 0){
       const pct = Math.min(100, Math.round(100*j.done_count/j.total_count));
       prog = `<div class="meta" style="margin-top:5px"><b>${j.done_count} / ${j.total_count}</b>
         posts · ${pct}%</div><div class="prog bar"><i style="width:${pct}%"></i></div>`;
-    } else if(j.status==="running"||j.status==="retrying"){
+    } else if(live){
       prog = '<div class="prog"><i></i></div>';
+    } else if(j.total_count > 0){
+      // Queued/other: a counter here is still about a pending run.
+      prog = `<div class="meta" style="margin-top:5px">${j.done_count} / ${j.total_count} posts</div>`;
     }
 
     const isOpen = openLogs.has(j.id);
@@ -953,6 +1154,10 @@ $("clearBtn").onclick = async () => {
   const r = await post("/api/clear-finished",{});
   toast(`Cleared ${r.removed} entries`); tick();
 };
+$("clearFinishedBtn").onclick = async () => {
+  const r = await post("/api/clear-finished",{});
+  toast(`Cleared ${r.removed} entries`); tick();
+};
 $("clearInputBtn").onclick = () => { $("input").value=""; $("input").focus(); };
 $("pasteBtn").onclick = async () => {
   try{
@@ -999,6 +1204,622 @@ $("input").addEventListener("keydown",(e)=>{
 buildSettings();
 tick();
 setInterval(tick,1200);
+
+/* ---------- wait countdown ---------- */
+
+// One interval, replaced whenever a new deadline arrives. Ticking locally
+// means the seconds move smoothly between the 1.2s state polls.
+let waitTimerId = null;
+
+function fmtCountdown(secs){
+  secs = Math.max(0, Math.round(secs));
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function startWaitTimer(untilEpoch){
+  stopWaitTimer();
+  if(!untilEpoch) return;
+  const el = () => document.getElementById("waitTimer");
+  const paint = () => {
+    const e = el();
+    if(!e) return;
+    const left = untilEpoch - (Date.now() / 1000);
+    e.textContent = " " + (left > 0 ? fmtCountdown(left) : "starting…");
+  };
+  paint();
+  waitTimerId = setInterval(paint, 1000);
+}
+
+function stopWaitTimer(){
+  if(waitTimerId){ clearInterval(waitTimerId); waitTimerId = null; }
+}
+
+/* ---------- gallery (read-only view of completed archives) ---------- */
+
+let gProfile = null;      // username currently open, or null for the profile list
+let gAll = null;          // null | "favorites" | "trash" — cross-profile view
+let gFilter = "all";      // "all" | "favorites" | "trash"
+let gType = "any";        // "any" | "photos" | "videos"
+let gSort = "random";     // "random" | "newest" | "oldest"
+let gSeed = 1;            // makes the random order stable for one view
+let gReq = 0;             // guards against out-of-order responses
+
+function showTab(which){
+  const gallery = which === "gallery";
+  $("tabQueue").classList.toggle("active", !gallery);
+  $("tabGallery").classList.toggle("active", gallery);
+  $("galleryPane").style.display = gallery ? "" : "none";
+  // Everything between the tab strip and the gallery pane is the queue UI.
+  for(const el of document.querySelectorAll(".wrap > *")){
+    if(el.id === "galleryPane" || el.classList.contains("tabs") || el.tagName === "HEADER")
+      continue;
+    el.style.display = gallery ? "none" : "";
+  }
+  if(gallery) renderGallery();
+}
+
+$("tabQueue").onclick = () => showTab("queue");
+$("tabGallery").onclick = () => showTab("gallery");
+
+function buildAllBar(profileCount){
+  const bar = $("allBar");
+  bar.innerHTML = "";
+  const mk = (label, active, fn) => {
+    const b = document.createElement("button");
+    b.className = "fchip" + (active ? " on" : "");
+    b.textContent = label;
+    b.onclick = fn;
+    return b;
+  };
+  bar.appendChild(mk(`Profiles (${profileCount})`, gAll === null,
+    () => { gAll = null; renderGallery(); }));
+  bar.appendChild(mk("♥ All Favourites", gAll === "favorites",
+    () => { gAll = "favorites"; gProfile = null; renderAllSection("favorites"); }));
+  bar.appendChild(mk("🗑 All Trash", gAll === "trash",
+    () => { gAll = "trash"; gProfile = null; renderAllSection("trash"); }));
+}
+
+async function renderAllSection(section){
+  const host = $("profileGrid");
+  const mine = ++gReq;
+  host.innerHTML = `<div class="gempty">Loading…</div>`;
+  let data;
+  try {
+    data = await (await fetch(`/api/gallery/all?section=${section}`)).json();
+  } catch(e){
+    host.innerHTML = `<div class="gempty">Could not load.</div>`;
+    return;
+  }
+  if(mine !== gReq) return;
+  const posts = data.posts || [];
+  buildAllBar((data.profiles || []).length);
+
+  const bar = document.createElement("div");
+  bar.className = "gbar";
+  bar.style.gridColumn = "1/-1";
+  const tot = document.createElement("span");
+  tot.className = "hint";
+  const uniq = new Set(posts.map(p => p.username)).size;
+  tot.textContent = `${posts.length} posts across ${uniq} profile${uniq===1?"":"s"}`;
+  bar.appendChild(tot);
+
+  if(section === "trash"){
+    const spacer = document.createElement("span");
+    spacer.style.flex = "1";
+    bar.appendChild(spacer);
+    if(posts.length){
+      const del = document.createElement("button");
+      del.className = "small danger";
+      del.textContent = `Delete all trash (${posts.length} posts)`;
+      del.onclick = () => confirmClearTrash(posts.length);
+      bar.appendChild(del);
+    }
+  }
+
+  const sorts = [["random","⇄ Random"],["newest","↓ Newest"],["oldest","↑ Oldest"]];
+  const sg = document.createElement("span");
+  sg.className = "sortgroup";
+  for(const [key,label] of sorts){
+    const b = document.createElement("button");
+    b.className = "fchip" + (gSort === key ? " on" : "");
+    b.textContent = label;
+    b.onclick = () => { gSort = key; if(key==="random") gSeed = (Date.now()&0x7fffffff); renderAllSection(section); };
+    sg.appendChild(b);
+  }
+  bar.appendChild(sg);
+  host.innerHTML = "";
+  host.appendChild(bar);
+
+  const grid = document.createElement("div");
+  grid.className = "pgrid";
+  grid.style.gridColumn = "1/-1";
+  if(!posts.length){
+    grid.innerHTML = `<div class="gempty">${
+      section === "favorites" ? "No favourites across any profile yet."
+      : "Trash is empty everywhere."}</div>`;
+  } else {
+    for(const post of sortPosts(posts)){
+      const tile = tileFor(post.username, post, section);
+      const tag = document.createElement("span");
+      tag.className = "ptile-user";
+      tag.textContent = post.username;
+      tile.appendChild(tag);
+      grid.appendChild(tile);
+    }
+  }
+  host.appendChild(grid);
+}
+
+function confirmClearTrash(n){
+  const wrap = document.createElement("div");
+  wrap.className = "confirm";
+  const box = document.createElement("div");
+  box.className = "box";
+  box.innerHTML = `<p>Permanently delete all trash?</p>
+    <div class="why">${n} post${n===1?"":"s"} across every profile will be
+    <b>deleted from disk</b>. This cannot be undone.</div>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const cancel = document.createElement("button");
+  cancel.className = "small";
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => wrap.remove();
+  const go = document.createElement("button");
+  go.className = "small danger";
+  go.textContent = "Delete permanently";
+  go.onclick = async () => {
+    go.disabled = true;
+    const r = await post("/api/gallery/trash/clear", {confirm:"DELETE"});
+    wrap.remove();
+    if(r.ok){
+      toast(`Deleted ${r.removed} file${r.removed===1?"":"s"}`);
+      if(r.errors && r.errors.length) toast(`${r.errors.length} skipped`);
+    } else {
+      toast(r.error || "Could not clear trash");
+    }
+    renderAllSection("trash");
+  };
+  row.appendChild(cancel); row.appendChild(go);
+  box.appendChild(row);
+  wrap.appendChild(box);
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  document.body.appendChild(wrap);
+  go.focus();
+}
+
+async function renderGallery(){
+  const host = $("profileGrid");
+  if(gProfile) return renderPhotos(gProfile);
+  const mine = ++gReq;
+  host.innerHTML = `<div class="gempty">Loading…</div>`;
+  let data;
+  try {
+    data = await (await fetch("/api/gallery")).json();
+  } catch(e){
+    host.innerHTML = `<div class="gempty">Could not load gallery.</div>`;
+    return;
+  }
+  if(mine !== gReq) return;
+  const profiles = data.profiles || [];
+  buildAllBar(profiles.length);
+  $("galleryHint").textContent = profiles.length
+    ? `${profiles.length} finished ${profiles.length===1?"profile":"profiles"}`
+    : "done archives only";
+  if(!profiles.length){
+    host.innerHTML = `<div class="gempty">No finished downloads yet. Profiles appear here once a download completes.</div>`;
+    return;
+  }
+  host.innerHTML = profiles.map(p => `
+    <div class="pcard" data-profile="${esc(p.username)}">
+      <img class="av" loading="lazy" alt=""
+           src="/api/profile-pic?profile=${encodeURIComponent(p.username)}"
+           onerror="this.style.visibility='hidden'">
+      <div class="nm">${esc(p.username)}</div>
+      <div class="ct">${p.count} ${p.count===1?"item":"items"}</div>
+    </div>`).join("");
+  for(const card of host.querySelectorAll(".pcard"))
+    card.onclick = () => renderPhotos(card.dataset.profile);
+}
+
+async function renderPhotos(username){
+  const host = $("profileGrid");
+  gProfile = username;
+  gFilter = "all";
+  gType = "any";
+  gSeed = (Date.now() & 0x7fffffff);
+  const mine = ++gReq;
+  host.innerHTML = `<div class="gempty">Loading ${esc(username)}…</div>`;
+  let data;
+  try {
+    data = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}`)).json();
+  } catch(e){
+    host.innerHTML = `<div class="gempty">Could not load photos.</div>`;
+    return;
+  }
+  if(mine !== gReq) return;
+  const sec = data.sections || {main:[], favorites:[], trash:[]};
+  drawPhotos(username, sec);
+}
+
+function tileFor(username, post, section){
+  // One tile per POST. A carousel shows its first item plus a part count.
+  // `section` is where the post is listed; `post.section` is where the file
+  // physically lives (they differ when favorites are merged into All).
+  const srcSection = post.section || section;
+  const faved = (srcSection === "favorites");
+  const first = post.items[0];
+  const tile = document.createElement("div");
+  tile.className = "ptile" + (faved ? " faved" : "");
+  const mkSrc = (item) => `/media?profile=${encodeURIComponent(username)}`
+      + `&file=${encodeURIComponent(item.file)}`
+      + (srcSection === "main" ? "" : `&section=${srcSection}`);
+
+  if(first.kind === "video"){
+    const v = document.createElement("video");
+    v.src = mkSrc(first); v.muted = true; v.playsInline = true;
+    v.preload = "metadata";
+    v.onmouseenter = () => v.play().catch(()=>{});
+    v.onmouseleave = () => { v.pause(); v.currentTime = 0; };
+    v.onclick = () => openViewer(username, post, section, 0);
+    tile.appendChild(v);
+  } else {
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = ""; img.src = mkSrc(first);
+    img.onclick = () => openViewer(username, post, section, 0);
+    tile.appendChild(img);
+  }
+
+  // Any click on the tile that wasn't a button opens the viewer.
+  tile.onclick = () => openViewer(username, post, section, 0);
+
+  if(post.count > 1){
+    const stack = document.createElement("span");
+    stack.className = "stack";
+    stack.textContent = `⧉ ${post.count}`;
+    tile.appendChild(stack);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "pmeta";
+  const when = document.createElement("span");
+  when.className = "pdate";
+  when.textContent = post.date || post.post.slice(0, 10);
+  meta.appendChild(when);
+  if(post.items.some(i => i.kind === "video")){
+    const vb = document.createElement("span");
+    vb.className = "vbadge";
+    vb.textContent = "▶";
+    meta.appendChild(vb);
+  }
+  tile.appendChild(meta);
+
+  if(post.caption) tile.title = post.caption;
+
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const mkBtn = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label; b.title = title;
+    b.onclick = (e) => { e.stopPropagation(); e.preventDefault(); fn(); };
+    return b;
+  };
+  const names = post.items.map(i => i.file);
+  const every = (sec) => names.forEach(n => movePhoto(username, n, sec, true));
+
+  // Favouriting is a toggle available wherever the post appears, so you can
+  // un-favourite straight from the All grid instead of hunting for it.
+  if(faved){
+    acts.appendChild(mkBtn("♥","Remove from favourites",
+      () => { every("main"); toast("Removed from favourites"); refreshAfterMove(username); }));
+  } else if(srcSection !== "trash"){
+    acts.appendChild(mkBtn("♡","Add to favourites",
+      () => { every("favorites"); toast("Favourited"); refreshAfterMove(username); }));
+  }
+  if(srcSection === "trash"){
+    acts.appendChild(mkBtn("↩","Restore to main folder",
+      () => { every("main"); toast("Restored"); refreshAfterMove(username); }));
+  } else {
+    acts.appendChild(mkBtn("🗑","Move to trash", () => confirmTrash(username, names)));
+  }
+  tile.appendChild(acts);
+  return tile;
+}
+
+function sortPosts(list){
+  const a = list.slice();
+  if(gSort === "oldest"){
+    a.sort((x,y) => (x.ts||0) - (y.ts||0));
+  } else if(gSort === "newest"){
+    a.sort((x,y) => (y.ts||0) - (x.ts||0));
+  } else {                        // random, stable for this view
+    let seed = gSeed;
+    for(let i=a.length-1;i>0;i--){
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      const j = seed % (i+1);
+      [a[i],a[j]] = [a[j],a[i]];
+    }
+  }
+  return a;
+}
+
+function drawPhotos(username, sec){
+  const host = $("profileGrid");
+  host.innerHTML = "";
+
+  const bar = document.createElement("div");
+  bar.className = "gbar";
+  bar.style.gridColumn = "1/-1";
+  const back = document.createElement("button");
+  back.className = "gback";
+  back.textContent = "← All profiles";
+  back.onclick = () => { gProfile = null; renderGallery(); };
+  bar.appendChild(back);
+
+  const counts = {main: sec.main.length, favorites: sec.favorites.length, trash: sec.trash.length};
+  // "All" is main + favourites, since a favourited post stays visible in All.
+  const allCount = counts.main + counts.favorites;
+  const opts = [["all","All",allCount],["favorites","♥ Favorites",counts.favorites]];
+  if(counts.trash) opts.push(["trash","🗑 Trash",counts.trash]);
+  if(!opts.some(([k]) => k === gFilter)) gFilter = "all";
+  for(const [key,label,n] of opts){
+    const c = document.createElement("button");
+    c.className = "fchip" + (gFilter === key ? " on" : "");
+    c.innerHTML = `${label}<span class="n">${n}</span>`;
+    c.onclick = () => { gFilter = key; gSeed = (gSeed * 7919 + 13) & 0x7fffffff; drawPhotos(username, sec); };
+    bar.appendChild(c);
+  }
+
+  const spacer = document.createElement("span");
+  spacer.style.flex = "1";
+  bar.appendChild(spacer);
+
+  const allPosts = sec.main.concat(sec.favorites, sec.trash);
+  const items = allPosts.reduce((n,p) => n + p.count, 0);
+  const vids = allPosts.reduce((n,p) => n + p.items.filter(i => i.kind === "video").length, 0);
+
+  // Media-type filter. A post counts as video if ANY of its parts is a video,
+  // so a carousel mixing images and a clip lands under Videos.
+  const isVideoPost = (p) => p.items.some(i => i.kind === "video");
+  const nVideo = allPosts.filter(isVideoPost).length;
+  const nPhoto = allPosts.length - nVideo;
+  const typeOpts = [["any","All types",allPosts.length],
+                    ["photos","🖼 Photos",nPhoto],
+                    ["videos","▶ Videos",nVideo]];
+  if(!typeOpts.some(([k]) => k === gType)) gType = "any";
+  const tgroup = document.createElement("span");
+  tgroup.className = "sortgroup";
+  for(const [key,label,n] of typeOpts){
+    if(key === "videos" && !nVideo) continue;
+    const b = document.createElement("button");
+    b.className = "fchip" + (gType === key ? " on" : "");
+    b.innerHTML = `${label}<span class="n">${n}</span>`;
+    b.onclick = () => { gType = key; gSeed = (gSeed * 7919 + 13) & 0x7fffffff; drawPhotos(username, sec); };
+    tgroup.appendChild(b);
+  }
+  bar.appendChild(tgroup);
+
+  const tot = document.createElement("span");
+  tot.className = "hint";
+  tot.textContent = `${allPosts.length} posts · ${items} items`
+    + (vids ? ` · ${vids} videos` : "");
+  bar.appendChild(tot);
+
+  // sort toggle
+  const sorts = [["random","⇄ Random"],["newest","↓ Newest"],["oldest","↑ Oldest"]];
+  const sgroup = document.createElement("span");
+  sgroup.className = "sortgroup";
+  for(const [key,label] of sorts){
+    const b = document.createElement("button");
+    b.className = "fchip" + (gSort === key ? " on" : "");
+    b.textContent = label;
+    b.onclick = () => {
+      gSort = key;
+      if(key === "random") gSeed = (Date.now() & 0x7fffffff);
+      drawPhotos(username, sec);
+    };
+    sgroup.appendChild(b);
+  }
+  bar.appendChild(sgroup);
+  host.appendChild(bar);
+
+  const grid = document.createElement("div");
+  grid.className = "pgrid";
+  grid.style.gridColumn = "1/-1";
+
+  // "All" lists the main folder plus favourites (which live in favorites/ but
+  // stay visible here, marked ♥). Trash stays out of All -- it is hidden on
+  // purpose and reachable only via its own chip.
+  const show = {
+    all: [["main", sec.main], ["favorites", sec.favorites]],
+    favorites: [["favorites", sec.favorites]],
+    trash: [["trash", sec.trash]],
+  }[gFilter];
+
+  // Media-type filter: a post matches "videos" if any part is a video.
+  const passesType = (p) => gType === "any"
+    || (gType === "videos" && p.items.some(i => i.kind === "video"))
+    || (gType === "photos" && !p.items.some(i => i.kind === "video"));
+
+  let any = false;
+  for(const [section, list] of show){
+    const kept = list.filter(passesType);
+    if(!kept.length) continue;
+    any = true;
+    if(gFilter === "all"){
+      const h = document.createElement("div");
+      h.className = "shead";
+      // When favourites are merged in, mark where that group starts rather
+      // than hiding them at the bottom.
+      h.textContent = section === "favorites"
+        ? `♥ Favourites (${kept.length})`
+        : `All media (${kept.length})`;
+      grid.appendChild(h);
+    }
+    for(const post of sortPosts(kept)) grid.appendChild(tileFor(username, post, section));
+  }
+  if(!any){
+    grid.innerHTML = `<div class="gempty">${
+      gType === "videos" ? "No videos in this view."
+      : gType === "photos" ? "No photo-only posts in this view."
+      : gFilter === "favorites" ? "No favorites yet — tap ♡ on a photo to add one."
+      : gFilter === "trash" ? "Trash is empty."
+      : "No displayable media in this archive."}</div>`;
+  }
+  host.appendChild(grid);
+}
+
+
+async function movePhoto(username, name, section, quiet){
+  const r = await post("/api/gallery/move", {profile:username, file:name, section});
+  if(!r.ok){
+    toast(r.message || r.error || "Could not move that file");
+    return false;
+  }
+  if(!quiet){
+    toast(section === "favorites" ? "Favourited"
+        : section === "trash" ? "Moved to trash" : "Moved");
+  }
+  return true;
+}
+
+async function refreshAfterMove(username){
+  if(gProfile !== username) return;
+  const d = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}`)).json();
+  if(gProfile === username) drawPhotos(username, d.sections || {main:[],favorites:[],trash:[]});
+}
+
+/* ---------- post viewer (single/carousel, with arrows) ---------- */
+
+let vState = null;   // {username, post, section, idx, srcs}
+
+function mediaSrc(item, username, section){
+  return `/media?profile=${encodeURIComponent(username)}&file=${encodeURIComponent(item.file)}`
+       + (section === "main" ? "" : `&section=${section}`);
+}
+
+function openViewer(username, post, section, idx){
+  const srcSection = post.section || section;
+  const srcs = post.items.map(i => ({item:i, src:mediaSrc(i, username, srcSection)}));
+  vState = {username, post, section: srcSection, idx: idx||0, srcs};
+  let host = document.getElementById("vwrap");
+  if(!host){
+    host = document.createElement("div");
+    host.id = "vwrap";
+    host.className = "viewwrap";
+    host.innerHTML = `<div class="vbox">
+      <div class="vbar">
+        <span class="vcount"></span>
+        <span class="vdate"></span>
+        <span style="flex:1"></span>
+        <button class="small" data-vclose>Close ✕</button>
+      </div>
+      <div class="vstage">
+        <button class="vnav prev" data-vprev title="Previous">‹</button>
+        <div class="vmedia"></div>
+        <button class="vnav next" data-vnext title="Next">›</button>
+      </div>
+      <div class="vcap"></div>
+    </div>`;
+    document.body.appendChild(host);
+    host.querySelector("[data-vclose]").onclick = closeViewer;
+    host.querySelector("[data-vprev]").onclick = (e) => { e.stopPropagation(); stepViewer(-1); };
+    host.querySelector("[data-vnext]").onclick = (e) => { e.stopPropagation(); stepViewer(1); };
+    host.onclick = (e) => { if(e.target === host) closeViewer(); };
+  }
+  host.style.display = "flex";
+  paintViewer();
+}
+
+function paintViewer(){
+  if(!vState) return;
+  const host = document.getElementById("vwrap");
+  const {srcs, idx, post} = vState;
+  const cur = srcs[idx];
+  const stage = host.querySelector(".vmedia");
+  stage.innerHTML = "";
+  if(cur.item.kind === "video"){
+    const v = document.createElement("video");
+    v.src = cur.src; v.controls = true; v.autoplay = true;
+    v.playsInline = true; v.loop = true;
+    stage.appendChild(v);
+  } else {
+    const img = document.createElement("img");
+    img.src = cur.src; img.alt = "";
+    stage.appendChild(img);
+  }
+  const many = srcs.length > 1;
+  host.querySelector(".vcount").textContent = many
+    ? `${idx+1} / ${srcs.length}` : "";
+  host.querySelector(".vdate").textContent = post.date || "";
+  host.querySelector(".vcap").textContent = post.caption || post.title || "";
+  host.querySelector(".vnav.prev").style.visibility = many ? "visible" : "hidden";
+  host.querySelector(".vnav.next").style.visibility = many ? "visible" : "hidden";
+  // preload neighbours so arrows feel instant
+  for(const d of [-1, 1]){
+    const n = srcs[idx+d];
+    if(n && n.item.kind === "image"){ const i = new Image(); i.src = n.src; }
+  }
+}
+
+function stepViewer(delta){
+  if(!vState) return;
+  const n = vState.srcs.length;
+  if(n < 2) return;
+  vState.idx = (vState.idx + delta + n) % n;
+  paintViewer();
+}
+
+function closeViewer(){
+  const host = document.getElementById("vwrap");
+  if(host){
+    const v = host.querySelector("video");
+    if(v) v.pause();
+    host.style.display = "none";
+  }
+  vState = null;
+}
+
+document.addEventListener("keydown", (e) => {
+  if(!vState) return;
+  if(e.key === "Escape") closeViewer();
+  else if(e.key === "ArrowRight") stepViewer(1);
+  else if(e.key === "ArrowLeft") stepViewer(-1);
+});
+
+function confirmTrash(username, names){
+  const list = Array.isArray(names) ? names : [names];
+  const many = list.length > 1;
+  const wrap = document.createElement("div");
+  wrap.className = "confirm";
+  const box = document.createElement("div");
+  box.className = "box";
+  box.innerHTML = `<p>Move ${many ? `all ${list.length} items` : "this"} to trash?</p>
+    <div class="why">${many ? esc(list[0]) + " and " + (list.length-1) + " more" : esc(list[0])}<br>
+    ${esc(username)}/trash/ — nothing is deleted, and you can restore it.</div>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const cancel = document.createElement("button");
+  cancel.className = "small";
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => wrap.remove();
+  const go = document.createElement("button");
+  go.className = "small danger";
+  go.textContent = "Move to trash";
+  go.onclick = async () => {
+    wrap.remove();
+    for(const n of list) await movePhoto(username, n, "trash", true);
+    toast(many ? `Moved ${list.length} to trash` : "Moved to trash");
+    refreshAfterMove(username);
+  };
+  row.appendChild(cancel); row.appendChild(go);
+  box.appendChild(row);
+  wrap.appendChild(box);
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  document.body.appendChild(wrap);
+  go.focus();
+}
+
 </script>
 </body>
 </html>
