@@ -139,6 +139,16 @@ FATAL = re.compile(
 # Instagram telling us how long to wait: "retried in 664 seconds".
 WAIT_HINT = re.compile(r"retried in (\d+) seconds", re.IGNORECASE)
 
+# Instagram answers a throttled or bot-flagged client with the SAME message it
+# uses for a deleted account: "Profile X does not exist." A profile that really
+# is gone does not also produce an HTTP 200 on its public page, and instaloader
+# itself prints this hint when it suspects a block rather than a deletion. When
+# that hint is present the message must NOT be treated as fatal -- doing so
+# marked real, followable profiles as permanently failed.
+BLOCKED_HINT = re.compile(
+    r"Trying again anonymously, helps in case you are just blocked",
+    re.IGNORECASE)
+
 # instaloader's per-post progress: "[ 404/764]". The only honest progress figure.
 PROGRESS_RE = re.compile(r"\[\s*(\d+)\s*/\s*(\d+)\s*\]")
 
@@ -2896,6 +2906,7 @@ class Engine:
     def _exec(self, job: Job, cmd: list[str], target_dir: Path) -> str:
         """Run instaloader, stream output. Returns 'ok' | 'retryable' | 'fatal'."""
         fatal_hit = False
+        blocked_hint = False
         retry_hit = False
         crash_hit = False
         crash_optional = False
@@ -2940,6 +2951,10 @@ class Engine:
                     crash_line = line.strip()
                 if CRASH_IN_OPTIONAL.search(line):
                     crash_optional = True
+                if BLOCKED_HINT.search(line):
+                    # instaloader's own note that it is retrying anonymously
+                    # because this may be a block rather than a deletion.
+                    blocked_hint = True
                 if FATAL.search(line):
                     fatal_hit = True
                     last_err = line.strip()
@@ -2959,6 +2974,19 @@ class Engine:
         if crash_hit:
             self._set(job, error=crash_line or "instaloader crashed")
             return "crash_optional" if crash_optional else "crash"
+
+        # "Profile X does not exist" is also how Instagram answers a throttled
+        # client, and instaloader prints its own "helps in case you are just
+        # blocked" hint when that is what it suspects. Treating that as fatal
+        # marked real profiles as permanently gone -- the profile page returned
+        # 200 and the account was followable the whole time. So when the hint is
+        # present, this is a retryable block: back off, try again later, and
+        # leave it queued rather than writing it off.
+        if fatal_hit and blocked_hint:
+            self._set(job, error=(last_err or "blocked by Instagram")
+                      + "  (Instagram is throttling this profile; it will be "
+                        "retried rather than marked missing)")
+            return "retryable"
 
         if proc.returncode == 0:
             return "fatal" if (fatal_hit and not retry_hit) else "ok"
