@@ -315,3 +315,22 @@ def probe_private(handle: str, timeout: int = 75) -> bool | None:
         return False
     # Any other failure is not something we can classify.
     return None
+
+def profile_total(handle: str, timeout: int = 150) -> int:
+    """How many videos the profile currently has, or 0 if unknown.
+
+    A flat listing returns every id without resolving each video, which is one
+    request rather than one per video. 0 means "could not tell" and must never
+    be treated as "has no videos": the UI shows the count as unknown rather
+    than claiming a maximum of zero.
+    """
+    try:
+        proc = subprocess.run(
+            build_list_cmd(handle, 0),
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+    if proc.returncode != 0:
+        return 0
+    return sum(1 for ln in (proc.stdout or '').splitlines() if ln.strip())

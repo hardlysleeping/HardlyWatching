@@ -161,6 +161,37 @@ const MAX_EXCLUDE = 400;  // remember this many recently shown, then forget
 let clips = [];           // loaded clips, in feed order
 let idx = 0;              // index of the clip in view
 let seen = [];            // recently shown, sent back so they are deprioritised
+// A session is one sitting: reloading the page starts a new one, and the pool
+// is reshuffled so the same handful cannot come up first every time. TikTok
+// behaves this way, and it is the whole point of a random feed -- a fixed
+// order only looks random once.
+// Survives backgrounding, tab switching and the phone suspending the app: all
+// of those just pause the page. A force-close wipes sessionStorage, which is
+// what should start a new sitting -- not losing focus for a minute.
+const SESSION_KEY = "shorts.session.v1";
+function loadSession(){
+  try{
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if(!raw) return null;
+    const d = JSON.parse(raw);
+    return (d && typeof d === "object") ? d : null;
+  }catch(e){ return null; }
+}
+function saveSession(extra){
+  try{
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+      seen: seen.slice(-MAX_EXCLUDE),
+      favourites: !!favourites,
+      at: Date.now(),
+      ...(extra || {}),
+    }));
+  }catch(e){}
+}
+let session = 0;
+// Clips fetched but not yet placed in the feed. They are shuffled together and
+// spliced in ahead of the tail, so a new batch is not simply bolted onto the
+// bottom in the order the server happened to return it.
+let queue = [];
 let favourites = false;
 let loading = false;
 
@@ -196,7 +227,10 @@ function clipEl(c){
   v.playsInline = true;
   v.preload = "none";
   v.loop = true;
-  v.muted = false;
+  // Muted is required for autoplay: every browser blocks a video with sound
+  // from starting on its own, which left every clip sitting paused at 0.00.
+  // Sound is opt-in through the tap-to-unmute control.
+  v.muted = true;
   // Fall back to a poster-free black frame rather than a broken icon.
   wrap.appendChild(v);
 
@@ -242,13 +276,23 @@ async function fetchMore(){
       );
       return;
     }
-    for(const c of got){
-      clips.push(c);
-      feed.appendChild(clipEl(c));
-    }
+    // Shuffle the new batch, then place it. Without this the feed order is
+    // just the server's order, which is the same on every load -- exactly the
+    // thing that makes a "random" feed feel repetitive.
+    queue.push(...shuffle(got.slice()));
+    placeQueue();
     $("topbar").style.display = "";
     $("rail").style.display = "";
     $("bottombar").style.display = "";
+    // Mark the clip now in view straight away. onScrollSettled is otherwise
+    // only reachable by scrolling, so the first clip of every session went
+    // unrecorded and could come back immediately.
+    playCurrent();
+    const first = currentData();
+    if(first && !seen.includes(first.path)){
+      seen.push(first.path);
+      saveSession();
+    }
     if(!got.length) toast("No more clips for now");
   }catch(e){
     if(!clips.length) renderEmpty("Cannot reach the app", String(e.message || e));
@@ -256,6 +300,59 @@ async function fetchMore(){
   }finally{
     loading = false;
   }
+}
+
+// Fisher-Yates. The server already weights which clips are chosen; this only
+// decides the order they arrive in, so it deliberately does not re-weight.
+function shuffle(arr){
+  for(let i = arr.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// Put queued clips into the feed. One is inserted immediately after the clip
+// in view so swiping forward always moves on; the rest are distributed through
+// the unseen tail rather than dumped at the end in batch order.
+function placeQueue(){
+  if(!queue.length) return;
+  const tailStart = clips.length;
+  const pending = queue;
+  queue = [];
+  // Keep what is already loaded on screen: only the unseen part is reordered.
+  const tail = clips.slice(tailStart);
+  const pool = shuffle(tail.concat(pending));
+  clips = clips.slice(0, tailStart).concat(pool);
+  rebuildFeed();
+}
+
+// The feed DOM is rebuilt from `clips`, preserving the clip currently in view so
+// a reshuffle never yanks the video out from under the user.
+function rebuildFeed(){
+  const cur = currentData();
+  const keep = cur ? cur.path : null;
+  feed.innerHTML = "";
+  for(const c of clips) feed.appendChild(clipEl(c));
+  if(keep){
+    const el = [...feed.querySelectorAll(".clip")].find(k => k.dataset.path === keep);
+    if(el){
+      feed.scrollTop = el.offsetTop;
+      idx = clips.indexOf(cur);
+    }
+  }
+  playCurrent();
+}
+
+// Start a fresh session. Used on an explicit reload and when the user scrolls
+// back to the top, so the pool is re-drawn instead of continuing a fixed list.
+function reshuffle(){
+  session++;
+  clips = []; queue = []; idx = 0;
+  seen = [];                       // a new sitting: nothing is "recent" yet
+  feed.innerHTML = "";
+  renderLoading();
+  fetchMore();
 }
 
 // ---- which clip is in view ----------------------------------------------
@@ -316,6 +413,14 @@ feed.addEventListener("scroll", () => {
 }, {passive:true});
 
 function onScrollSettled(){
+  // Back at the very top after having moved down: treat it like a refresh and
+  // reshuffle, the way TikTok re-draws when you scroll back up. The check for
+  // "having moved" stops the first paint of a fresh session reshuffling itself
+  // in a loop.
+  if(feed.scrollTop <= 4 && idx > 0){
+    reshuffle();
+    return;
+  }
   const c = currentData();
   if(c){
     const i = clips.indexOf(c);
@@ -323,7 +428,17 @@ function onScrollSettled(){
       idx = i;
       seen.push(c.path);
       if(seen.length > MAX_EXCLUDE) seen = seen.slice(-MAX_EXCLUDE);
+      saveSession();
     }
+  }
+  // Record the clip actually in view, not only when the index changes: on a
+  // fresh load idx is already 0, so the first clip would otherwise never be
+  // marked as seen and could reappear immediately after a resume.
+  const shown = currentData();
+  if(shown && !seen.includes(shown.path)){
+    seen.push(shown.path);
+    if(seen.length > MAX_EXCLUDE) seen = seen.slice(-MAX_EXCLUDE);
+    saveSession();
   }
   playCurrent();
   // Keep the feed fed as the user approaches the end.
@@ -418,8 +533,26 @@ document.addEventListener("keydown", e => {
 
 // ---- boot ----------------------------------------------------------------
 
+// Resume the sitting if there is one. Backgrounding the app, switching tabs or
+// the phone sleeping all keep this; only a force-close clears sessionStorage.
+const restored = loadSession();
+if(restored){
+  seen = Array.isArray(restored.seen) ? restored.seen : [];
+  favourites = !!restored.favourites;
+  $("favBtn").classList.toggle("on", favourites);
+}
 renderLoading();
 fetchMore();
+
+// Keep the sitting up to date, so what was shown is not immediately shown
+// again after the page resumes.
+setInterval(() => saveSession(), 5000);
+window.addEventListener("pagehide", () => saveSession());
+document.addEventListener("visibilitychange", () => {
+  // Do not reload anything on being hidden: leaving the tab is not a new
+  // session, and re-fetching here is what made the feed jump around.
+  if(document.visibilityState === "hidden") saveSession();
+});
 </script>
 </body>
 </html>

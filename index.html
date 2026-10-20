@@ -167,6 +167,12 @@
   }
   .pill{font-size:11.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
   .pill.queued{color:var(--muted)}
+  /* Per-profile video count for TikTok. Sits under the name, wraps on narrow
+     windows rather than pushing the card layout around. */
+  .ttcount{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px}
+  .ttcount button{padding:2px 7px;font-size:11px;line-height:1.5;min-width:0}
+  .ttcount .ttnout{font-size:12px;font-variant-numeric:tabular-nums;color:var(--muted);
+                   padding:0 6px;min-width:56px;text-align:center;white-space:nowrap}
   .pill.running{color:var(--run);border-color:#2d4a7a}
   .pill.retrying{color:var(--warn);border-color:#5a4a1e}
   .pill.done{color:var(--ok);border-color:#1f5138}
@@ -1883,6 +1889,7 @@ function cardHtml(j, pos, qpos){
           ${j.settings&&j.settings.fast_update===false?`<span class="pill">full</span>`:""}
         </div>
         <div class="meta">${esc(detail||"")}${bits.length?" · "+esc(bits.join(" · ")):""}</div>
+        ${j.platform==="tiktok"?ttCountBar(j):""}
         ${prog}
         ${tail}
       </div>
@@ -1890,6 +1897,53 @@ function cardHtml(j, pos, qpos){
       ${moreMenu}
     </div>`;
 }
+
+
+// How many videos to keep for one TikTok profile.
+//
+// Shown as "35 / 379" -- what it will fetch out of what exists. The buttons
+// step the target up or down; going past the profile's total just means all of
+// them, and stepping down never reaches zero because 0 already means "all".
+// yt-dlp records what it already fetched, so raising the number downloads only
+// the extra ones rather than starting over.
+function ttCountBar(j){
+  const cur = Number(j.tiktok_count||0);
+  const tot = Number(j.tiktok_total||0);
+  const shown = cur ? cur : (tot ? tot : "all");
+  const out = tot ? `${shown} / ${tot}` : `${shown}`;
+  return `<div class="ttcount" data-ttid="${esc(j.id)}">
+      <button class="small" data-ttminus="-5" title="5 fewer" ${cur<=1?"disabled":""}>−5</button>
+      <button class="small" data-ttminus="-15" title="15 fewer" ${cur<=1?"disabled":""}>−15</button>
+      <span class="ttnout" title="videos to keep / videos the profile has">${out}</span>
+      <button class="small" data-ttadd="5">+5</button>
+      <button class="small" data-ttadd="15">+15</button>
+      <button class="small" data-ttadd="25">+25</button>
+      <button class="small" data-ttall="1" title="Every video on the profile">all</button>
+    </div>`;
+}
+
+// Wire the count buttons once per painted batch. Delegated from the document so
+// a re-render does not need to rebind, and so cards inside any section work.
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-ttadd],[data-ttminus],[data-ttall]");
+  if(!b) return;
+  const bar = b.closest(".ttcount");
+  if(!bar) return;
+  const id = bar.dataset.ttid;
+  bar.querySelectorAll("button").forEach(x => x.disabled = true);
+  const body = {id};
+  if(b.dataset.ttall){ body.all = true; }
+  else if(b.dataset.ttadd){ body.add = parseInt(b.dataset.ttadd, 10); }
+  else { body.add = parseInt(b.dataset.ttminus, 10); body.minus = true; }
+  try{
+    const r = await post("/api/tiktok/more", body);
+    if(!r.ok){ toast(r.error || "Could not change the count"); }
+    else { toast(`${r.username}: ${r.count ? r.count : "all"}${r.total ? " / " + r.total : ""}`); }
+  }catch(err){
+    toast("Could not change the count");
+  }
+  tick();   // repaint from the server rather than guessing the new value
+});
 
 // Set while a reorder is in flight. tick() skips rendering until it passes,
 // so the 1.2s poll cannot snap the list back to the server's pre-move order

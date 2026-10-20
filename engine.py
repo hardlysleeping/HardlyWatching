@@ -1974,6 +1974,7 @@ class Job:
     platform: str = "instagram"  # "instagram" (instaloader) | "tiktok" (yt-dlp)
     tiktok_count: int = 0  # 0 = all; otherwise newest N videos
     private: bool = False  # TikTok profile yt-dlp reported as not visible
+    tiktok_total: int = 0  # how many videos the profile has; 0 = not known yet
     parent_id: str | None = None  # for a reels job: the main job it follows
     attempts: int = 0
     max_attempts: int = 6
@@ -2357,6 +2358,7 @@ class Engine:
         """
         added: list[Job] = []
         skipped: list[str] = []
+        raised: list[str] = []
         count = max(0, int(count))
         blocked = {h.lower() for h in (excluded or ())}
         with self.lock:
@@ -2376,6 +2378,24 @@ class Engine:
                     skipped.append(h)
                     continue
                 if h.lower() in existing:
+                    # Already queued or downloaded: raising the number is the
+                    # way to fetch more of them. yt-dlp's archive file means a
+                    # re-run only pulls what is not already on disk, so going
+                    # 5 -> 10 fetches five more rather than ten again.
+                    job = existing[h.lower()]
+                    if count > job.tiktok_count:
+                        job.tiktok_count = count
+                        if job.status == "done":
+                            # A finished job has to run again to fetch the rest.
+                            job.status = "queued"
+                            job.finished_at = None
+                            job.error = ""
+                            job.message = "queued for more videos"
+                            if job.id not in self.pending:
+                                self.pending.append(job.id)
+                        raised.append(f"{job.username} ({count})")
+                    else:
+                        skipped.append(h)
                     continue
                 job = Job(username=h, kind="main", platform="tiktok",
                           tiktok_count=count)
@@ -2386,6 +2406,7 @@ class Engine:
         if start:
             self._kick()
         self.save_state()
+        self.last_raised = raised
         return added, skipped
 
     def remove(self, job_id: str) -> bool:

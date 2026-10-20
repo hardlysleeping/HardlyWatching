@@ -635,6 +635,63 @@ class Handler(BaseHTTPRequestHandler):
                 "urls": tiktok_handles.to_urls(handles, "tiktok"),
             })
 
+        if p == "/api/tiktok/more":
+            # Raise how many videos one TikTok profile should have, and queue it
+            # again if it had already finished. yt-dlp's archive file records
+            # what was fetched, so only the missing ones are downloaded: going
+            # from 5 to 35 pulls 30 more, not 35 again.
+            #
+            # `add` is how many more to aim for (+5, +15 ...). `all` means no
+            # limit at all (count 0 in the job, which is how "all" is stored).
+            db = _profile_db()
+            job_id = str(body.get("id") or "")
+            eng = get_engine()
+            with eng.lock:
+                job = eng.jobs.get(job_id)
+                if job is None or getattr(job, "platform", "") != "tiktok":
+                    return self._json({"ok": False, "error": "no such TikTok profile"})
+                current = int(getattr(job, "tiktok_count", 0) or 0)
+                total = int(getattr(job, "tiktok_total", 0) or 0)
+                if not total:
+                    # Fetch the real number once, so the count can be shown out
+                    # of the profile's total and clamped to it.
+                    try:
+                        import tiktok_engine as _tt
+                        total = _tt.profile_total(job.username)
+                    except Exception:
+                        total = 0
+                    job.tiktok_total = total
+
+                if body.get("all"):
+                    new_count = 0
+                else:
+                    step = abs(int(body.get("add") or 5))
+                    if body.get("minus") or body.get("subtract"):
+                        # Never below zero, and 0 already means "all", so a
+                        # subtract that would reach 0 stops at 1 instead.
+                        base = current if current else (total or 1)
+                        new_count = max(1, base - step)
+                    else:
+                        new_count = (current or 0) + step
+                        if total and new_count > total:
+                            # Asking for more than exists just means all of it.
+                            new_count = total
+                job.tiktok_count = new_count
+                revived = False
+                if job.status in ("done", "failed", "cancelled"):
+                    # Anything already on disk stays; the run fetches the rest.
+                    job.status = "queued"
+                    job.finished_at = None
+                    job.error = ""
+                    job.message = "queued for more videos"
+                    job.fatal = False
+                    revived = True
+                    if job.id not in eng.pending:
+                        eng.pending.append(job.id)
+            eng.save_state()
+            return self._json({"ok": True, "count": new_count, "total": job.tiktok_total,
+                               "revived": revived, "username": job.username})
+
         if p == "/api/tiktok/profiles":
             db = _profile_db()
             return self._json({
