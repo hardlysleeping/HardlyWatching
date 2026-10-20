@@ -231,6 +231,18 @@
     padding:18px 0;min-height:44px;display:block}
   /* Upload zone. Subtle by default so it does not compete with the grid, and
      it lights up when files are dragged over it. */
+  /* Timeline controls: year and month pickers, then a slider across all
+     months that have posts. Kept on one row that wraps on a narrow window. */
+  .tlbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:14px}
+  .tlbar .tlsel{background:var(--panel-3);color:var(--text);
+    border:1px solid var(--line);border-radius:7px;padding:5px 8px;
+    font-size:12.5px;font-family:inherit}
+  .tlbar .tlrange{flex:1;min-width:180px;accent-color:var(--accent)}
+  .tlbar .hint{margin-left:auto;white-space:nowrap}
+  .ptile-play{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.72);
+    color:#fff;border-radius:5px;padding:1px 6px;font-size:11px;pointer-events:none}
+  .ptile-part{position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.72);
+    color:#fff;border-radius:5px;padding:1px 6px;font-size:11px;pointer-events:none}
   .gsearch{display:flex;align-items:center;gap:8px;margin-bottom:12px}
   .gsearch input{flex:1;max-width:340px;background:var(--panel-3);color:var(--text);
     border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:13px;
@@ -1662,6 +1674,8 @@ function buildAllBar(profileCount){
     () => { gAll = "favorites"; gProfile = null; renderAllSection("favorites"); }));
   bar.appendChild(mk("🗑 All Trash", gAll === "trash",
     () => { gAll = "trash"; gProfile = null; renderAllSection("trash"); }));
+  bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
+    () => { gAll = "timeline"; gProfile = null; renderTimeline(); }));
 }
 
 async function renderAllSection(section){
@@ -2020,6 +2034,224 @@ async function uploadFiles(fileList){
   });
 })();
 
+/* ---------- timeline: everything, by month ---------- */
+
+// Month index from the server, and the state of the month currently shown.
+// The index is ~2.8KB (176 months, one count each) rather than the 7.6MB of
+// every post: the slider needs the months, and only one month is ever fetched.
+let tlMonths = [];        // [["2026-10", 513], ...] oldest first
+let tlIndex = 0;          // position in tlMonths
+let tlReq = 0;
+let tlCache = new Map();  // "2026-10" -> posts, so scrubbing back is instant
+
+function tlLabel(key){
+  if(key === "0000-00") return "undated";
+  const [y, m] = key.split("-");
+  const names = ["Jan","Feb","Mar","Apr","May","Jun",
+                 "Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${names[+m - 1]} ${y}`;
+}
+
+function tlDecadeOptions(){
+  // Year <select>, built from the years that actually have posts -- a year with
+  // nothing in it should not be offered, because picking it would show an
+  // empty month view with no explanation.
+  const years = [...new Set(tlMonths.map(([k]) => k.slice(0, 4)))]
+    .filter(y => y !== "0000");
+  return years;
+}
+
+async function loadTimelineIndex(){
+  const r = await (await fetch("/api/timeline")).json();
+  tlMonths = Object.entries(r.months || {}).sort((a, b) => a[0] < b[0] ? -1 : 1);
+  // Open on the newest month with posts: that is what you would look at first.
+  tlIndex = Math.max(0, tlMonths.length - 1);
+  return r;
+}
+
+async function fetchMonth(key){
+  if(tlCache.has(key)) return tlCache.get(key);
+  // 600 is the server's cap; a month is typically a few hundred posts.
+  const r = await (await fetch(
+    `/api/timeline-month?month=${encodeURIComponent(key)}&limit=600`)).json();
+  const posts = r.posts || [];
+  tlCache.set(key, posts);
+  return posts;
+}
+
+function tlTile(post, monthKey){
+  const tile = document.createElement("div");
+  tile.className = "ptile";
+  const img = document.createElement("img");
+  img.loading = "lazy"; img.alt = "";
+  img.src = `/thumb?profile=${encodeURIComponent(post.username)}`
+    + `&file=${encodeURIComponent(post.file)}`;
+  tile.appendChild(img);
+  const who = document.createElement("span");
+  who.className = "ptile-user";
+  who.textContent = post.username;
+  tile.appendChild(who);
+  if(post.kind === "video"){
+    const v = document.createElement("span");
+    v.className = "ptile-play";
+    v.textContent = "▶";
+    tile.appendChild(v);
+  }
+  if(post.count > 1){
+    const c = document.createElement("span");
+    c.className = "ptile-part";
+    c.textContent = post.count;
+    tile.appendChild(c);
+  }
+  // Opening one fetches that profile's posts and lands on the same post, so
+  // the viewer keeps its full behaviour (favourite, trash, carousel).
+  tile.onclick = async () => {
+    // Land on this exact post. The overview tile has only a filename, so the
+    // profile's posts are fetched once and the matching one is opened; if it is
+    // not found (deleted/moved since) the profile grid is shown instead.
+    const r = await (await fetch(
+      `/api/photos?profile=${encodeURIComponent(post.username)}`)).json();
+    const sec = r.sections || {main:[], favorites:[], trash:[]};
+    const all = (sec.main || []).concat(sec.favorites || [], sec.trash || []);
+    const hit = all.find(p => p.post === post.post);
+    gProfile = post.username;
+    drawPhotos(post.username, sec);
+    if(hit){
+      const s = (sec.main || []).includes(hit) ? "main" : "main";
+      openViewer(post.username, hit, hit.section || s, 0);
+    }
+  };
+  return tile;
+}
+
+async function renderTimeline(){
+  const host = $("profileGrid");
+  const sw = $("gSearchWrap");
+  if(sw) sw.style.display = "none";
+  const mine = ++tlReq;
+  host.innerHTML = `<div class="gempty">Loading the timeline…</div>`;
+
+  if(!tlMonths.length){
+    try { await loadTimelineIndex(); }
+    catch(e){ host.innerHTML = `<div class="gempty">Could not load the timeline.</div>`; return; }
+    if(mine !== tlReq) return;
+  }
+  if(!tlMonths.length){
+    host.innerHTML = `<div class="gempty">Nothing to show yet.</div>`;
+    return;
+  }
+
+  // --- controls: year + month pickers, a slider, and prev/next ---
+  const bar = document.createElement("div");
+  bar.className = "tlbar";
+  bar.style.gridColumn = "1/-1";
+
+  const years = tlDecadeOptions();
+  const ySel = document.createElement("select");
+  ySel.className = "tlsel";
+  for(const y of years){
+    const o = document.createElement("option");
+    o.value = y; o.textContent = y;
+    ySel.appendChild(o);
+  }
+
+  const mSel = document.createElement("select");
+  mSel.className = "tlsel";
+
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.className = "tlrange";
+  slider.min = "0";
+  slider.max = String(tlMonths.length - 1);
+  slider.step = "1";
+
+  const prev = document.createElement("button");
+  prev.className = "small"; prev.textContent = "‹";
+  const next = document.createElement("button");
+  next.className = "small"; next.textContent = "›";
+  const jump = document.createElement("button");
+  jump.className = "small"; jump.textContent = "Newest";
+
+  const count = document.createElement("span");
+  count.className = "hint";
+
+  bar.append(prev, ySel, mSel, slider, next, jump, count);
+  host.innerHTML = "";
+  host.appendChild(bar);
+
+  const grid = document.createElement("div");
+  grid.className = "pgrid";
+  grid.style.gridColumn = "1/-1";
+  host.appendChild(grid);
+
+  // Month options depend on the chosen year, so only months with posts appear.
+  function fillMonths(year){
+    const keys = tlMonths.filter(([k]) => k.slice(0, 4) === year).map(([k]) => k);
+    mSel.innerHTML = keys
+      .map(k => `<option value="${k}">${tlLabel(k)}</option>`).join("");
+    return keys;
+  }
+
+  function syncControls(){
+    const [key] = tlMonths[tlIndex];
+    const year = key.slice(0, 4);
+    if(years.includes(year)) ySel.value = year;
+    fillMonths(ySel.value);
+    if(mSel.querySelector(`option[value="${key}"]`)) mSel.value = key;
+    slider.value = String(tlIndex);
+  }
+
+  let shown = 0;
+  async function showIndex(i){
+    tlIndex = Math.max(0, Math.min(tlMonths.length - 1, i));
+    syncControls();
+    const key = tlMonths[tlIndex][0];
+    const my = ++tlReq;
+    grid.innerHTML = `<div class="gempty" style="grid-column:1/-1">Loading ${tlLabel(key)}…</div>`;
+    let posts;
+    try { posts = await fetchMonth(key); }
+    catch(e){ grid.innerHTML = `<div class="gempty" style="grid-column:1/-1">Could not load that month.</div>`; return; }
+    if(my !== tlReq) return;
+    grid.innerHTML = "";
+    if(!posts.length){
+      grid.innerHTML = `<div class="gempty" style="grid-column:1/-1">Nothing in ${tlLabel(key)}.</div>`;
+    }
+    // Newest first inside a month: the thing you came for is usually the top.
+    for(const p of [...posts].reverse()) grid.appendChild(tlTile(p, key));
+    shown = posts.length;
+    const total = tlMonths[tlIndex][1];
+    count.textContent = `${tlLabel(key)} · ${total} post${total===1?"":"s"}`
+      + (shown < total ? ` (showing ${shown})` : "")
+      + ` · ${tlIndex + 1} of ${tlMonths.length}`;
+  }
+
+  prev.onclick = () => showIndex(tlIndex - 1);
+  next.onclick = () => showIndex(tlIndex + 1);
+  jump.onclick = () => showIndex(tlMonths.length - 1);
+  ySel.onchange = () => {
+    const keys = fillMonths(ySel.value);
+    if(keys.length){
+      // Land on the newest month of the chosen year, not its first.
+      tlIndex = tlMonths.findIndex(([k]) => k === keys[keys.length - 1]);
+      showIndex(tlIndex);
+    }
+  };
+  mSel.onchange = () => {
+    const i = tlMonths.findIndex(([k]) => k === mSel.value);
+    if(i >= 0) showIndex(i);
+  };
+  slider.oninput = () => {
+    // The label follows the thumb immediately; the grid loads on release, so
+    // dragging across 176 months does not fire 176 requests.
+    const [key] = tlMonths[+slider.value];
+    count.textContent = tlLabel(key);
+  };
+  slider.onchange = () => showIndex(+slider.value);
+
+  syncControls();
+  showIndex(tlIndex);
+}
+
 async function renderGallery(){
   const host = $("profileGrid");
   if(gProfile) return renderPhotos(gProfile);
@@ -2274,8 +2506,13 @@ function sortPosts(list){
   return a;
 }
 
+// Posts of the profile currently drawn, so a timeline tile can open the viewer
+// directly on the post you clicked instead of fetching the profile again.
+let gPhotosNow = [];
+
 function drawPhotos(username, sec){
   const host = $("profileGrid");
+  gPhotosNow = (sec.main || []).concat(sec.favorites || [], sec.trash || []);
   host.innerHTML = "";
 
   const bar = document.createElement("div");

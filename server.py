@@ -364,6 +364,21 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/gallery":
             # Profiles whose archive is finished and still on disk.
             return self._json({"profiles": get_engine().gallery_profiles()})
+        if p == "/api/timeline":
+            # The months present and how many posts each holds. Deliberately not
+            # the posts themselves: that was 7.6MB for 30k posts to draw one
+            # screen. The UI asks for a single month with /api/timeline-month.
+            return self._json(get_engine().timeline())
+        if p == "/api/timeline-month":
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            month = (q.get("month") or [""])[0] or "all"
+            try:
+                offset = int((q.get("offset") or ["0"])[0] or 0)
+                limit = int((q.get("limit") or ["200"])[0] or 200)
+            except ValueError:
+                offset, limit = 0, 200
+            return self._json(get_engine().timeline_month(month, offset, limit))
         if p == "/api/gallery/all":
             # Overarching Favourites / Trash across every profile.
             from urllib.parse import parse_qs

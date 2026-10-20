@@ -454,7 +454,17 @@ class _Cache:
                 " mtime_ns INTEGER, size INTEGER, inode INTEGER,"
                 " names TEXT,"
                 " posts TEXT,"
+                " newest_ns INTEGER,"
+                " nfiles INTEGER,"
                 " updated REAL)")
+            # The post cache needs two columns that the first version of this
+            # table did not have. Adding them in place keeps existing listings
+            # usable, so an upgrade does not force a full rescan.
+            have = {r[1] for r in
+                    self.conn.execute("PRAGMA table_info(media)").fetchall()}
+            for col in ("newest_ns", "nfiles"):
+                if col not in have:
+                    self.conn.execute(f"ALTER TABLE media ADD COLUMN {col} INTEGER")
             self.conn.commit()
         except Exception:
             # A cache that cannot be opened is not an error: the app simply
@@ -490,6 +500,58 @@ class _Cache:
                     " inode=excluded.inode, names=excluded.names,"
                     " updated=excluded.updated",
                     (folder, stamp[0], stamp[1], stamp[2], "\n".join(names), time.time()))
+                self.conn.commit()
+        except Exception:
+            pass
+
+    def get_posts(self, folder: str, stamp: tuple) -> list[dict] | None:
+        """Cached grouped posts for a folder, if the stamp still matches.
+
+        The stamp is (size, inode, newest_file_mtime, file_count) -- it must be
+        compared against exactly those four columns. The directory's own mtime
+        is not used at all: on this mount merely reading a directory updates it,
+        so every request looked like a change and the cache never hit.
+        """
+        if self.conn is None:
+            return None
+        try:
+            with self._lock:
+                row = self.conn.execute(
+                    "SELECT size, inode, newest_ns, nfiles, posts"
+                    " FROM media WHERE folder=?",
+                    (folder,)).fetchone()
+        except Exception:
+            return None
+        if not row or not row[4]:
+            return None
+        if (row[0], row[1], row[2], row[3]) != tuple(stamp):
+            return None
+        try:
+            return json.loads(row[4])
+        except (ValueError, TypeError):
+            return None                    # unreadable row -> rebuild
+
+    def put_posts(self, folder: str, stamp: tuple, posts: list[dict]) -> None:
+        if self.conn is None:
+            return
+        try:
+            blob = json.dumps(posts, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return
+        try:
+            with self._lock:
+                # The row may already exist from the listing cache, so update
+                # the posts columns without disturbing the names column.
+                self.conn.execute(
+                    "INSERT INTO media (folder, size, inode, newest_ns, nfiles,"
+                    " posts, updated)"
+                    " VALUES (?,?,?,?,?,?,?)"
+                    " ON CONFLICT(folder) DO UPDATE SET"
+                    " size=excluded.size, inode=excluded.inode,"
+                    " newest_ns=excluded.newest_ns, nfiles=excluded.nfiles,"
+                    " posts=excluded.posts, updated=excluded.updated",
+                    (folder, stamp[0], stamp[1], stamp[2], stamp[3], blob,
+                     time.time()))
                 self.conn.commit()
         except Exception:
             pass
@@ -531,6 +593,65 @@ def _media_cache_forget(folder: Path) -> None:
     _cache.drop(key)
 
 
+def _posts_stamp(folder: Path, names: list[str]) -> tuple | None:
+    """Invalidation key for cached posts.
+
+    The directory's own mtime is deliberately NOT part of this. On this mount
+    simply reading a directory bumps it (atime/relatime updates), so including
+    it made the stamp differ on every request and the cache never hit -- it
+    measured as a 1.0x speedup, i.e. no cache at all.
+
+    What is used instead:
+      * the newest file mtime, because a post's date and caption come from its
+        sidecar JSON -- editing or replacing that file has to invalidate the
+        cache, and the directory mtime would not notice;
+      * the file count, so an added or removed file also invalidates;
+      * size and inode of the directory, which are stable and catch a folder
+        being swapped for another one at the same path.
+
+    A brand-new file necessarily carries the newest mtime, so additions are
+    still caught even without the directory timestamp.
+    """
+    st = _dir_stamp(folder)
+    if st is None:
+        return None
+    # Every media file is stat'ed here, and so is every sidecar.
+    #
+    # The sidecars matter and are easy to miss: GALLERY_EXTS only covers media,
+    # so a `.json` never appears in `names`. But a post's date and caption come
+    # FROM that sidecar, which means editing one changes the answer while the
+    # directory's size, inode and file count all stay identical. Skipping them
+    # served a stale caption after an edit. So the sidecars are stat'ed via a
+    # single scandir of the folder, which is far cheaper than a stat per name.
+    newest = 0
+    sidecars = 0
+    try:
+        stem_set = {os.path.splitext(n)[0] for n in names}
+        with os.scandir(folder) as it:
+            for entry in it:
+                try:
+                    if not entry.name.endswith(".json"):
+                        continue
+                    if os.path.splitext(entry.name)[0] not in stem_set:
+                        continue
+                    est = entry.stat()
+                except OSError:
+                    continue
+                sidecars += 1
+                if est.st_mtime_ns > newest:
+                    newest = est.st_mtime_ns
+    except OSError:
+        return None
+    for name in names:
+        try:
+            m = (folder / name).stat().st_mtime_ns
+        except OSError:
+            continue
+        if m > newest:
+            newest = m
+    return (st[1], st[2], newest, len(names) + sidecars)
+
+
 def _dir_stamp(folder: Path) -> tuple | None:
     try:
         st = folder.stat()
@@ -565,8 +686,8 @@ def _gallery_media(folder: Path) -> list[str]:
     names = []
     try:
         # scandir() hands back the file type from the directory read itself, so
-        # the per-entry is_file() syscall mostly disappears. st_size still costs
-        # a stat, but only for entries that are already known to be media.
+        # the per-entry is_file() syscall mostly disappears. One stat() per
+        # media entry is still needed for the size check.
         with os.scandir(folder) as it:
             for entry in it:
                 try:
@@ -746,14 +867,28 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
             pass
 
     grouped: dict[str, list[dict]] = {}
-    for name in _gallery_media(folder):
+    names = _gallery_media(folder)
+
+    # Grouped posts are cached here because building them is the expensive part:
+    # one sidecar JSON read per file, measured at 1.27s of 1.63s for 20 profiles
+    # (21,016 files). The all-profiles timeline would otherwise re-read 30k
+    # sidecars on every request. Keyed on a stamp that includes the newest file
+    # mtime, so an edited sidecar invalidates it.
+    stamp = _posts_stamp(folder, names)
+    if stamp is not None:
+        hit = _cache.get_posts(str(folder), stamp)
+        if hit is not None:
+            hit.sort(key=lambda p: p["ts"])
+            return hit
+
+    for name in names:
         info = _media_info(folder, name)
-        stamp, part = _post_key(name)
+        stamp_name, part = _post_key(name)
         info["part"] = part
-        grouped.setdefault(stamp, []).append(info)
+        grouped.setdefault(stamp_name, []).append(info)
 
     posts = []
-    for stamp, items in grouped.items():
+    for stamp_name, items in grouped.items():
         items.sort(key=lambda i: i["part"])
         first = items[0]
         # Only the fields the grid and viewer actually read are kept per item.
@@ -762,7 +897,7 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
         # across 10,648 items -- repeating them on each part was 30% of the
         # payload for a large profile (1.8MB of JSON to draw one screen).
         posts.append({
-            "post": stamp,
+            "post": stamp_name,
             "ts": first["ts"],
             # Where the date came from: json | name | mtime | "". The UI marks
             # mtime-dated items, because that is the file's timestamp rather
@@ -776,7 +911,92 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
             "count": len(items),
         })
     posts.sort(key=lambda p: p["ts"])
+    if stamp is not None:
+        _cache.put_posts(str(folder), stamp, posts)
     return posts
+
+
+def timeline(self, months: int | None = None) -> dict:
+    """Every profile's posts in one chronological list, month-grouped.
+
+    Returns the months present with their counts, and the posts, so the UI
+    can build a slider over the months and ask for one month at a time
+    instead of holding 30,000 posts in the browser. A post carries its
+    profile so a tile can still say who it belongs to.
+
+    This is the all-profiles view: it reads only the main folder of each
+    profile, because merging favourites and trash into "everything" would
+    double-count posts that are also in main.
+    """
+    out: list[dict] = []
+    for prof in self.gallery_profiles():
+        username = prof.get("username")
+        if not username:
+            continue
+        try:
+            posts = self.gallery_posts(username, "main")
+        except Exception:
+            continue
+        for p in posts:
+            # Only what a timeline tile needs; the viewer fetches the rest
+            # when a post is actually opened.
+            out.append({
+                "username": username,
+                "post": p["post"],
+                "ts": p["ts"],
+                "ts_src": p.get("ts_src", ""),
+                "date": p["date"],
+                "caption": p["caption"][:160],
+                "kind": "video" if any(i["kind"] == "video"
+                                       for i in p["items"]) else "image",
+                "file": p["items"][0]["file"] if p["items"] else "",
+                "count": p["count"],
+            })
+    out.sort(key=lambda p: p["ts"])
+    groups: dict[str, int] = {}
+    for p in out:
+        if not p["ts"]:
+            key = "0000-00"
+        else:
+            key = datetime.datetime.fromtimestamp(
+                p["ts"], datetime.timezone.utc).strftime("%Y-%m")
+        groups[key] = groups.get(key, 0) + 1
+    # Keep the built list so a request for one month does not walk every
+    # profile again. This is the same data the post cache already holds, so
+    # it costs one list reference rather than 7.6MB of JSON per request.
+    self._timeline_all = out
+    self._timeline_groups = groups
+    return {"months": groups, "total": len(out)}
+
+def timeline_month(self, month: str, offset: int = 0,
+                   limit: int = 200) -> dict:
+    """One month's posts from the timeline, and how many there are in all.
+
+    The UI drives a slider over the months and asks for just the one it is
+    showing. Returning all 30,000 posts to draw one month was 7.6MB and 1.5s
+    per request; a month is a few hundred posts.
+    """
+    allp = getattr(self, "_timeline_all", None)
+    if allp is None or not getattr(self, "_timeline_groups", None):
+        self.timeline()
+        allp = getattr(self, "_timeline_all", []) or []
+    if month == "all":
+        chosen = allp
+    else:
+        chosen = []
+        for p in allp:
+            key = ("0000-00" if not p["ts"] else
+                   datetime.datetime.fromtimestamp(
+                       p["ts"], datetime.timezone.utc).strftime("%Y-%m"))
+            if key == month:
+                chosen.append(p)
+    total = len(chosen)
+    offset = max(0, int(offset or 0))
+    limit = max(1, min(int(limit or 200), 600))
+    page = chosen[offset:offset + limit]
+    return {"month": month, "posts": page, "total": total,
+            "offset": offset, "limit": limit,
+            "has_more": offset + len(page) < total}
 
 
 
@@ -1627,6 +1847,8 @@ class Engine:
     gallery_photos = gallery_photos
     gallery_sections = gallery_sections
     gallery_posts = gallery_posts
+    timeline = timeline
+    timeline_month = timeline_month
     gallery_all = gallery_all
     clear_trash = clear_trash
     list_tombstones = list_tombstones
