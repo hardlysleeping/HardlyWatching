@@ -2213,20 +2213,25 @@ class Engine:
         self.save_state()
         return n
 
-    def requeue(self, job_id: str, force_full: bool = False) -> bool:
-        """Re-run a finished/failed/cancelled job. force_full disables fast-update."""
+    def requeue(self, job_id: str) -> bool:
+        """Re-run a finished/failed/cancelled job, keeping --fast-update.
+
+        There is deliberately no way to force a full re-fetch. Disabling
+        fast-update made instaloader walk every post and fetch its metadata
+        again, fetching nothing new (download_post never overwrites) while
+        burning the request budget that gets the session throttled. Anything
+        already on disk is skipped, so a re-run is always cheap.
+        """
         with self.lock:
             job = self.jobs.get(job_id)
             if not job or job.status in ("running", "queued", "retrying"):
                 return False
             job.status = "queued"
             job.error = ""
-            job.message = "re-queued" + (" (full re-check)" if force_full else "")
+            job.message = "re-queued"
             job.attempts = 0
             job.finished_at = None
             job.started_at = None
-            if force_full:
-                job.settings = {**(job.settings or {}), "fast_update": False}
             # A retry is you asking for this one next, so it goes to the FRONT
             # of the queue. It used to append to the tail, which put a failed
             # profile behind however many hundred jobs were already waiting --

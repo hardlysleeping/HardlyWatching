@@ -501,7 +501,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/requeue":
             return self._json({
-                "ok": get_engine().requeue(body.get("id", ""), bool(body.get("full")))
+                "ok": get_engine().requeue(body.get("id", ""))
             })
 
         if p == "/api/move":

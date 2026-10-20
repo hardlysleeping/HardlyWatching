@@ -1323,11 +1323,11 @@ function cardHtml(j, pos, qpos){
     // Secondary actions live behind one menu so the row stays readable.
     const more=[];
     if(j.status==="failed"||j.status==="done"||j.status==="cancelled"){
-      // Two different actions that used to look identical and sat side by side:
-      // "Re-run" keeps --fast-update and skips what is already on disk, while
-      // "Re-download all" turns it off and fetches every post again. They are
-      // now labelled and coloured so the expensive one cannot be mistaken for
-      // the cheap one.
+      // "Check for new" keeps --fast-update, so anything already downloaded is
+      // skipped and nothing is overwritten. There used to be a second
+      // "Re-download all" button beside it that turned fast-update off; it was
+      // removed because it re-walked the whole profile for no new files and was
+      // the main thing getting the session throttled.
       if(j.status==="failed" && j.auto_retry_in > 0){
         const t = document.createElement("span");
         t.className = "hint";
@@ -1342,8 +1342,6 @@ function cardHtml(j, pos, qpos){
       more.push(`<button class="small safe" data-requeue="${j.id}"
         title="Check for new posts only — anything already downloaded is skipped">${
         j.status==="failed"?"Retry":"Check for new"}</button>`);
-      if(j.status==="done") more.push(`<button class="small danger" data-full="${j.id}"
-        title="Fetch every post again from Instagram, including ones already stored">Re-download all</button>`);
     }
     more.push(`<button class="small" data-profile="${esc(j.username)}">View on Instagram</button>`);
     // Extra passes: re-run just one slice of content without touching the rest.
@@ -1480,13 +1478,6 @@ function wireCards(container){
   on("[data-open]", b=>b.onclick=()=>post("/api/open-folder",{profile:b.dataset.open}));
   on("[data-requeue]", b=>b.onclick=async()=>{ await post("/api/requeue",{id:b.dataset.requeue});
     toast("Re-queued"); tick(); });
-  on("[data-full]", b=>b.onclick=async()=>{
-    // This one really does re-fetch everything, so it confirms first.
-    if(!confirm("Re-download every post for this profile, including ones already\n"
-      + "stored? This fetches everything again from Instagram and takes a while.\n\n"
-      + "To just check for new posts, cancel and use \"Check for new\".")) return;
-    await post("/api/requeue",{id:b.dataset.full,full:true});
-    toast("Queued full re-check"); tick(); });
   on("[data-remove]", b=>b.onclick=async()=>{ await post("/api/remove",{id:b.dataset.remove});
     toast("Removed"); tick(); });
   on("[data-forget]", b=>b.onclick=async()=>{ await post("/api/forget",{id:b.dataset.forget}); tick(); });
