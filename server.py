@@ -1128,10 +1128,22 @@ class Handler(BaseHTTPRequestHandler):
             plat = str(body.get("platform") or "instagram")
             if plat not in ("instagram", "tiktok"):
                 plat = "instagram"
-            # Open the folder the profile is actually in, not just the
-            # downloads folder -- it may live on another drive.
-            target = (get_engine().root_for(name, plat) if name
-                      else get_engine().output_root) or get_engine().output_root
+            eng = get_engine()
+            if name:
+                # Open the folder the profile is actually in, not just the
+                # downloads folder -- it may live on another drive.
+                target = eng.root_for(name, plat) or eng.output_root
+            elif plat == "tiktok":
+                # The whole TikTok tree. It sits one level down from the
+                # downloads folder, so opening the downloads folder never shows
+                # it and the TikTok files look like they went somewhere else.
+                target = eng.output_root / "tiktok"
+                try:
+                    target.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    target = eng.output_root
+            else:
+                target = eng.output_root
             threading.Thread(target=_open_folder, args=(target,), daemon=True).start()
             return self._json({"ok": True, "path": str(target)})
 

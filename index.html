@@ -657,6 +657,10 @@ https://www.instagram.com/a.third.profile/"></textarea>
           </p>
         </details>
         <div id="ttResult" class="hint" style="margin-top:10px"></div>
+        <!-- Where the files actually land, as a clickable path. The TikTok tree
+             is one level below the downloads folder, so opening that folder
+             never shows it and the videos look like they went somewhere else. -->
+        <div class="hint" id="ttPath" style="margin-top:10px"></div>
       </div>
       <div class="card" style="margin-top:12px">
         <h3 style="margin-top:0">TikTok login (private accounts)</h3>
@@ -1519,11 +1523,35 @@ function paintDisk(st){
     </div>`;
 }
 
+// Where TikTok files land, shown as a clickable path. "Where did my TikTok
+// videos go?" should be answerable on screen: the TikTok tree is a subfolder of
+// the downloads folder, so opening that folder never reveals it.
+let ttPathShown = "";
+function paintTtPath(st){
+  const el = $("ttPath");
+  if(!el) return;
+  const roots = st.roots || [];
+  const main = roots.find(r => r.receives) || roots[0];
+  if(!main || !main.path){ el.innerHTML = ""; ttPathShown = ""; return; }
+  const full = main.path.replace(/\/+$/, "") + "/tiktok";
+  if(full === ttPathShown) return;     // do not rebuild on every poll
+  ttPathShown = full;
+  el.innerHTML = `TikTok files go to <a href="#" id="ttOpenPath"
+    style="color:var(--accent);text-decoration:none;border-bottom:1px dotted currentColor"
+    title="Open this folder">${esc(full)}</a>`;
+  const a = $("ttOpenPath");
+  if(a) a.onclick = (e) => {
+    e.preventDefault();
+    post("/api/open-folder", {platform:"tiktok"});
+  };
+}
+
 function render(st){
   lastState = st;  // cache for optimistic updates (reorder, etc.)
   // Space is not queue-specific: show it on every tab, before the early return
   // below skips the queue work.
   paintDisk(st);
+  paintTtPath(st);
   // While the gallery or shorts tab is showing, the entire queue UI is
   // display:none. The 1.2s poll used to rebuild all of it anyway -- hundreds
   // of cards, invisible -- which showed up as the page stuttering whenever you
@@ -2536,7 +2564,9 @@ $("runBtn").onclick = async () => {
   }
   tick();
 };
-$("openRoot").onclick = () => post("/api/open-folder",{});
+// Follows the platform sub-tab, like Start does: on the TikTok tab this opens
+// the TikTok tree rather than the downloads folder that contains it.
+$("openRoot").onclick = () => post("/api/open-folder", {platform: activePlatform});
 $("retryAllBtn").onclick = async () => {
   const r = await post("/api/retry-all",{});
   toast(`Re-queued ${r.requeued}`); tick();
