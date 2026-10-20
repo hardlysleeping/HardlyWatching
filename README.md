@@ -595,7 +595,18 @@ See [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 
 ## Licence
 
-GPL-3.0 — see [LICENSE](LICENSE).
+HardlyWatching is free software: you can redistribute it and/or modify it under
+the terms of the **GNU General Public License, version 3 or later**.
+
+It is distributed in the hope that it will be useful, but **without any
+warranty**; without even the implied warranty of merchantability or fitness for
+a particular purpose. See [LICENSE](LICENSE) for the full text.
+
+```
+Copyright (C) 2026 hardlysleeping
+```
+
+Full licence: <https://www.gnu.org/licenses/gpl-3.0.html>
 
 This project bundles no instaloader or yt-dlp code: both are installed
 separately and keep their own licences (instaloader is MIT; check yt-dlp's
