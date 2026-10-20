@@ -45,10 +45,11 @@ arrow keys), favourite, download a video, or trash it.
 
 ![A post enlarged over the grid, with previous and next arrows and action buttons](docs/viewer.png)
 
-**Sessions** — log in once, either by grabbing the Instagram login already in your
-browser or by running instaloader's own login. Handles 2FA.
+**Sessions** — every saved Instagram login in one list, with the one in use marked.
+Switch accounts with one click, or grab a login out of your browser so you never
+type a password here.
 
-![The sessions panel: log in, or grab a session from Firefox or Zen](docs/sessions.png)
+![The sessions panel: three saved sessions with Use buttons, one marked in use, plus grab-from-browser and log-in options](docs/sessions.png)
 
 ---
 
@@ -72,10 +73,8 @@ First run takes ~20 seconds, mostly pip. After that it starts instantly.
 
 Then:
 
-1. **Log in** — click **Sessions** → **Auto-grab best session** picks up the
-   Instagram login already in Firefox/Zen/LibreWolf, so you never type a password
-   into this app. Or use username + password, which opens instaloader's own login
-   in a terminal.
+1. **Log in** — click **Sessions**. See [Accounts and sessions](#accounts-and-sessions)
+   below; the short version is one click to grab the login already in your browser.
 2. **Paste profiles** — one per line. `username`, `@username` and full
    `instagram.com` URLs all work.
 3. **Add to queue**, press **Start**, and leave it running.
@@ -264,6 +263,62 @@ box. Every field's tooltip shows the underlying instaloader flag.
 | Reels | off | Adds a separate reels-only pass per profile |
 
 ---
+
+## Accounts and sessions
+
+Instaloader talks to Instagram through a saved login ("session"). This app manages
+those for you, so you never paste a password into it.
+
+Click **Sessions** to open the panel. Every saved login is listed with the account
+name, whether it still works, and when it was saved. The one currently in use is
+marked **in use**.
+
+### Grabbing a login from your browser
+
+The easiest way, and the one to try first:
+
+1. Log in to Instagram **in Firefox, Zen or LibreWolf** as usual.
+2. Click **Sessions** → **Auto-grab best session**.
+
+It reads the login cookie your browser already has and saves it for instaloader.
+No password, no terminal, nothing typed into this app. If you have several, it
+picks the one that looks best and lists the rest so you can grab those too.
+
+### Logging in with a password instead
+
+If you don't keep an Instagram login in a browser, type your username in the
+**Log in to Instagram** box and press **Log in**. This opens instaloader's own
+login in a terminal window — your password goes to instaloader, never to this app.
+Two-factor codes are entered there too.
+
+### Using more than one account
+
+Everything you save stays listed, so you can keep several accounts on hand and
+switch whenever you like:
+
+- **Use** — makes that session the one downloads run as. Anything already queued
+  continues with the new account from the next profile.
+- **✕** — deletes a saved session. Nothing else is touched.
+- **Refresh** — re-checks each session, so one that expired shows as incomplete
+  rather than failing a download later.
+
+Useful when one account gets rate-limited: switch to another and keep going, while
+the first one recovers.
+
+### Moving a session to another machine
+
+A session is just a file in instaloader's config folder:
+
+```
+~/.config/instaloader/session-<username>
+```
+
+Copy that file into the same place on another computer and it appears in the panel
+as a saved session, ready to use. Treat it like a password — anyone with the file
+can post as that account.
+
+**Sessions expire eventually.** When one does, every job fails until you log in
+again. The panel shows it as incomplete instead of silently burning requests.
 
 ## Where things live
 
