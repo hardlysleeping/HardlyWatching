@@ -37,6 +37,10 @@
   button:disabled{opacity:.4;cursor:not-allowed}
   button.primary{background:linear-gradient(90deg,var(--accent),var(--accent-2));border-color:transparent;color:#fff}
   button.small{padding:5px 11px;font-size:12.5px;border-radius:7px}
+  /* The cheap action reads as safe, the one that refetches everything reads as
+     a warning, so a misclick is visible before it happens rather than after. */
+  button.small.safe{border-color:var(--line)}
+  button.small.danger{border-color:#b4534b;color:#e8a49c}
   button.icon{padding:5px 9px;font-size:13px;line-height:1;border-radius:7px}
   button.danger:hover:not(:disabled){background:#3a1d1d;border-color:#5a2b2b;color:#fca5a5}
 
@@ -227,6 +231,13 @@
     padding:18px 0;min-height:44px;display:block}
   /* Upload zone. Subtle by default so it does not compete with the grid, and
      it lights up when files are dragged over it. */
+  .gsearch{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+  .gsearch input{flex:1;max-width:340px;background:var(--panel-3);color:var(--text);
+    border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:13px;
+    font-family:inherit}
+  .gsearch input:focus{outline:none;border-color:var(--accent)}
+  .gsearch input[type=search]::-webkit-search-cancel-button{display:none}
+  .gsearch .hint{color:var(--muted);font-size:12px}
   .dropzone{border:1px dashed var(--line);border-radius:12px;padding:12px 14px;
     margin-bottom:14px;background:var(--panel);transition:.15s}
   .dropzone.over{border-color:var(--accent);background:rgba(120,120,255,.07)}
@@ -397,6 +408,14 @@
         </span>
       </div>
       <div class="hint">…or drag files here. JPG, PNG, WEBP, MP4, MOV.</div>
+    </div>
+
+    <div class="gsearch" id="gSearchWrap" style="display:none">
+      <input id="gSearch" type="search" placeholder="Search profiles…"
+             autocomplete="off" spellcheck="false"
+             title="Filter the list by name as you type">
+      <span class="hint" id="gSearchN"></span>
+      <button class="small" id="gSearchClear" title="Clear the search">✕</button>
     </div>
 
     <div class="profile-grid" id="profileGrid"></div>
@@ -1282,8 +1301,16 @@ function cardHtml(j, pos, qpos){
     // Secondary actions live behind one menu so the row stays readable.
     const more=[];
     if(j.status==="failed"||j.status==="done"||j.status==="cancelled"){
-      more.push(`<button class="small" data-requeue="${j.id}">${j.status==="failed"?"Retry":"Re-run"}</button>`);
-      if(j.status==="done") more.push(`<button class="small" data-full="${j.id}">Re-download all</button>`);
+      // Two different actions that used to look identical and sat side by side:
+      // "Re-run" keeps --fast-update and skips what is already on disk, while
+      // "Re-download all" turns it off and fetches every post again. They are
+      // now labelled and coloured so the expensive one cannot be mistaken for
+      // the cheap one.
+      more.push(`<button class="small safe" data-requeue="${j.id}"
+        title="Check for new posts only — anything already downloaded is skipped">${
+        j.status==="failed"?"Retry":"Check for new"}</button>`);
+      if(j.status==="done") more.push(`<button class="small danger" data-full="${j.id}"
+        title="Fetch every post again from Instagram, including ones already stored">Re-download all</button>`);
     }
     more.push(`<button class="small" data-profile="${esc(j.username)}">View on Instagram</button>`);
     // Extra passes: re-run just one slice of content without touching the rest.
@@ -1420,7 +1447,12 @@ function wireCards(container){
   on("[data-open]", b=>b.onclick=()=>post("/api/open-folder",{profile:b.dataset.open}));
   on("[data-requeue]", b=>b.onclick=async()=>{ await post("/api/requeue",{id:b.dataset.requeue});
     toast("Re-queued"); tick(); });
-  on("[data-full]", b=>b.onclick=async()=>{ await post("/api/requeue",{id:b.dataset.full,full:true});
+  on("[data-full]", b=>b.onclick=async()=>{
+    // This one really does re-fetch everything, so it confirms first.
+    if(!confirm("Re-download every post for this profile, including ones already\n"
+      + "stored? This fetches everything again from Instagram and takes a while.\n\n"
+      + "To just check for new posts, cancel and use \"Check for new\".")) return;
+    await post("/api/requeue",{id:b.dataset.full,full:true});
     toast("Queued full re-check"); tick(); });
   on("[data-remove]", b=>b.onclick=async()=>{ await post("/api/remove",{id:b.dataset.remove});
     toast("Removed"); tick(); });
@@ -1634,6 +1666,8 @@ function buildAllBar(profileCount){
 
 async function renderAllSection(section){
   const host = $("profileGrid");
+  const sw = $("gSearchWrap");
+  if(sw) sw.style.display = "none";
   const mine = ++gReq;
   host.innerHTML = `<div class="gempty">Loading…</div>`;
   let data;
@@ -2012,6 +2046,8 @@ async function renderGallery(){
     ? `${profiles.length} ${profiles.length===1?"profile":"profiles"}`
       + (live ? ` · ${live} downloading` : "")
     : "nothing archived yet";
+  const sw = $("gSearchWrap");
+  if(sw) sw.style.display = "";
   if(!profiles.length){
     host.innerHTML = `<div class="gempty">Nothing archived yet. Profiles appear here as soon as files start landing.</div>`;
     return;
@@ -2029,10 +2065,16 @@ async function renderGallery(){
     </div>`).join("");
   for(const card of host.querySelectorAll(".pcard"))
     card.onclick = () => renderPhotos(card.dataset.profile);
+  // Re-apply the filter AFTER the cards exist, so a live repaint cannot silently
+  // undo what is typed in the box.
+  wireProfileSearch();
+  applyProfileSearch();
 }
 
 async function renderPhotos(username){
   const host = $("profileGrid");
+  const sw0 = $("gSearchWrap");
+  if(sw0) sw0.style.display = "none";   // the search box is for the profile list only
   gProfile = username;
   gFilter = "all";
   gType = "any";
@@ -2416,6 +2458,54 @@ async function patchGalleryCounts(){
     hint.textContent = `${n} ${n===1?"profile":"profiles"}`
       + (live ? ` · ${live} downloading` : "");
   }
+}
+
+// Filter the profile cards by name. The cards are already on screen, so this
+// only hides and shows them: no request, no rebuild, and the avatars keep
+// whatever the browser already downloaded. Matching a substring anywhere in the
+// name, case-insensitively, so "shm" finds "__shmani_".
+function applyProfileSearch(){
+  const box = $("gSearch");
+  if(!box) return;
+  const q = box.value.trim().toLowerCase();
+  const host = $("profileGrid");
+  const cards = [...(host ? host.querySelectorAll(".pcard") : [])];
+  let shown = 0;
+  for(const card of cards){
+    const hit = !q || (card.dataset.profile || "").toLowerCase().includes(q);
+    card.style.display = hit ? "" : "none";
+    if(hit) shown++;
+  }
+  const n = $("gSearchN");
+  if(n) n.textContent = q ? `${shown} of ${cards.length} match` : "";
+  const clr = $("gSearchClear");
+  if(clr) clr.style.display = q ? "" : "none";
+  // An empty result needs to say so, or the pane just looks broken.
+  let none = host.querySelector(".gsearch-none");
+  if(q && !shown && cards.length){
+    if(!none){
+      none = document.createElement("div");
+      none.className = "gempty gsearch-none";
+      host.appendChild(none);
+    }
+    none.textContent = `No profile matches “${box.value.trim()}”.`;
+  } else if(none){
+    none.remove();
+  }
+}
+
+function wireProfileSearch(){
+  const box = $("gSearch");
+  if(!box || box.dataset.wired) return;
+  box.dataset.wired = "1";
+  // input fires on every keystroke and on paste; filtering is local so there is
+  // nothing to debounce for.
+  box.addEventListener("input", applyProfileSearch);
+  box.addEventListener("keydown", (e) => {
+    if(e.key === "Escape"){ box.value = ""; applyProfileSearch(); }
+  });
+  const clr = $("gSearchClear");
+  if(clr) clr.onclick = () => { box.value = ""; applyProfileSearch(); box.focus(); };
 }
 
 function pageGrid(grid, username, jobs){
