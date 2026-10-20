@@ -481,7 +481,7 @@
                  title="Type a name to create a new folder, e.g. Holidays">
         </span>
       </div>
-      <div class="hint">…or drag files here. JPG, PNG, WEBP, MP4, MOV.</div>
+      <div class="hint">…or drag files here. JPG, PNG, WEBP, HEIC, MP4, MOV.</div>
     </div>
 
     <div class="gsearch" id="gSearchWrap" style="display:none">
@@ -3932,7 +3932,12 @@ function refreshAllFavHint(){
 let vState = null;   // {username, post, section, idx, srcs}
 
 function mediaSrc(item, username, section){
-  return `/media?profile=${encodeURIComponent(username)}&file=${encodeURIComponent(item.file)}`
+  // HEIC is converted server-side for viewing: no browser except Safari can
+  // draw one, and an <img> pointed at the original shows a broken icon. The
+  // download button still fetches the untouched original through /media.
+  const heic = /\.(heic|heif)$/i.test(item.file || "");
+  const ep = heic ? "/view" : "/media";
+  return `${ep}?profile=${encodeURIComponent(username)}&file=${encodeURIComponent(item.file)}`
        + (section === "main" ? "" : `&section=${section}`);
 }
 

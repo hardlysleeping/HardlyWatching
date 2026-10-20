@@ -57,6 +57,22 @@ def have_instaloader(py: Path) -> bool:
     return r.returncode == 0
 
 
+def ensure_heif(py: Path) -> None:
+    """Best-effort Pillow HEIC support, for phone photos.
+
+    Not fatal: without it JPEG and PNG still work and only HEIC files fail to
+    produce a thumbnail, so a failed install here must not stop the app.
+    """
+    r = subprocess.run([str(py), "-c", "import pillow_heif, PIL"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if r.returncode == 0:
+        return
+    say("Adding HEIC support for phone photos (optional)...")
+    subprocess.run([str(py), "-m", "pip", "install", "--quiet",
+                    "pillow", "pillow-heif"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def ensure_instaloader(py: Path, auto: bool = False) -> bool:
     """Install instaloader into the venv. Returns availability.
 
@@ -125,6 +141,7 @@ def main() -> int:
         say("")
         say("Starting anyway -- the app will run, but downloads need instaloader.")
         say("")
+    ensure_heif(py)
 
     env = dict(os.environ)
     # Make sure the venv's instaloader is the one the app finds.

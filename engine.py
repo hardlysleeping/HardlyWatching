@@ -423,7 +423,10 @@ def clean_profile_name(raw: str) -> str | None:
 
 # Media instaloader writes that are worth showing in a browser grid. `.temp`
 # and `.json` are deliberately absent: a killed download leaves 0-byte temps.
-GALLERY_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov"}
+# .heic/.heif are what iPhones write. Browsers other than Safari cannot display
+# them, so the grid never serves the original -- it serves the JPEG thumbnail,
+# which is why adding the extension is enough for them to appear.
+GALLERY_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".heic", ".heif"}
 GALLERY_VIDEO_EXTS = {".mp4", ".mov"}
 # What an upload is allowed to write. Deliberately the same set the gallery can
 # display: storing something it would then refuse to show is just a confusing
@@ -1663,6 +1666,27 @@ def _preview_path(name: str) -> Path:
     return THUMB_CACHE / "prev" / (name + ".mp4")
 
 
+_heif_ready = False
+
+
+def ensure_pillow_formats() -> None:
+    """Teach PIL the formats a phone writes before anything tries to open one.
+
+    HEIC is not built into Pillow; it comes from pillow-heif. That package is
+    optional, so its absence is not fatal -- JPEG and PNG keep working and only
+    HEIC files fail to thumbnail, which is better than refusing to start.
+    """
+    global _heif_ready
+    if _heif_ready:
+        return
+    _heif_ready = True
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
+
+
 def make_thumb(src: Path, ext: str) -> Path | None:
     """Create (or reuse) a small JPEG for `src`. Returns None on failure.
 
@@ -1686,6 +1710,7 @@ def make_thumb(src: Path, ext: str) -> Path | None:
                 check=True, timeout=45,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
+            ensure_pillow_formats()
             from PIL import Image
             with Image.open(src) as im:
                 im = im.convert("RGB")

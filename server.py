@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from engine import (Engine, UPLOAD_EXTS, clean_profile_name,
+from engine import (Engine, UPLOAD_EXTS, clean_profile_name, ensure_pillow_formats,
                     make_preview, make_thumb, _cache, _media_cache_forget)
 
 HERE = Path(__file__).resolve().parent
@@ -455,6 +455,46 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(404)
             # Allow the browser to cache: these files never change in place.
             return self._serve_file(target, cache=True)
+        if p == "/view":
+            # Full-size view of one image. HEIC is what phones write and only
+            # Safari can draw it, so it is converted to JPEG here; everything
+            # else is served as-is and never re-encoded.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            rel = (q.get("file") or [""])[0]
+            sub = (q.get("section") or [""])[0]
+            if not name or not rel:
+                return self.send_error(400)
+            target = get_engine().resolve_media(name, rel, sub)
+            if target is None:
+                return self.send_error(404)
+            if target.suffix.lower() not in {".heic", ".heif"}:
+                return self._serve_file(target, cache=True)
+            try:
+                ensure_pillow_formats()
+                from PIL import Image
+                import io
+                with Image.open(target) as im:
+                    im = im.convert("RGB")
+                    # Cap the long edge: a phone photo is bigger than any
+                    # screen, and this is a viewing copy, not the archive.
+                    if max(im.size) > 2400:
+                        im.thumbnail((2400, 2400))
+                    buf = io.BytesIO()
+                    im.save(buf, "JPEG", quality=88)
+                data = buf.getvalue()
+            except Exception as e:
+                print(f"heic view failed for {target.name}: {e}")
+                return self.send_error(415, "Cannot convert this image")
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "private, max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         if p == "/thumb":
             # Small cached JPEG for a grid tile. Originals average ~1.9 MB, so
             # this is what keeps a large gallery scrollable.
