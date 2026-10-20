@@ -554,16 +554,14 @@ https://www.instagram.com/a.third.profile/"></textarea>
       <div class="card">
         <h3 style="margin-top:0">Import from TikTok</h3>
         <p class="hint" style="margin-top:0">
-          Go to your TikTok profile and click <b>view all</b> next to <b>Following accounts</b> —
-          the list in the bottom-left of the profile page. With that open, press
-          <b>Ctrl+A</b> then <b>Ctrl+C</b> and paste here. Scrolling is not needed: the
-          copy includes accounts that have not loaded yet.
-        </p>
-        <p class="hint">
           Plain handles, <b>@handles</b> and profile links work too, one per line or
           comma separated.
         </p>
-        <textarea id="ttInput" placeholder="Paste the whole page here — it finds the usernames for you
+        <textarea id="ttInput" placeholder="Paste here — it finds the usernames for you.
+
+First: profile → view all under Following accounts → scroll that list all
+the way down until it stops loading. Copy before scrolling and you only get
+the rows that happened to be on screen.
 
   …or just type them:
   someone
@@ -594,19 +592,26 @@ https://www.instagram.com/a.third.profile/"></textarea>
         <div id="ttKnown" class="hint">—</div>
       </div>
 
-      <div class="card">
-        <h3 style="margin-top:0">Excluded <span id="ttExcludedCount" class="hint"></span></h3>
-        <p class="hint" style="margin-top:0">
-          People you removed from the queue or deleted after downloading. Pasting
-          your following list again will <b>not</b> add them back. Nothing here is
-          deleted — restore any of them and they return to the queue.
-        </p>
-        <div id="ttExcluded" class="hint">—</div>
-        <div class="row" id="ttExcludedActions" style="margin-top:10px;display:none">
-          <button class="small" id="ttRestoreAllBtn">Restore all</button>
-        </div>
-      </div>
   </div><!-- /ttPane -->
+
+  <!-- Excluded covers BOTH platforms: it is about who you removed, not which
+       tool fetched them. Kept below the paste boxes so it is never in the way
+       of normal use, and each row says which platform it belongs to because
+       the same handle can be two different people. -->
+  <div class="card" id="excludedCard">
+    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+      <h3 style="margin:0">Excluded <span id="ttExcludedCount" class="hint"></span></h3>
+      <span class="hint">Removed from the queue, or deleted after downloading.</span>
+    </div>
+    <p class="hint">
+      Pasting a profile or a following list again will <b>not</b> add these back.
+      Nothing is deleted — <b>Restore</b> returns them to the queue.
+    </p>
+    <div id="ttExcluded" class="hint">—</div>
+    <div class="row" id="ttExcludedActions" style="display:none">
+      <button class="small" id="ttRestoreAllBtn">Restore all</button>
+    </div>
+  </div>
 
   <details class="settings" id="settingsBox">
     <summary>Download settings <span class="hint" id="setSummary"></span></summary>
@@ -2286,7 +2291,6 @@ async function loadTiktokKnown(){
       ? `${r.count} profile${r.count === 1 ? "" : "s"} remembered from previous imports.`
       : "Nothing imported yet.";
   }catch(e){ $("ttKnown").textContent = "—"; }
-  loadExcluded();
 }
 
 // Excluded is its own list so it never sits in the way of the queue or the
@@ -2295,7 +2299,9 @@ async function loadTiktokKnown(){
 async function loadExcluded(){
   const box = $("ttExcluded");
   try{
-    const r = await post("/api/tiktok/excluded", {});
+    // No platform filter: one list for both tools, because the question is
+    // "who did I remove", not "who did I remove from TikTok".
+    const r = await post("/api/excluded", {});
     const n = r.count || 0;
     $("ttExcludedCount").textContent = n ? `(${n})` : "";
     $("ttExcludedActions").style.display = n ? "" : "none";
@@ -2304,14 +2310,16 @@ async function loadExcluded(){
     box.innerHTML = r.profiles.map(p => `
       <div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #222">
         <span>${esc(p.handle)}
+          <span class="pill ${p.platform === "tiktok" ? "tiktok" : "ig"}">${esc(p.platform)}</span>
           <span class="hint">${esc(why[p.reason] || p.reason || "")}</span></span>
-        <button class="small" data-restore="${esc(p.handle)}">Restore</button>
+        <button class="small" data-restore="${esc(p.handle)}" data-platform="${esc(p.platform)}">Restore</button>
       </div>`).join("");
     box.querySelectorAll("[data-restore]").forEach(b=>{
       b.onclick = async () => {
         b.disabled = true;
         try{
-          const res = await post("/api/tiktok/restore", {handles:[b.dataset.restore]});
+          const res = await post("/api/restore", {handles:[b.dataset.restore],
+                                                  platform:b.dataset.platform});
           if(res.ok) b.textContent = "Restored";
           else b.textContent = "Failed";
           loadExcluded();
@@ -2324,11 +2332,20 @@ async function loadExcluded(){
 $("ttRestoreAllBtn").onclick = async () => {
   if(!confirm("Restore everyone on the excluded list back into the queue?")) return;
   try{
-    const r = await post("/api/tiktok/excluded", {});
-    const handles = (r.profiles || []).map(p => p.handle);
-    if(!handles.length) return;
-    const res = await post("/api/tiktok/restore", {handles});
-    $("ttResult").textContent = `Restored ${res.restored}, queued ${res.queued}.`;
+    const r = await post("/api/excluded", {});
+    const rows = r.profiles || [];
+    if(!rows.length) return;
+    // Restored by platform, because a handle can exist on both and they are
+    // different accounts.
+    let restored = 0, queued = 0;
+    for(const plat of ["instagram", "tiktok"]){
+      const handles = rows.filter(p=>p.platform===plat).map(p=>p.handle);
+      if(!handles.length) continue;
+      const res = await post("/api/restore", {handles, platform: plat});
+      restored += res.restored || 0;
+      queued += res.queued || 0;
+    }
+    $("ttResult").textContent = `Restored ${restored}, queued ${queued}.`;
     loadExcluded();
   }catch(e){ $("ttResult").textContent = "Restore failed."; }
 };
@@ -2343,6 +2360,12 @@ $("ttCheckBtn").onclick = async () => {
     let msg = `Found ${r.parsed} username${r.parsed === 1 ? "" : "s"} ` +
               `(read from the ${r.source} format). ${r.new} new, ${r.already_known} already imported.`;
     if(r.sample && r.sample.length) msg += ` First: ${r.sample.slice(0,5).join(", ")}`;
+    // The page prints the real Following count, so a short paste is detectable.
+    // Say it plainly rather than letting a partial list look complete.
+    if(r.short){
+      msg += ` ⚠ Your page says ${r.stated_total} followed, but only ${r.parsed} were in this paste.`;
+      msg += ` Scroll the Following list all the way to the bottom, wait for it to load, then Ctrl+A again.`;
+    }
     $("ttResult").textContent = msg;
   }catch(e){ $("ttResult").textContent = "Error: " + e.message; }
 };

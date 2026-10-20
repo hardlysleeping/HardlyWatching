@@ -31,15 +31,31 @@ def scan(root: Path, limit_dirs: int = 5000) -> list[dict]:
         return out
 
     try:
-        profile_dirs = [e for e in os.scandir(root) if e.is_dir(follow_symlinks=False)]
+        top = [e for e in os.scandir(root) if e.is_dir(follow_symlinks=False)]
     except OSError:
         return out
 
-    for pd in profile_dirs[:limit_dirs]:
-        if pd.name.startswith('.'):
+    # TikTok profiles live one level down, in <root>/tiktok/<handle>, so the
+    # feed has to look inside that folder as well as at the top. Anything else
+    # at the top level is an Instagram profile, as before.
+    profile_dirs: list[tuple[str, str, str]] = []
+    for e in top:
+        if e.name.startswith('.'):
             continue
+        if e.name == 'tiktok':
+            try:
+                for sub in os.scandir(e.path):
+                    if sub.is_dir(follow_symlinks=False) and not sub.name.startswith('.'):
+                        profile_dirs.append((f"tiktok/{sub.name}", sub.name, 'tiktok'))
+            except OSError:
+                continue
+        else:
+            profile_dirs.append((e.name, e.name, 'instagram'))
+
+    for dir_rel, profile, platform in profile_dirs[:limit_dirs]:
+        full = root / dir_rel
         try:
-            entries = list(os.scandir(pd.path))
+            entries = list(os.scandir(full))
         except OSError:
             continue
         for e in entries:
@@ -52,11 +68,11 @@ def scan(root: Path, limit_dirs: int = 5000) -> list[dict]:
                 st = e.stat()
             except OSError:
                 continue
-            rel = f"{pd.name}/{e.name}"
+            rel = f"{dir_rel}/{e.name}"
             out.append({
                 'path': rel,
-                'profile': pd.name,
-                'platform': 'tiktok' if e.name.split('.')[0].isdigit() else 'instagram',
+                'profile': profile,
+                'platform': platform,
                 'clip_id': _clip_id(e.name),
                 'mtime': st.st_mtime,
                 'bytes': st.st_size,

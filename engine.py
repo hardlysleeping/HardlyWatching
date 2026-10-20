@@ -883,7 +883,7 @@ def _same(a: Path, b: Path) -> bool:
     return ra == rb
 
 
-def root_for(self, username: str) -> Path | None:
+def root_for(self, username: str, platform: str = "instagram") -> Path | None:
     """The folder an archive for `username` actually lives in, or None.
 
     Scans the roots in order and returns the first one holding a `username/`
@@ -894,9 +894,14 @@ def root_for(self, username: str) -> Path | None:
     Deterministic on purpose: if the same profile exists in two roots the
     first-listed root wins, so a stray copy can never make the archive
     silently change under you.
+
+    TikTok archives live one level down, in `<root>/tiktok/<handle>`, so they
+    are looked up there instead. Keeping the platforms in separate folders
+    means a TikTok handle and an Instagram profile of the same name cannot
+    resolve to the same directory.
     """
     for root in self.roots:
-        folder = root / username
+        folder = (root / "tiktok" / username) if platform == "tiktok" else (root / username)
         if folder.is_dir():
             return folder
     return None
@@ -1260,31 +1265,54 @@ def gallery_profiles(self) -> list[dict]:
     # One entry per person: a profile has up to three jobs (main, reels,
     # tagged) and the main one decides the folder and the status, so the
     # others never produce a second entry.
+    # Keyed by (username, platform) so an Instagram profile and a TikTok
+    # account sharing a handle do not overwrite each other's entry.
     mains = {}
     for job in jobs:
         if job.kind != "main":
             continue
-        mains[job.username] = job
+        mains[(job.username, getattr(job, "platform", "instagram"))] = job
     # A profile can also exist on disk with no job at all (an archive copied
     # in by hand), which the roots still know about.
     on_disk = []
+    tt_on_disk = []
     for root in self.roots:
         try:
             with os.scandir(root) as it:
                 for entry in it:
                     try:
-                        if entry.is_dir():
+                        if not entry.is_dir():
+                            continue
+                        # TikTok profiles sit one level down, so `tiktok` itself
+                        # is not a profile and its children are.
+                        if entry.name == "tiktok":
+                            try:
+                                with os.scandir(entry.path) as sub:
+                                    for s in sub:
+                                        if s.is_dir():
+                                            tt_on_disk.append(s.name)
+                            except OSError:
+                                pass
+                        else:
                             on_disk.append(entry.name)
                     except OSError:
                         continue
         except OSError:
             continue
-    for username in sorted(set(mains) | set(on_disk)):
-        job = mains.get(username)
+    # Each profile is looked up under its own platform, so an Instagram profile
+    # and a TikTok account sharing a handle stay separate entries on disk.
+    wanted = [(u, "instagram") for u in on_disk] + [(u, "tiktok") for u in tt_on_disk]
+    seen = set()
+    for username, platform in wanted:
+        key = (username, platform)
+        if key in seen:
+            continue
+        seen.add(key)
+        job = mains.get(key)
         # A root that is not mounted resolves to None here, so profiles on an
         # unplugged drive are simply absent from the list -- they reappear on
         # the next request once the drive is back.
-        folder = self.root_for(username)
+        folder = self.root_for(username, platform)
         if folder is None:
             continue
         media = _gallery_media(folder)
@@ -1293,6 +1321,7 @@ def gallery_profiles(self) -> list[dict]:
         status = job.status if job else "done"
         out.append({
             "username": username,
+            "platform": platform,
             "id": job.id if job else username,
             "count": len(media),
             "posts": job.posts if job else len(media),
@@ -2241,6 +2270,10 @@ class Engine:
         add_extra_pass(), which is untouched.
         """
         added, rejected = [], []
+        # A profile the user removed or deleted stays out until they restore it,
+        # even if they paste it again. Checked before the duplicate logic so the
+        # message says "excluded" rather than "already in the list".
+        blocked = self._excluded_set("instagram")
         with self.lock:
             active = {
                 j.username for j in self.jobs.values()
@@ -2269,6 +2302,9 @@ class Engine:
                         rejected.append(raw.strip())
                     continue
                 lname = name.lower()
+                if lname in blocked:
+                    rejected.append(f"{name} (excluded — restore it in the Excluded list)")
+                    continue
                 if lname in spelling:
                     # Report the name as it is already listed, so the message
                     # matches the row you can see.
@@ -2364,8 +2400,8 @@ class Engine:
             job = self.jobs.get(job_id)
             if not job:
                 return False
-            if getattr(job, "platform", "instagram") == "tiktok":
-                exclude_handle = job.username
+            exclude_platform = getattr(job, "platform", "instagram")
+            exclude_handle = job.username
             if job.status == "running":
                 self.cancel_current = True
                 self._terminate_proc()
@@ -2381,19 +2417,29 @@ class Engine:
                 self.pending.remove(job_id)
         self.save_state()
         if exclude_handle:
-            self.exclude_tiktok(exclude_handle, "removed_from_queue")
+            self.exclude_profile(exclude_platform, exclude_handle, "removed_from_queue")
         return True
 
-    def exclude_tiktok(self, handle: str, reason: str) -> bool:
-        """Remember a TikTok profile as excluded. Called on remove and delete.
+    def exclude_profile(self, platform: str, handle: str, reason: str) -> bool:
+        """Remember a profile as excluded. Called on remove and delete.
 
         Lives on the engine rather than in the HTTP layer so every path that
         removes a profile records it -- including any future caller.
+
+        Keyed by platform: the same handle on Instagram and TikTok is usually a
+        different person, so excluding one must never block the other.
         """
         try:
-            return _shared_db().exclude("tiktok", handle, reason)
+            return _shared_db().exclude(platform, handle, reason)
         except Exception:
             return False
+
+    def _excluded_set(self, platform: str) -> set[str]:
+        """Handles excluded for one platform, as lowercase names."""
+        try:
+            return _shared_db().excluded(platform)
+        except Exception:
+            return set()
 
     def forget(self, job_id: str) -> bool:
         """Drop a finished job from the list, archiving it so it can come back.
@@ -2408,8 +2454,8 @@ class Engine:
             job = self.jobs.get(job_id)
             if not job or job.status in ("running", "queued", "retrying"):
                 return False
-            if getattr(job, "platform", "instagram") == "tiktok":
-                exclude_handle = job.username
+            exclude_platform = getattr(job, "platform", "instagram")
+            exclude_handle = job.username
             entry = job.to_dict()
             entry["removed_at"] = time.time()
             self.removed.append(entry)
@@ -2420,7 +2466,7 @@ class Engine:
                 self.pending.remove(job_id)
         self.save_state()
         if exclude_handle:
-            self.exclude_tiktok(exclude_handle, "deleted_from_gallery")
+            self.exclude_profile(exclude_platform, exclude_handle, "deleted_from_gallery")
         return True
 
     def restore(self, job_id: str) -> bool:
@@ -3283,9 +3329,14 @@ class Engine:
                       message="yt-dlp not found on PATH")
             return
 
-        target_dir = self.output_root / job.username
+        # TikTok gets its own folder next to the Instagram profiles rather than
+        # mixed in with them. One shared folder made the gallery ambiguous and
+        # meant a TikTok handle could collide with an Instagram profile of the
+        # same name. Each platform stays independently deletable.
+        tt_root = self.output_root / "tiktok"
+        target_dir = tt_root / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
-        archive = tt.archive_path(self.output_root, job.username)
+        archive = tt.archive_path(tt_root, job.username)
 
         count = int(getattr(job, "tiktok_count", 0) or 0)
         if job.attempts >= job.max_attempts:

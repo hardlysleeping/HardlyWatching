@@ -123,3 +123,32 @@ if __name__ == '__main__':
     h, src = parse(txt)
     print(f'{len(h)} handles via {src}')
     print('\n'.join(to_urls(h)))
+
+# The page itself states how many accounts are followed ("388" above
+# "Following"), while the list only holds the rows that have been scrolled into
+# view. Comparing the two catches a paste taken before scrolling to the bottom,
+# which would otherwise look like a complete import of a much shorter list.
+_TOTAL_RE = re.compile(
+    r'^\s*(\d{1,6})\s*$', re.MULTILINE)
+
+
+def stated_total(text: str) -> int:
+    """The Following count printed on the page, or 0 if it is not there.
+
+    Looks for a bare number on its own line followed, within a couple of lines,
+    by the word "Following". Deliberately conservative: a wrong guess here would
+    nag the user about a list that is actually fine.
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    for i, ln in enumerate(lines):
+        m = _TOTAL_RE.match(ln)
+        if not m:
+            continue
+        window = " ".join(lines[i + 1:i + 4]).lower()
+        if "following" in window:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                continue
+    return 0
+

@@ -531,42 +531,61 @@ class Handler(BaseHTTPRequestHandler):
             fresh = [h for h in handles
                      if h.lower() not in known and h.lower() not in excluded]
             n_excl = sum(1 for h in handles if h.lower() in excluded)
+            # A paste taken before scrolling to the bottom of the list holds
+            # only the rows that were on screen. The page prints the real total,
+            # so flag the mismatch instead of letting it look complete.
+            total = tiktok_handles.stated_total(text)
+            short = (total and len(handles) < total * 0.9)
             return self._json({
                 "parsed": len(handles),
                 "source": source,
                 "new": len(fresh),
                 "already_known": len(handles) - len(fresh) - n_excl,
                 "excluded": n_excl,
+                "stated_total": total,
+                "short": bool(short),
                 "sample": handles[:10],
             })
 
-        if p == "/api/tiktok/excluded":
-            # Deliberately its own tab, away from the queue and the import box.
-            # Restoring is possible but never in the way of normal use.
+        if p in ("/api/excluded", "/api/tiktok/excluded"):
+            # One list covering both platforms. Rows carry their platform
+            # because the same handle on Instagram and TikTok is usually a
+            # different person, and restoring one must not restore the other.
+            #
+            # This lives on the Download tab but below the queue, so it is
+            # available without being in the way of normal use.
             db = _profile_db()
-            rows = db.excluded_list("tiktok")
-            return self._json({
-                "count": len(rows),
-                "profiles": [{
-                    "handle": r["handle"],
-                    "display": r.get("display_name") or "",
-                    "reason": r.get("reason") or "",
-                    "excluded_at": r.get("excluded_at") or 0,
-                } for r in rows],
-            })
+            want = str(body.get("platform") or "all")
+            platforms = ["instagram", "tiktok"] if want == "all" else [want]
+            rows = []
+            for plat in platforms:
+                for r in db.excluded_list(plat):
+                    rows.append({
+                        "handle": r["handle"],
+                        "platform": plat,
+                        "display": r.get("display_name") or "",
+                        "reason": r.get("reason") or "",
+                        "excluded_at": r.get("excluded_at") or 0,
+                    })
+            rows.sort(key=lambda r: r["excluded_at"], reverse=True)
+            return self._json({"count": len(rows), "profiles": rows})
 
-        if p == "/api/tiktok/restore":
-            # Put profiles back into the queue. TikTok's archive file means a
-            # restored profile does not re-download what is already on disk.
+        if p in ("/api/restore", "/api/tiktok/restore"):
+            # Put profiles back into the queue. Both tools skip what is already
+            # on disk, so a restored profile is cheap to re-run.
             db = _profile_db()
+            plat = str(body.get("platform") or "tiktok")
             handles = [str(h).strip().lstrip('@')
                        for h in (body.get("handles") or []) if str(h).strip()]
             if not handles:
                 return self._json({"ok": False, "error": "no handles given"})
-            restored = [h for h in handles if db.restore("tiktok", h)]
-            added, _ = get_engine().add_tiktok(restored, count=int(body.get("count") or 5),
-                                               start=False)
-            db.mark_imported("tiktok", [j.username for j in added])
+            restored = [h for h in handles if db.restore(plat, h)]
+            if plat == "tiktok":
+                added, _ = get_engine().add_tiktok(
+                    restored, count=int(body.get("count") or 5), start=False)
+            else:
+                added, _ = get_engine().add(restored)
+            db.mark_imported(plat, [j.username for j in added])
             return self._json({"ok": True, "restored": len(restored),
                                "queued": len(added), "handles": restored})
 
