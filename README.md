@@ -18,20 +18,37 @@ pacing, and a way to actually browse what you collected.
 
 ## Screenshots
 
-**Queue** — paste profiles, add them, start. Everything downloads one at a time.
+**Queue** — paste profiles, add them, start. They download one at a time, with the
+waiting list and finished list side by side. Both page and search, so a queue of
+hundreds is still easy to navigate.
 
-![The queue screen: a paste box for profiles, a start button, and an empty waiting list](docs/queue.png)
+![The queue screen: eight profiles waiting, one finished, with the page and search controls](docs/queue.png)
 
-**Gallery** — every profile you have archived, plus archive-wide views, and a box
-to add your own photos or folders to any profile.
+**Gallery** — every profile you have archived, marked while it is downloading, plus
+archive-wide views and a box to add your own photos or folders.
 
-![The gallery: profile list with All Favourites, All Trash and Timeline, and an upload box](docs/gallery-views.png)
+![The gallery: profile cards each marked downloading, with All Favourites, All Trash and Timeline](docs/gallery.png)
 
-Uploading from a phone or another computer works through the same browser page —
-choose files or a folder, pick the destination profile, and they appear in that
-profile's grid.
+**One profile** — its posts as a grid, filterable by media type and sorted however
+you like.
 
-![The upload control on the gallery page: choose files, choose folder, or drag files in](docs/gallery-upload.png)
+![A single profile's post grid with media filters and sort options](docs/gallery-profiles.png)
+
+**Timeline** — every post from every profile in one chronological stream, grouped
+by month. The slider jumps between months; the two selectors pick a year and month
+directly. Filter to just favourites if you want.
+
+![The timeline: year and month selectors, a month slider, and a row of post tiles](docs/timeline.png)
+
+**Enlarged view** — click any post. Step through posts with the arrows (or the
+arrow keys), favourite, download a video, or trash it.
+
+![A post enlarged over the grid, with previous and next arrows and action buttons](docs/viewer.png)
+
+**Sessions** — log in once, either by grabbing the Instagram login already in your
+browser or by running instaloader's own login. Handles 2FA.
+
+![The sessions panel: log in, or grab a session from Firefox or Zen](docs/sessions.png)
 
 ---
 
