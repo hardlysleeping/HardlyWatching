@@ -3051,6 +3051,9 @@ class Engine:
             #   "pacing"   -- the between_profiles gap (short, routine)
             #   "rate_limit" -- Instagram asked us to back off (long, an issue)
             "wait": self.wait_reason(),
+            # Which platform the queue will run next. The UI shows one platform
+            # at a time, so a countdown belongs on that tab and not the other.
+            "next_platform": self._next_platform(),
             "consecutive_limits": self.consecutive_limits,
             "removed": removed,
             "jobs": jobs,
@@ -3066,6 +3069,21 @@ class Engine:
                     c[key] += 1
             return c
 
+    def _next_platform(self) -> str:
+        """Platform of the job that will run next, for the per-tab countdown.
+
+        Mirrors what the scheduler is about to do: the running job if there is
+        one, otherwise the first queued job in order.
+        """
+        with self.lock:
+            for j in self.jobs.values():
+                if j.status in ("running", "retrying"):
+                    return getattr(j, "platform", "instagram")
+            for jid in self.pending:
+                j = self.jobs.get(jid)
+                if j is not None and j.status == "queued":
+                    return getattr(j, "platform", "instagram")
+        return "instagram"
     # ---------- worker ----------
 
     def _kick(self) -> None:

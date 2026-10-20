@@ -422,8 +422,8 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Instagram <span>Downloader</span></h1>
-    <div class="sub">paste profiles → queue runs one at a time, auto-resumes on rate limits</div>
+    <h1><span id="hdrPlatform">Instagram</span> <span>Downloader</span></h1>
+    <div class="sub" id="hdrSub">paste profiles → queue runs one at a time, auto-resumes on rate limits</div>
   </header>
 
   <div class="tabs">
@@ -696,8 +696,8 @@ https://www.instagram.com/a.third.profile/"></textarea>
         <div id="viewerHost"></div>
         <div id="empty" class="empty">
           <b>Nothing queued yet.</b><br>
-          Paste Instagram profiles above and hit <b>Add to queue</b> —
-          then press <b>Start</b> in the top bar to begin.<br>
+          <span id="emptyWhat">Paste Instagram profiles above and hit <b>Add to queue</b> —
+          then press <b>Start</b> in the top bar to begin.</span><br>
           <span class="hint">Downloads land in <span id="emptyPath"></span>, one folder per profile.</span>
         </div>
       </div>
@@ -1270,6 +1270,28 @@ function renderLight(st){
   }
 }
 
+// Which platform's queue is on screen. "instagram" | "tiktok".
+let activePlatform = "instagram";
+
+// Return a copy of the state carrying only the active platform's jobs, with
+// counts recomputed so the header does not claim a total from the other side.
+function viewForPlatform(st){
+  const want = activePlatform;
+  const jobs = (st.jobs || []).filter(j => (j.platform || "instagram") === want);
+  // Keep the states in step with the filtered list. Recomputed rather than
+  // filtered so a stale count can never survive a removal.
+  const counts = {queued:0, running:0, done:0, failed:0, cancelled:0};
+  for(const j of jobs){
+    if(j.status === "running" || j.status === "retrying") counts.running++;
+    else if(j.status in counts) counts[j.status]++;
+  }
+  // A wait belongs to whichever platform is about to run, so it is only shown
+  // on the tab it applies to.
+  let wait = null;
+  if(st.wait && st.next_platform === want) wait = st.wait;
+  return {...st, jobs, counts, wait, total_jobs: jobs.length};
+}
+
 function render(st){
   lastState = st;  // cache for optimistic updates (reorder, etc.)
   // While the gallery tab is showing, the entire queue UI is display:none. The
@@ -1285,6 +1307,12 @@ function render(st){
     return;
   }
   lastQueueRender = st;
+  // The Download tab shows one platform at a time, chosen by the sub-tab. The
+  // engine keeps a single job list (and a single worker), so the split is done
+  // here rather than by maintaining two parallel queues that could drift.
+  // Everything below works off `st.jobs`, so filtering once at this point
+  // makes the counts, sections and pagers all agree.
+  st = viewForPlatform(st);
   // Fold the automatic retry countdown into each job, so a failed card can say
   // how long until it tries again rather than looking permanently broken.
   const ar = st.auto_retry || {};
@@ -1311,14 +1339,21 @@ function render(st){
     });
   });
   // session + stats
+  // The dot reports the Instagram session, which TikTok does not use. On the
+  // TikTok tab it says so plainly instead of implying a problem.
   const dot=$("sessDot"), txt=$("sessTxt");
-  if(st.session_ok){ dot.className="dot on"; txt.textContent="logged in as "+st.session_username; }
+  if(activePlatform === "tiktok"){
+    dot.className = "dot on";
+    txt.textContent = "no login needed";
+  } else if(st.session_ok){ dot.className="dot on"; txt.textContent="logged in as "+st.session_username; }
   else if(st.session_present){ dot.className="dot off"; txt.textContent="session invalid — see warning below"; }
   else { dot.className="dot off"; txt.textContent="not logged in"; }
 
   // Session problem banner (empty sessionid, expired login, etc.)
   const sb = $("sessBox");
-  if(!st.session_ok && st.session_problem){
+  // Only Instagram needs a login. yt-dlp fetches public TikTok profiles without
+  // one, so a missing session is not a problem worth flagging on that tab.
+  if(!st.session_ok && st.session_problem && activePlatform === "instagram"){
     sb.innerHTML = `<b>Instagram login problem.</b> ${esc(st.session_problem)}`;
     sb.style.display = "block";
   } else {
@@ -1464,6 +1499,13 @@ function render(st){
   }
 
   $("empty").style.display = jobs.length ? "none" : "block";
+  // The empty state names a platform, so it must match the tab on screen.
+  const ew = $("emptyWhat");
+  if(ew){
+    ew.innerHTML = activePlatform === "tiktok"
+      ? 'Paste TikTok profiles on the TikTok tab and hit <b>Add to queue</b> — then press <b>Start</b> in the top bar.'
+      : 'Paste Instagram profiles above and hit <b>Add to queue</b> — then press <b>Start</b> in the top bar to begin.';
+  }
   $("removedBtn").style.display = (st.removed && st.removed.length) ? "" : "none";
 
   // Waiting list. Paged and searchable: with hundreds queued, rendering every
@@ -2216,11 +2258,19 @@ $("tabGallery").onclick = () => showTab("gallery");
 // which paste box is on screen. The queue below never changes.
 function showPlatform(which){
   const ig = which === "ig";
+  activePlatform = ig ? "instagram" : "tiktok";
   $("subIg").classList.toggle("active", ig);
   $("subTt").classList.toggle("active", !ig);
   $("igPane").style.display = ig ? "" : "none";
   $("ttPane").style.display = ig ? "none" : "";
   if(!ig) loadTiktokKnown();
+  $("hdrPlatform").textContent = ig ? "Instagram" : "TikTok";
+  $("hdrSub").textContent = ig
+    ? "paste profiles → queue runs one at a time, auto-resumes on rate limits"
+    : "paste a profile or your following list → videos download one profile at a time";
+  // The queue below the paste box belongs to the selected platform, so it has
+  // to be redrawn immediately rather than waiting for the next poll.
+  if(lastQueueRender) render(lastQueueRender);
 }
 $("subIg").onclick = () => showPlatform("ig");
 $("subTt").onclick = () => showPlatform("tt");
