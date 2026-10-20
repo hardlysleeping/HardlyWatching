@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#08080c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Shorts</title>
+<link rel="manifest" href="/shorts.webmanifest" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>▶</text></svg>" />
+<style>
+  :root{
+    --bg:#08080c;
+    --fg:#f4f4f6;
+    --muted:rgba(244,244,246,.55);
+    --accent:#ff8c5a;
+    --glass:rgba(20,20,26,.62);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    overscroll-behavior:none}
+  body{overflow:hidden}
+
+  /* One clip fills the screen; snaps vertically like a shorts app. */
+  #feed{
+    height:100%;height:100dvh;overflow-y:scroll;scroll-snap-type:y mandatory;
+    scrollbar-width:none;
+  }
+  #feed::-webkit-scrollbar{display:none}
+
+  .clip{
+    position:relative;height:100%;height:100dvh;scroll-snap-align:start;
+    scroll-snap-stop:always;display:flex;align-items:center;justify-content:center;
+    background:#000;
+  }
+  .clip video{
+    width:100%;height:100%;object-fit:contain;background:#000;
+  }
+  .clip .pad{
+    /* Tapping the middle toggles play; these zones keep the buttons clickable. */
+    position:absolute;inset:0;
+  }
+
+  /* ---- top bar ---- */
+  .topbar{
+    position:fixed;top:0;left:0;right:0;z-index:20;
+    display:flex;align-items:center;gap:.5rem;
+    padding:calc(env(safe-area-inset-top) + .6rem) .8rem .6rem;
+    background:linear-gradient(to bottom,rgba(0,0,0,.65),transparent);
+  }
+  .topbar .title{font-size:.82rem;font-weight:600;letter-spacing:.02em}
+  .topbar .count{font-size:.72rem;color:var(--muted);margin-left:auto}
+  .filt{
+    border:1px solid rgba(255,255,255,.28);background:transparent;color:var(--fg);
+    border-radius:999px;padding:.34rem .7rem;font-size:.72rem;letter-spacing:.03em;
+  }
+  .filt.on{background:var(--accent);border-color:var(--accent);color:#1a0f08}
+
+  /* ---- right-hand action rail ---- */
+  .rail{
+    position:fixed;right:.55rem;bottom:calc(env(safe-area-inset-bottom) + 5.4rem);
+    z-index:20;display:flex;flex-direction:column;gap:.95rem;align-items:center;
+  }
+  .act{
+    width:3.1rem;height:3.1rem;border-radius:50%;border:none;
+    background:var(--glass);backdrop-filter:blur(10px);color:var(--fg);
+    font-size:1.28rem;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:transform .12s ease,background .12s ease;
+  }
+  .act:active{transform:scale(.9)}
+  .act.liked{color:#ff5c8a}
+  .act.trashed{color:#ff5c5c}
+  .act small{font-size:.55rem;display:block;margin-top:-.15rem}
+  .lbl{font-size:.58rem;color:var(--muted);text-align:center;margin-top:.15rem;
+    letter-spacing:.05em;text-transform:uppercase}
+
+  /* ---- bottom info ---- */
+  .bottombar{
+    position:fixed;left:0;right:0;bottom:0;z-index:20;
+    padding:.9rem 1rem calc(env(safe-area-inset-bottom) + .9rem);
+    background:linear-gradient(to top,rgba(0,0,0,.8),transparent);
+    pointer-events:none;
+  }
+  .bottombar .who{font-size:.9rem;font-weight:600}
+  .bottombar .meta{font-size:.7rem;color:var(--muted);margin-top:.15rem}
+
+  /* ---- states ---- */
+  .msg{
+    height:100%;height:100dvh;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:.8rem;padding:2rem;text-align:center;
+  }
+  .msg h2{font-size:1.05rem;margin:0;font-weight:600}
+  .msg p{margin:0;font-size:.82rem;color:var(--muted);line-height:1.6;max-width:26ch}
+  .msg a{color:var(--accent);text-decoration:none;font-size:.82rem}
+  .spinner{
+    width:26px;height:26px;border:2px solid rgba(255,255,255,.18);
+    border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  .toast{
+    position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 1.4rem);
+    transform:translateX(-50%) translateY(20px);opacity:0;
+    background:rgba(30,30,38,.95);color:var(--fg);border-radius:999px;
+    padding:.5rem .95rem;font-size:.74rem;z-index:40;pointer-events:none;
+    transition:opacity .18s ease,transform .18s ease;white-space:nowrap;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<div id="feed"></div>
+
+<div class="topbar" id="topbar" style="display:none">
+  <span class="title">Shorts</span>
+  <button class="filt" id="favBtn">Favourites</button>
+  <span class="count" id="count"></span>
+</div>
+
+<div class="rail" id="rail" style="display:none">
+  <div>
+    <button class="act" id="likeBtn" aria-label="Like">&#9825;</button>
+    <div class="lbl">like</div>
+  </div>
+  <div>
+    <button class="act" id="dlBtn" aria-label="Download">&#8595;</button>
+    <div class="lbl">save</div>
+  </div>
+  <div>
+    <button class="act" id="trashBtn" aria-label="Trash">&#128465;</button>
+    <div class="lbl">trash</div>
+  </div>
+  <div>
+    <button class="act" id="moreBtn" aria-label="Show more often">&#8679;</button>
+    <div class="lbl">more</div>
+  </div>
+  <div>
+    <button class="act" id="lessBtn" aria-label="Show less often">&#8681;</button>
+    <div class="lbl">less</div>
+  </div>
+</div>
+
+<div class="bottombar" id="bottombar" style="display:none">
+  <div class="who" id="who"></div>
+  <div class="meta" id="meta"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+const feed = document.getElementById("feed");
+const TOP = 4;            // clips fetched per batch
+const REFILL_AT = 2;      // fetch more when this many remain below the fold
+const MAX_EXCLUDE = 400;  // remember this many recently shown, then forget
+
+let clips = [];           // loaded clips, in feed order
+let idx = 0;              // index of the clip in view
+let seen = [];            // recently shown, sent back so they are deprioritised
+let favourites = false;
+let loading = false;
+
+const $ = id => document.getElementById(id);
+
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 1600);
+}
+
+async function post(path, body){
+  const r = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body || {}),
+  });
+  if(!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+// ---- feed building -------------------------------------------------------
+
+function clipEl(c){
+  const wrap = document.createElement("div");
+  wrap.className = "clip";
+  wrap.dataset.path = c.path;
+
+  const v = document.createElement("video");
+  v.src = c.url;
+  v.playsInline = true;
+  v.preload = "none";
+  v.loop = true;
+  v.muted = false;
+  // Fall back to a poster-free black frame rather than a broken icon.
+  wrap.appendChild(v);
+
+  // Tapping the middle plays/pauses; the rail handles its own clicks.
+  wrap.addEventListener("click", e => {
+    if(e.target.closest(".rail") || e.target.closest(".topbar")) return;
+    if(v.paused) v.play().catch(()=>{}); else v.pause();
+  });
+  wrap.querySelector("video").addEventListener("error", () => {
+    wrap.innerHTML = '<div class="msg"><h2>Cannot play this one</h2>' +
+                     '<p>The file may be audio-only or use a codec the browser lacks.</p></div>';
+  });
+  return wrap;
+}
+
+function renderEmpty(message, sub){
+  $("topbar").style.display = "none";
+  $("rail").style.display = "none";
+  $("bottombar").style.display = "none";
+  feed.innerHTML = '<div class="msg"><h2>' + message + "</h2><p>" + sub + "</p></div>";
+}
+
+function renderLoading(){
+  feed.innerHTML = '<div class="msg"><div class="spinner"></div><p>Loading…</p></div>';
+}
+
+async function fetchMore(){
+  if(loading) return;
+  loading = true;
+  try{
+    const r = await post("/api/shorts/feed", {
+      limit: TOP,
+      favourites,
+      exclude: seen.slice(-MAX_EXCLUDE),
+    });
+    const got = r.clips || [];
+    if(!got.length && !clips.length){
+      renderEmpty(
+        favourites ? "No favourites yet" : "Nothing to show",
+        favourites
+          ? "Like a few clips and they will appear here."
+          : "Download some TikToks first, then come back."
+      );
+      return;
+    }
+    for(const c of got){
+      clips.push(c);
+      feed.appendChild(clipEl(c));
+    }
+    $("topbar").style.display = "";
+    $("rail").style.display = "";
+    $("bottombar").style.display = "";
+    if(!got.length) toast("No more clips for now");
+  }catch(e){
+    if(!clips.length) renderEmpty("Cannot reach the app", String(e.message || e));
+    else toast("Could not load more");
+  }finally{
+    loading = false;
+  }
+}
+
+// ---- which clip is in view ----------------------------------------------
+
+function current(){
+  // The visible clip is the one whose top is closest to the viewport top.
+  const kids = [...feed.querySelectorAll(".clip")];
+  if(!kids.length) return null;
+  const top = feed.scrollTop;
+  let best = kids[0], bestD = Infinity;
+  for(const k of kids){
+    const d = Math.abs(k.offsetTop - top);
+    if(d < bestD){ bestD = d; best = k; }
+  }
+  return best;
+}
+
+function currentData(){
+  const el = current();
+  if(!el) return null;
+  return clips.find(c => c.path === el.dataset.path) || null;
+}
+
+function playCurrent(){
+  fillRail();
+  for(const v of feed.querySelectorAll("video")){
+    if(v.closest(".clip") === current()){
+      v.play().catch(()=>{});
+      if(v.preload === "none") v.preload = "auto";
+    }else{
+      v.pause();
+      // Free memory on a long scroll: unload clips far from view.
+      if(Math.abs(v.closest(".clip").offsetTop - feed.scrollTop) > window.innerHeight * 3)
+        v.removeAttribute("src");
+    }
+  }
+}
+
+function fillRail(){
+  const c = currentData();
+  if(!c) return;
+  $("who").textContent = "@" + (c.profile || "");
+  const mb = c.bytes ? (c.bytes / 1048576).toFixed(1) + " MB" : "";
+  $("meta").textContent = [c.platform, mb,
+    "shown " + (c.shown || 0) + "×", "weight " + (c.weight ?? 1)]
+    .filter(Boolean).join(" · ");
+  $("likeBtn").classList.toggle("liked", !!c.liked);
+  $("likeBtn").innerHTML = c.liked ? "&#9829;" : "&#9825;";
+  $("count").textContent = (idx + 1) + " / " + clips.length;
+}
+
+// ---- scrolling -----------------------------------------------------------
+
+let scrollTimer = null;
+feed.addEventListener("scroll", () => {
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(onScrollSettled, 90);
+}, {passive:true});
+
+function onScrollSettled(){
+  const c = currentData();
+  if(c){
+    const i = clips.indexOf(c);
+    if(i !== idx){
+      idx = i;
+      seen.push(c.path);
+      if(seen.length > MAX_EXCLUDE) seen = seen.slice(-MAX_EXCLUDE);
+    }
+  }
+  playCurrent();
+  // Keep the feed fed as the user approaches the end.
+  if(clips.length - idx <= REFILL_AT) fetchMore();
+}
+
+// ---- actions -------------------------------------------------------------
+
+async function act(action, extra){
+  const c = currentData();
+  if(!c) return;
+  try{
+    const r = await post("/api/shorts/action", {path: c.path, action, ...(extra || {})});
+    return r;
+  }catch(e){ toast("Failed: " + e.message); }
+}
+
+$("likeBtn").onclick = async () => {
+  const c = currentData();
+  if(!c) return;
+  c.liked = c.liked ? 0 : 1;
+  fillRail();
+  await act("like", {value: !!c.liked});
+};
+
+$("trashBtn").onclick = async () => {
+  const c = currentData();
+  if(!c) return;
+  const el = current();
+  await act("trash");
+  // Drop it from this feed immediately; the file stays on disk.
+  el.style.transition = "opacity .18s ease";
+  el.style.opacity = "0";
+  setTimeout(() => {
+    el.remove();
+    clips = clips.filter(x => x.path !== c.path);
+    if(!clips.length) fetchMore();
+    else playCurrent();
+  }, 190);
+  toast("Trashed");
+};
+
+$("moreBtn").onclick = async () => {
+  const r = await act("more");
+  if(r && r.weight) toast("Shows more often (" + r.weight + "×)");
+};
+
+$("lessBtn").onclick = async () => {
+  const r = await act("less");
+  if(r && r.weight) toast("Shows less often (" + r.weight + "×)");
+};
+
+$("dlBtn").onclick = () => {
+  const c = currentData();
+  if(!c) return;
+  // Straight to the file; the browser handles the save dialog.
+  const a = document.createElement("a");
+  a.href = c.url;
+  a.download = String(c.path).split("/").pop();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast("Saving…");
+};
+
+$("favBtn").onclick = () => {
+  favourites = !favourites;
+  $("favBtn").classList.toggle("on", favourites);
+  // Rebuild from scratch: the pool has changed, so old clips are not valid.
+  clips = []; idx = 0; seen = [];
+  feed.innerHTML = "";
+  renderLoading();
+  fetchMore();
+};
+
+// ---- keyboard ------------------------------------------------------------
+
+document.addEventListener("keydown", e => {
+  if(e.key === "ArrowDown" || e.key === "j"){
+    e.preventDefault();
+    feed.scrollBy({top: window.innerHeight, behavior: "smooth"});
+  }else if(e.key === "ArrowUp" || e.key === "k"){
+    e.preventDefault();
+    feed.scrollBy({top: -window.innerHeight, behavior: "smooth"});
+  }else if(e.key === " "){
+    e.preventDefault();
+    const v = current()?.querySelector("video");
+    if(v){ v.paused ? v.play().catch(()=>{}) : v.pause(); }
+  }else if(e.key === "l"){ $("likeBtn").click(); }
+  else if(e.key === "f"){ $("favBtn").click(); }
+});
+
+// ---- boot ----------------------------------------------------------------
+
+renderLoading();
+fetchMore();
+</script>
+</body>
+</html>

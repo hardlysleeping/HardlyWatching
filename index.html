@@ -172,6 +172,20 @@
   .pill.done{color:var(--ok);border-color:#1f5138}
   .pill.failed{color:var(--err);border-color:#5a2b2b}
   .pill.cancelled{color:var(--muted)}
+  /* Sub-tabs inside Download: one per platform. Same queue underneath, so
+     switching is only about which import box you are typing into. */
+  .subtabs{display:flex;gap:6px;margin:2px 0 12px}
+  .subtab{border:1px solid var(--line);background:transparent;color:var(--muted);
+    border-radius:999px;padding:5px 14px;font-size:12.5px;cursor:pointer;
+    font-family:inherit;transition:color .12s,border-color .12s,background .12s}
+  .subtab:hover{color:var(--fg)}
+  .subtab.active{color:#0d0d12;background:var(--accent);border-color:var(--accent);font-weight:600}
+  /* Import cards inside the platform panes are not job rows, so they must
+     stack rather than use the 3-column grid .card is built for. */
+  #ttPane .card{display:block;margin-bottom:12px}
+  #ttPane .card h3{margin-bottom:6px}
+  .pill.tiktok{color:#69e0e6;border-color:#1d4d50}
+  .pill.ig{color:#e08ae0;border-color:#4d2b4d}
   .pill.reels{color:#f472b6;border-color:#5a2b4a;background:#24162100}
   .pill.tagged{color:#67e8f9;border-color:#1e4d5a;background:#0f232800}
   /* Per-pass markers on a grouped Finished entry (main / reels / tagged). */
@@ -413,7 +427,7 @@
   </header>
 
   <div class="tabs">
-    <button class="tab active" id="tabQueue">Queue</button>
+    <button class="tab active" id="tabQueue">Download</button>
     <button class="tab" id="tabGallery">Gallery</button>
   </div>
 
@@ -512,6 +526,12 @@
     </div>
   </div>
 
+  <div class="subtabs">
+    <button class="subtab active" id="subIg">Instagram</button>
+    <button class="subtab" id="subTt">TikTok</button>
+  </div>
+
+  <div id="igPane">
   <div class="composer">
     <textarea id="input" placeholder="One per line — username, @username, or a profile URL:
 some.profile
@@ -527,6 +547,66 @@ https://www.instagram.com/a.third.profile/"></textarea>
       New profiles use the settings below. Existing queue items keep their own settings.
     </div>
   </div>
+
+  </div><!-- /igPane -->
+
+  <div id="ttPane" style="display:none">
+      <div class="card">
+        <h3 style="margin-top:0">Import from TikTok</h3>
+        <p class="hint" style="margin-top:0">
+          Go to your TikTok profile and click <b>view all</b> next to <b>Following accounts</b> —
+          the list in the bottom-left of the profile page. With that open, press
+          <b>Ctrl+A</b> then <b>Ctrl+C</b> and paste here. Scrolling is not needed: the
+          copy includes accounts that have not loaded yet.
+        </p>
+        <p class="hint">
+          Plain handles, <b>@handles</b> and profile links work too, one per line or
+          comma separated.
+        </p>
+        <textarea id="ttInput" placeholder="Paste the whole page here — it finds the usernames for you
+
+  …or just type them:
+  someone
+  @somebody
+  https://www.tiktok.com/@another"></textarea>
+        <div class="row" style="margin-top:10px">
+          <label class="hint" for="ttCount" style="align-self:center">Videos per profile</label>
+          <select id="ttCount" class="small" style="width:auto">
+            <option value="5" selected>5 most recent</option>
+            <option value="10">10</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="0">All</option>
+          </select>
+          <button class="small" id="ttCheckBtn">Check</button>
+          <button class="primary" id="ttImportBtn">Add to queue</button>
+          <button class="small" id="ttClearBtn">Clear</button>
+        </div>
+        <div id="ttResult" class="hint" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Already imported</h3>
+        <p class="hint" style="margin-top:0">
+          Remembered in a local database, so re-pasting the same list only adds
+          what is new.
+        </p>
+        <div id="ttKnown" class="hint">—</div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Excluded <span id="ttExcludedCount" class="hint"></span></h3>
+        <p class="hint" style="margin-top:0">
+          People you removed from the queue or deleted after downloading. Pasting
+          your following list again will <b>not</b> add them back. Nothing here is
+          deleted — restore any of them and they return to the queue.
+        </p>
+        <div id="ttExcluded" class="hint">—</div>
+        <div class="row" id="ttExcludedActions" style="margin-top:10px;display:none">
+          <button class="small" id="ttRestoreAllBtn">Restore all</button>
+        </div>
+      </div>
+  </div><!-- /ttPane -->
 
   <details class="settings" id="settingsBox">
     <summary>Download settings <span class="hint" id="setSummary"></span></summary>
@@ -888,6 +968,25 @@ const SPEC = [
   {k:"storyitem_filter", l:"Story filter", d:"python expr", t:"str", flag:"--storyitem-filter"},
   {group:"How"},
   {k:"between_profiles", l:"Seconds between profiles", d:"600 = 10 min. Longer is much safer", t:"num", flag:"(app)"},
+  {k:"between_tiktok", l:"Seconds between TikTok profiles", d:"own timer, so TikTok pacing can't stall Instagram. 600 = 10 min", t:"num", flag:"(app)"},
+  {group:"TikTok (yt-dlp)"},
+  {k:"tiktok.quality", l:"Video quality", d:"TikTok rung: 540, 720 or 1080. 0 = best available", t:"num", flag:"-f", dotted:true},
+  {k:"tiktok.merge_container", l:"Merge into", d:"--merge-output-format", t:"str", flag:"--merge-output-format", dotted:true},
+  {k:"tiktok.recode", l:"Re-encode to", d:"--recode-video, blank = never re-encode", t:"str", flag:"--recode-video", dotted:true},
+  {k:"tiktok.write_info_json", l:"Write metadata JSON", d:"--write-info-json", t:"bool", flag:"--write-info-json", dotted:true},
+  {k:"tiktok.write_description", l:"Write description", d:"--write-description", t:"bool", flag:"--write-description", dotted:true},
+  {k:"tiktok.write_thumbnail", l:"Write thumbnail", d:"--write-thumbnail", t:"bool", flag:"--write-thumbnail", dotted:true},
+  {k:"tiktok.embed_metadata", l:"Embed metadata", d:"--embed-metadata", t:"bool", flag:"--embed-metadata", dotted:true},
+  {k:"tiktok.embed_thumbnail", l:"Embed cover art", d:"--embed-thumbnail", t:"bool", flag:"--embed-thumbnail", dotted:true},
+  {k:"tiktok.sleep_requests", l:"Sleep between requests (s)", d:"--sleep-requests. 0 = none", t:"num", flag:"--sleep-requests", dotted:true},
+  {k:"tiktok.sleep_interval", l:"Sleep before each download (s)", d:"--sleep-interval. 0 = none", t:"num", flag:"--sleep-interval", dotted:true},
+  {k:"tiktok.retries", l:"Retries", d:"--retries", t:"num", flag:"--retries", dotted:true},
+  {k:"tiktok.fragment_retries", l:"Fragment retries", d:"--fragment-retries", t:"num", flag:"--fragment-retries", dotted:true},
+  {k:"tiktok.limit_rate", l:"Rate limit", d:"--limit-rate, e.g. 5M. blank = unlimited", t:"str", flag:"--limit-rate", dotted:true},
+  {k:"tiktok.date_after", l:"Only videos on/after", d:"--dateafter YYYYMMDD. blank = no limit", t:"str", flag:"--dateafter", dotted:true},
+  {k:"tiktok.date_before", l:"Only videos on/before", d:"--datebefore YYYYMMDD. blank = no limit", t:"str", flag:"--datebefore", dotted:true},
+  {k:"tiktok.cookies_from_browser", l:"Cookies from browser", d:"--cookies-from-browser, e.g. firefox. blank = none", t:"str", flag:"--cookies-from-browser", dotted:true},
+  {k:"tiktok.proxy", l:"Proxy", d:"--proxy. blank = none", t:"str", flag:"--proxy", dotted:true},
   {group:"When the queue is empty"},
   {k:"autocheck", l:"Check for new posts automatically", d:"when nothing is queued, look for new posts on every archived profile", t:"bool", flag:"(app)"},
   {k:"autocheck_hours", l:"Only if idle for (hours)", d:"won't check more often than this. 0 = off", t:"num", flag:"(app)"},
@@ -923,14 +1022,19 @@ function buildSettings(){
     el.onchange = async () => {
       const patch = {};
       const k = el.dataset.k;
-      if(el.dataset.t==="bool") patch[k] = el.checked;
-      else if(el.dataset.t==="num") patch[k] = parseInt(el.value||"0",10)||0;
-      else patch[k] = el.value;
+      let val;
+      if(el.dataset.t==="bool") val = el.checked;
+      else if(el.dataset.t==="num") val = parseInt(el.value||"0",10)||0;
+      else val = el.value;
+      // Dotted keys are nested into {tiktok:{...}} so the server can treat the
+      // yt-dlp options as one block.
+      setDeep(patch, k, val);
       const r = await post("/api/settings",{settings:patch});
       settings = r.settings;
       document.querySelectorAll(`input[data-k="${k}"]`).forEach(i=>{
-        if(i.dataset.t==="bool") i.checked = !!r.settings[k];
-        else i.value = r.settings[k] ?? "";
+        const nv = getDeep(r.settings, k);
+        if(i.dataset.t==="bool") i.checked = !!nv;
+        else i.value = nv ?? "";
       });
       refreshSummary();
       toast("Saved");
@@ -1047,14 +1151,31 @@ async function addRoot(){
   if(r.ok){ inp.value = ""; tick(); }
 }
 
+// Settings can be nested (tiktok.quality). These two read and write a dotted
+// key against a plain settings object without pulling in a library.
+function getDeep(obj, key){
+  return key.split(".").reduce((o,k)=> (o==null ? undefined : o[k]), obj);
+}
+function setDeep(obj, key, val){
+  const parts = key.split(".");
+  let o = obj;
+  for(let i=0;i<parts.length-1;i++){
+    if(o[parts[i]]==null || typeof o[parts[i]]!=="object") o[parts[i]] = {};
+    o = o[parts[i]];
+  }
+  o[parts[parts.length-1]] = val;
+  return obj;
+}
+
 function fillSettings(s){
   settings = s;
   // only fill fields when they differ, so typing is not interrupted by a poll
   $("sgrid").querySelectorAll("input").forEach((el)=>{
     const k = el.dataset.k;
     if(document.activeElement === el) return;  // don't fight the user
-    if(el.dataset.t==="bool") el.checked = !!s[k];
-    else el.value = s[k] ?? "";
+    const v = getDeep(s, k);
+    if(el.dataset.t==="bool") el.checked = !!v;
+    else el.value = v ?? "";
   });
   refreshSummary();
 }
@@ -1562,6 +1683,10 @@ function groupFinished(jobs){
     const key = j.username || j.id;
     let g = byUser.get(key);
     if(!g){ g = {username: j.username, id: j.id, kind: "main", status: "done",
+                 // Carried through so the finished card can label which tool
+                 // fetched this profile; without it every entry reads as
+                 // Instagram because the field is simply absent.
+                 platform: j.platform || "instagram",
                  passes: {}, jobs: [], posts: 0, total_bytes: 0,
                  last_run_seconds: 0, message: "", error: ""};
              byUser.set(key, g); }
@@ -1706,6 +1831,7 @@ function cardHtml(j, pos, qpos){
           <span class="name clickable" data-profile="${esc(j.username)}"
                 title="Show ${esc(j.username)} on Instagram">${esc(j.username)}</span>
           ${j.passes ? passPills(j.passes) : ""}
+          ${j.platform==="tiktok"?'<span class="pill tiktok" title="Downloaded with yt-dlp">tiktok</span>':'<span class="pill ig" title="Downloaded with instaloader">instagram</span>'}
           ${j.kind==="reels"?'<span class="pill reels" title="Reels-only pass">reels</span>':""}
           ${j.kind==="tagged"?'<span class="pill tagged" title="Tagged-posts-only pass">tagged</span>':""}
           <span class="pill ${esc(j.status)}">${esc(j.status)}</span>
@@ -2063,24 +2189,134 @@ let gSeed = 1;            // makes the random order stable for one view
 let gReq = 0;             // guards against out-of-order responses
 
 function showTab(which){
+  // Two tabs only: Download (both platforms, queue and finished together) and
+  // Gallery. Instagram and TikTok share one worker and one list, so they share
+  // one tab -- splitting them made the queue look like two different apps.
   const gallery = which === "gallery";
   $("tabQueue").classList.toggle("active", !gallery);
   $("tabGallery").classList.toggle("active", gallery);
   $("galleryPane").style.display = gallery ? "" : "none";
-  // Everything between the tab strip and the gallery pane is the queue UI.
   for(const el of document.querySelectorAll(".wrap > *")){
-    if(el.id === "galleryPane" || el.classList.contains("tabs") || el.tagName === "HEADER")
+    if(el.id === "galleryPane" ||
+       el.classList.contains("tabs") || el.tagName === "HEADER")
       continue;
     el.style.display = gallery ? "none" : "";
   }
   if(gallery) renderGallery();
-  // The poll skips the queue while the gallery is showing, so coming back has
+  // The poll skips the queue while another pane is showing, so coming back has
   // to draw it from the last state we saw.
   else if(lastQueueRender) render(lastQueueRender);
 }
 
 $("tabQueue").onclick = () => showTab("queue");
 $("tabGallery").onclick = () => showTab("gallery");
+
+// ---- platform sub-tabs --------------------------------------------------
+// Both platforms feed the same queue and the same worker, so this only swaps
+// which paste box is on screen. The queue below never changes.
+function showPlatform(which){
+  const ig = which === "ig";
+  $("subIg").classList.toggle("active", ig);
+  $("subTt").classList.toggle("active", !ig);
+  $("igPane").style.display = ig ? "" : "none";
+  $("ttPane").style.display = ig ? "none" : "";
+  if(!ig) loadTiktokKnown();
+}
+$("subIg").onclick = () => showPlatform("ig");
+$("subTt").onclick = () => showPlatform("tt");
+
+// ---- TikTok import -------------------------------------------------------
+// The pasted text is a whole page dump. The server parses it (the same parser
+// the CLI uses), so the browser never needs to understand TikTok's markup.
+
+async function loadTiktokKnown(){
+  try{
+    const r = await post("/api/tiktok/profiles", {limit: 1});
+    $("ttKnown").textContent = r.count
+      ? `${r.count} profile${r.count === 1 ? "" : "s"} remembered from previous imports.`
+      : "Nothing imported yet.";
+  }catch(e){ $("ttKnown").textContent = "—"; }
+  loadExcluded();
+}
+
+// Excluded is its own list so it never sits in the way of the queue or the
+// import box. Restoring is one click and puts the person back in the queue;
+// TikTok's archive file means already-downloaded videos are not fetched again.
+async function loadExcluded(){
+  const box = $("ttExcluded");
+  try{
+    const r = await post("/api/tiktok/excluded", {});
+    const n = r.count || 0;
+    $("ttExcludedCount").textContent = n ? `(${n})` : "";
+    $("ttExcludedActions").style.display = n ? "" : "none";
+    if(!n){ box.textContent = "Nobody excluded."; return; }
+    const why = {removed_from_queue:"removed", deleted_from_gallery:"deleted"};
+    box.innerHTML = r.profiles.map(p => `
+      <div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #222">
+        <span>${esc(p.handle)}
+          <span class="hint">${esc(why[p.reason] || p.reason || "")}</span></span>
+        <button class="small" data-restore="${esc(p.handle)}">Restore</button>
+      </div>`).join("");
+    box.querySelectorAll("[data-restore]").forEach(b=>{
+      b.onclick = async () => {
+        b.disabled = true;
+        try{
+          const res = await post("/api/tiktok/restore", {handles:[b.dataset.restore]});
+          if(res.ok) b.textContent = "Restored";
+          else b.textContent = "Failed";
+          loadExcluded();
+        }catch(e){ b.textContent = "Failed"; b.disabled = false; }
+      };
+    });
+  }catch(e){ box.textContent = "Could not load the excluded list."; }
+}
+
+$("ttRestoreAllBtn").onclick = async () => {
+  if(!confirm("Restore everyone on the excluded list back into the queue?")) return;
+  try{
+    const r = await post("/api/tiktok/excluded", {});
+    const handles = (r.profiles || []).map(p => p.handle);
+    if(!handles.length) return;
+    const res = await post("/api/tiktok/restore", {handles});
+    $("ttResult").textContent = `Restored ${res.restored}, queued ${res.queued}.`;
+    loadExcluded();
+  }catch(e){ $("ttResult").textContent = "Restore failed."; }
+};
+
+$("ttCheckBtn").onclick = async () => {
+  const text = $("ttInput").value;
+  if(!text.trim()){ $("ttResult").textContent = "Paste something first."; return; }
+  $("ttResult").textContent = "Reading…";
+  try{
+    const r = await post("/api/tiktok/parse", {text});
+    if(!r.parsed){ $("ttResult").textContent = "No usernames found in that text."; return; }
+    let msg = `Found ${r.parsed} username${r.parsed === 1 ? "" : "s"} ` +
+              `(read from the ${r.source} format). ${r.new} new, ${r.already_known} already imported.`;
+    if(r.sample && r.sample.length) msg += ` First: ${r.sample.slice(0,5).join(", ")}`;
+    $("ttResult").textContent = msg;
+  }catch(e){ $("ttResult").textContent = "Error: " + e.message; }
+};
+
+$("ttImportBtn").onclick = async () => {
+  const text = $("ttInput").value;
+  if(!text.trim()){ $("ttResult").textContent = "Paste something first."; return; }
+  const count = parseInt($("ttCount").value, 10);
+  $("ttImportBtn").disabled = true;
+  $("ttResult").textContent = "Adding to queue…";
+  try{
+    const r = await post("/api/tiktok/import", {text, count});
+    if(!r.ok){ $("ttResult").textContent = r.error || "Failed."; return; }
+    $("ttResult").textContent =
+      `Queued ${r.queued} profile${r.queued === 1 ? "" : "s"}` +
+      (r.skipped ? `, ${r.skipped} already in the list.` : ".") +
+      " Nothing has started — remove any you don't want, then press Start.";
+    $("ttInput").value = "";
+    loadTiktokKnown();
+  }catch(e){ $("ttResult").textContent = "Error: " + e.message; }
+  finally{ $("ttImportBtn").disabled = false; }
+};
+
+$("ttClearBtn").onclick = () => { $("ttInput").value = ""; $("ttResult").textContent = ""; };
 
 function buildAllBar(profileCount){
   const bar = $("allBar");

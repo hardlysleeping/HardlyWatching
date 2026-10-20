@@ -75,6 +75,18 @@ def get_engine() -> Engine:
     return _engine
 
 
+# Local SQLite record of imported profiles. Created lazily and shared, so the
+# connection is not reopened per request.
+_profile_db_inst = None
+
+
+def _profile_db():
+    # Delegates to the single shared instance so the engine and the HTTP layer
+    # never hold two connections to the same database.
+    from profile_db import _shared_db
+    return _shared_db()
+
+
 def _open_folder(path: Path) -> None:
     """Reveal a folder in the desktop's file manager, on any OS."""
     if not path.exists():
@@ -308,6 +320,22 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if p in ("/", "/index.html"):
             return self._serve_file(HERE / "index.html")
+        if p in ("/shorts", "/shorts/"):
+            # Phone-shaped feed. Served from the same app so it shares the
+            # output root, the state file and the clips table.
+            return self._serve_file(HERE / "shorts.html")
+        if p == "/shorts.webmanifest":
+            return self._serve_file(HERE / "shorts.webmanifest")
+        if p.startswith("/api/shorts/file/"):
+            # Stream a clip from the archive. resolve() refuses anything that
+            # escapes the output root, so a traversal attempt 404s.
+            import shorts
+            rel = p[len("/api/shorts/file/"):]
+            from urllib.parse import unquote
+            target = shorts.resolve(get_engine().output_root, unquote(rel))
+            if target is None:
+                return self.send_error(404)
+            return self._serve_file(target, cache=True)
         if p == "/api/state":
             # The UI polls this every ~1.2s, so it doubles as a worker watchdog:
             # if the worker died with work still queued, revive it.
@@ -489,9 +517,136 @@ class Handler(BaseHTTPRequestHandler):
             added, rejected = get_engine().add(names, overrides)
             return self._json({"added": [j.username for j in added], "rejected": rejected})
 
+        if p == "/api/tiktok/parse":
+            # Dry run: parse a pasted dump and report what would be queued,
+            # without touching the queue. Lets the user see the count first.
+            import tiktok_handles
+            text = str(body.get("text") or "")
+            handles, source = tiktok_handles.parse(text)
+            db = _profile_db()
+            known = db.known("tiktok")
+            excluded = db.excluded("tiktok")
+            # Excluded are counted on their own: they are "known" but will not
+            # be queued, so lumping them in with already_known would be a lie.
+            fresh = [h for h in handles
+                     if h.lower() not in known and h.lower() not in excluded]
+            n_excl = sum(1 for h in handles if h.lower() in excluded)
+            return self._json({
+                "parsed": len(handles),
+                "source": source,
+                "new": len(fresh),
+                "already_known": len(handles) - len(fresh) - n_excl,
+                "excluded": n_excl,
+                "sample": handles[:10],
+            })
+
+        if p == "/api/tiktok/excluded":
+            # Deliberately its own tab, away from the queue and the import box.
+            # Restoring is possible but never in the way of normal use.
+            db = _profile_db()
+            rows = db.excluded_list("tiktok")
+            return self._json({
+                "count": len(rows),
+                "profiles": [{
+                    "handle": r["handle"],
+                    "display": r.get("display_name") or "",
+                    "reason": r.get("reason") or "",
+                    "excluded_at": r.get("excluded_at") or 0,
+                } for r in rows],
+            })
+
+        if p == "/api/tiktok/restore":
+            # Put profiles back into the queue. TikTok's archive file means a
+            # restored profile does not re-download what is already on disk.
+            db = _profile_db()
+            handles = [str(h).strip().lstrip('@')
+                       for h in (body.get("handles") or []) if str(h).strip()]
+            if not handles:
+                return self._json({"ok": False, "error": "no handles given"})
+            restored = [h for h in handles if db.restore("tiktok", h)]
+            added, _ = get_engine().add_tiktok(restored, count=int(body.get("count") or 5),
+                                               start=False)
+            db.mark_imported("tiktok", [j.username for j in added])
+            return self._json({"ok": True, "restored": len(restored),
+                               "queued": len(added), "handles": restored})
+
+        if p == "/api/tiktok/import":
+            import tiktok_handles
+            text = str(body.get("text") or "")
+            count = int(body.get("count") or 5)
+            handles, source = tiktok_handles.parse(text)
+            if not handles:
+                return self._json({"ok": False, "error": "No usernames found in that text."})
+            db = _profile_db()
+            excluded = db.excluded("tiktok")
+            blocked = [h for h in handles if h.lower() in excluded]
+            # Only record people who are actually eligible, so an excluded
+            # handle is never quietly touched by an import.
+            for h in handles:
+                if h.lower() not in excluded:
+                    db.record("tiktok", h, source=source or "following")
+            try:
+                added, skipped = get_engine().add_tiktok(
+                    handles, count=count, start=False, excluded=excluded)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            db.mark_imported("tiktok", [j.username for j in added])
+            return self._json({
+                "ok": True,
+                "parsed": len(handles),
+                "queued": len(added),
+                "skipped": len(handles) - len(added),
+                "excluded": len(blocked),
+                "excluded_handles": blocked[:20],
+                "urls": tiktok_handles.to_urls(handles, "tiktok"),
+            })
+
+        if p == "/api/tiktok/profiles":
+            db = _profile_db()
+            return self._json({
+                "count": db.count("tiktok"),
+                "recent": db.recent("tiktok", int(body.get("limit") or 50)),
+            })
+
+        if p == "/api/shorts/feed":
+            # Newest-first scan of what is actually on disk, synced into the
+            # clips table, then a weighted pick. Verifying against disk each
+            # call is what makes a deleted file drop out of the feed.
+            import shorts
+            limit = int(body.get("limit") or 20)
+            fav = bool(body.get("favourites"))
+            seen = body.get("exclude") or []
+            db = _profile_db()
+            found = shorts.scan(get_engine().output_root)
+            db.sync_clips(found)
+            alive = [f["path"] for f in found]
+            by_path = {f["path"]: f for f in found}
+            rows = db.feed(limit, favourites_only=fav, exclude=seen, known_paths=alive)
+            out = []
+            for r in rows:
+                meta = by_path.get(r["path"], {})
+                out.append({**r, **{k: meta.get(k) for k in ("url", "mtime", "bytes")}})
+            db.mark_shown([r["path"] for r in out])
+            return self._json({"clips": out, "stats": db.clip_stats()})
+
+        if p == "/api/shorts/action":
+            db = _profile_db()
+            path = str(body.get("path") or "")
+            action = str(body.get("action") or "")
+            if action == "like":
+                db.set_liked(path, bool(body.get("value", True)))
+                return self._json({"ok": True, "liked": db.clip(path)["liked"]})
+            if action == "trash":
+                db.set_trashed(path, True)
+                return self._json({"ok": True})
+            if action == "more":
+                return self._json({"ok": True, "weight": db.set_weight(path, "more")})
+            if action == "less":
+                return self._json({"ok": True, "weight": db.set_weight(path, "less")})
+            return self._json({"ok": False, "error": "unknown action"})
+
         if p == "/api/remove":
             return self._json({"ok": get_engine().remove(body.get("id", ""))})
-
         if p == "/api/forget":
             return self._json({"ok": get_engine().forget(body.get("id", ""))})
 

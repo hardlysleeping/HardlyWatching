@@ -1,0 +1,19 @@
+{
+  "name": "Shorts — Instagram Downloader",
+  "short_name": "Shorts",
+  "description": "Full-screen feed of downloaded short videos.",
+  "start_url": "/shorts",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#08080c",
+  "theme_color": "#08080c",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='38' fill='%2308080c'/><path d='M62 52l74 44-74 44z' fill='%23ff8c5a'/></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

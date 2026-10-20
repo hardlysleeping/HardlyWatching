@@ -166,6 +166,62 @@ never causes re-downloads.
 
 ---
 
+## TikTok
+
+TikTok profiles download too, through **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**
+rather than instaloader. Same queue, same one-at-a-time worker, same gallery.
+
+Pick TikTok on the Download tab and paste any of:
+
+- the whole **Following accounts** page (`Ctrl+A`, `Ctrl+C`) — the usernames are
+  found for you
+- plain handles, one per line
+- `@handles` and profile URLs
+
+Videos per profile is 5, 10, 25, 50 or all. There is no Instagram login involved:
+yt-dlp reads a public profile itself.
+
+**Re-running only fetches what is new.** Each profile keeps its own
+`.yt-dlp-archive.txt`, so raising the count from 5 to 50 downloads 45 videos, not
+50.
+
+The two platforms keep **separate folders** and never merge on disk. The gallery
+groups them by label, so either side can be deleted or re-fetched without
+touching the other.
+
+### Excluded
+
+Remove a profile from the queue — or delete it after downloading — and it is
+remembered. Pasting your following list again will not add it back. It appears
+under **Excluded** with the reason, and **Restore** puts it back in the queue.
+Nothing is deleted by excluding; it is a memory, not a blacklist.
+
+### yt-dlp options
+
+Exposed in Settings, mapped to real flags: video quality rung, container, format
+conversion, metadata/description/thumbnail files, embedded metadata and cover
+art, request spacing, retries, rate limit, date window, cookies from a browser,
+and proxy. Anything not listed there is not configurable.
+
+About quality: TikTok only serves a few vertical renditions, and yt-dlp reports
+height as the **long** side, so 1080p is 1080x1920. The setting takes the
+familiar rung — 540, 720 or 1080 — rather than a pixel number.
+
+---
+
+## Shorts
+
+`/shorts` is a phone-sized, full-screen feed of downloaded videos. Swipe or use
+the arrow keys. Each clip has **like**, **trash**, **download**, **more** and
+**less**.
+
+It is deliberately random with repetition, so the same clip can come back.
+**More** and **less** change how often it reappears rather than hiding it.
+**Favourites** filters to liked clips. Add it to your home screen and it runs as
+an app.
+
+---
+
 ## Why the limits are there
 
 This is the part people skip and then get blocked.

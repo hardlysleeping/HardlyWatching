@@ -32,6 +32,9 @@ from pathlib import Path
 
 # Where downloads and app state live. Overridable so this works on any machine
 # (and so no personal path is baked into the source).
+from profile_db import _shared_db
+
+
 def config_dir() -> Path:
     """Standard per-user config folder for this OS.
 
@@ -1860,6 +1863,27 @@ class Settings:
 
     # pacing (our scheduler, not instaloader)
     between_profiles: int = BETWEEN_PROFILES_SECONDS
+    # TikTok gets its own gap. Sharing one timer would let a slow or failing
+    # TikTok profile stall the Instagram queue (and the reverse), so the two
+    # tools pace themselves independently -- but the same default, because the
+    # reason for the gap (not looking automated) applies to both.
+    between_tiktok: int = BETWEEN_PROFILES_SECONDS
+
+    # yt-dlp options. Stored as a flat dict so the settings panel can treat them
+    # like any other row, and validated on load by TikTokSettings itself.
+    tiktok: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Fill the yt-dlp block with its defaults so the settings panel shows
+        # real values on a fresh install instead of blank boxes. Existing
+        # values always win, so this never overwrites a saved choice.
+        try:
+            import tiktok_engine as _tt
+            base = _tt.TikTokSettings().to_dict()
+            base.update(self.tiktok or {})
+            self.tiktok = base
+        except Exception:
+            pass
 
     # Auto-check: when the queue empties, re-queue every profile already
     # archived so new posts are picked up without pressing anything. Off by
@@ -1898,6 +1922,17 @@ class Settings:
                     setattr(s, k, v)
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     setattr(s, k, str(v))
+            elif isinstance(cur, dict):
+                # Nested blocks (the yt-dlp options) merge rather than replace,
+                # so saving one field cannot wipe the rest of the block.
+                if isinstance(v, dict):
+                    merged = dict(cur)
+                    merged.update(v)
+                    setattr(s, k, merged)
+                elif hasattr(v, "items"):
+                    merged = dict(cur)
+                    merged.update(dict(v))
+                    setattr(s, k, merged)
         return s
 
 
@@ -1907,6 +1942,8 @@ class Job:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     status: str = "queued"  # queued running retrying done failed skipped cancelled
     kind: str = "main"  # "main" | "reels" | "tagged" — extra passes run as follow-up jobs
+    platform: str = "instagram"  # "instagram" (instaloader) | "tiktok" (yt-dlp)
+    tiktok_count: int = 0  # 0 = all; otherwise newest N videos
     parent_id: str | None = None  # for a reels job: the main job it follows
     attempts: int = 0
     max_attempts: int = 6
@@ -2175,7 +2212,15 @@ class Engine:
 
     def update_settings(self, patch: dict) -> Settings:
         with self.lock:
-            self.settings = Settings.from_dict({**self.settings.to_dict(), **(patch or {})})
+            merged = {**self.settings.to_dict(), **(patch or {})}
+            # The yt-dlp options arrive one field at a time, so a shallow merge
+            # would replace the whole block and silently reset every other
+            # TikTok setting. Merge that block key by key instead.
+            if isinstance((patch or {}).get("tiktok"), dict):
+                block = dict(self.settings.to_dict().get("tiktok") or {})
+                block.update(patch["tiktok"])
+                merged["tiktok"] = block
+            self.settings = Settings.from_dict(merged)
             cur = self.settings
         self.save_state()
         return cur
@@ -2259,12 +2304,68 @@ class Engine:
         self.save_state()
         return added, rejected
 
+    def add_tiktok(self, handles: list[str], count: int = 5,
+                   start: bool = False,
+                   excluded: set[str] | None = None) -> tuple[list[Job], list[str]]:
+        """Queue TikTok profiles for yt-dlp.
+
+        Deliberately does not reuse add(): that one applies Instagram settings
+        (reels, tagged passes, instaloader flags) which mean nothing here.
+
+        A profile already in the list is skipped rather than duplicated -- the
+        way to fetch more of someone is to raise the count on the existing job,
+        because yt-dlp's archive file means re-running only pulls new videos.
+        `start=False` leaves them queued without kicking the worker, so the
+        user can delete the ones they did not want.
+        """
+        added: list[Job] = []
+        skipped: list[str] = []
+        count = max(0, int(count))
+        blocked = {h.lower() for h in (excluded or ())}
+        with self.lock:
+            existing = {}
+            for j in self.jobs.values():
+                if j.platform == "tiktok" and j.status != "cancelled":
+                    existing[j.username.lower()] = j
+            for raw in handles:
+                h = (raw or "").strip().lstrip('@')
+                if not h:
+                    continue
+                # A profile the user removed or deleted stays out until they
+                # restore it, even if it is still in their following list.
+                # Checked before `existing` so it is reported as excluded
+                # rather than silently vanishing.
+                if h.lower() in blocked:
+                    skipped.append(h)
+                    continue
+                if h.lower() in existing:
+                    continue
+                job = Job(username=h, kind="main", platform="tiktok",
+                          tiktok_count=count)
+                self.jobs[job.id] = job
+                self.pending.append(job.id)
+                added.append(job)
+                existing[h.lower()] = job
+        if start:
+            self._kick()
+        self.save_state()
+        return added, skipped
+
     def remove(self, job_id: str) -> bool:
-        """Remove a job. Running jobs are cancelled first."""
+        """Remove a job. Running jobs are cancelled first.
+
+        Removing a TikTok job also remembers the profile as excluded, so pasting
+        the following list again does not put it straight back. That is the
+        whole point: a deliberate removal should stick. It is only a memory --
+        the Excluded list can restore it, and nothing is deleted from disk.
+        """
+        exclude_handle = ""
         with self.lock:
             job = self.jobs.get(job_id)
             if not job:
                 return False
+            if getattr(job, "platform", "instagram") == "tiktok":
+                exclude_handle = job.username
             if job.status == "running":
                 self.cancel_current = True
                 self._terminate_proc()
@@ -2279,14 +2380,36 @@ class Engine:
             if job_id in self.pending:
                 self.pending.remove(job_id)
         self.save_state()
+        if exclude_handle:
+            self.exclude_tiktok(exclude_handle, "removed_from_queue")
         return True
 
+    def exclude_tiktok(self, handle: str, reason: str) -> bool:
+        """Remember a TikTok profile as excluded. Called on remove and delete.
+
+        Lives on the engine rather than in the HTTP layer so every path that
+        removes a profile records it -- including any future caller.
+        """
+        try:
+            return _shared_db().exclude("tiktok", handle, reason)
+        except Exception:
+            return False
+
     def forget(self, job_id: str) -> bool:
-        """Drop a finished job from the list, archiving it so it can come back."""
+        """Drop a finished job from the list, archiving it so it can come back.
+
+        This is the button shown on finished jobs ("Remove from list"), so it is
+        just as much a deliberate removal as remove() is -- it excludes the
+        TikTok profile too, otherwise re-pasting would silently re-add someone
+        the user had cleared out.
+        """
+        exclude_handle = ""
         with self.lock:
             job = self.jobs.get(job_id)
             if not job or job.status in ("running", "queued", "retrying"):
                 return False
+            if getattr(job, "platform", "instagram") == "tiktok":
+                exclude_handle = job.username
             entry = job.to_dict()
             entry["removed_at"] = time.time()
             self.removed.append(entry)
@@ -2296,6 +2419,8 @@ class Engine:
             if job_id in self.pending:
                 self.pending.remove(job_id)
         self.save_state()
+        if exclude_handle:
+            self.exclude_tiktok(exclude_handle, "deleted_from_gallery")
         return True
 
     def restore(self, job_id: str) -> bool:
@@ -2654,13 +2779,28 @@ class Engine:
                     "total": cd, "until": self.cooldown_until,
                     "label": "rate limited"}
         if self.wait_until > now:
-            total = int(self.settings.between_profiles) or 0
-            # Named for what it actually is: the voluntary gap between profiles
-            # that keeps Instagram from rate-limiting us. Instaloader has no
-            # inter-profile delay of its own, so this gap is ours.
+            # Which gap is running depends on the platform of the NEXT job, the
+            # same rule the scheduler used to pick the delay. Without that, a
+            # TikTok gap would report Instagram's 120s as its total.
+            next_platform = "instagram"
+            with self.lock:
+                for jid in self.pending:
+                    nx = self.jobs.get(jid)
+                    if nx is not None and nx.status == "queued":
+                        next_platform = getattr(nx, "platform", "instagram")
+                        break
+            if next_platform == "tiktok":
+                total = int(self.settings.between_tiktok) or 0
+                label = "pacing between TikTok profiles"
+            else:
+                total = int(self.settings.between_profiles) or 0
+                # Named for what it actually is: the voluntary gap between
+                # profiles that keeps Instagram from rate-limiting us.
+                # Instaloader has no inter-profile delay of its own, so this
+                # gap is ours.
+                label = "pacing between profiles"
             return {"kind": "pacing", "remaining": int(self.wait_until - now),
-                    "total": total, "until": self.wait_until,
-                    "label": "pacing between profiles"}
+                    "total": total, "until": self.wait_until, "label": label}
         return {}
 
     def check_ip_block(self) -> bool:
@@ -3007,8 +3147,18 @@ class Engine:
 
             # A broken session fails every request with 401 and just burns
             # attempts. Stop and let the UI explain what to fix.
+            #
+            # Only Instagram jobs need a session. A queue holding nothing but
+            # TikTok work must still run: yt-dlp downloads public profiles
+            # without any Instagram login, so halting here would wedge the
+            # worker on a queue it could have finished.
             sess = self.session_info()
-            if not sess["valid"] and self.pending:
+            ig_pending = any(
+                (self.jobs.get(jid) is not None
+                 and getattr(self.jobs[jid], "platform", "instagram") == "instagram")
+                for jid in list(self.pending)
+            )
+            if not sess["valid"] and ig_pending:
                 self.save_state()
                 return  # idle; the UI shows session_problem
 
@@ -3070,8 +3220,22 @@ class Engine:
 
             with self.lock:
                 has_more = bool(self.pending)
+            # The gap depends on what is coming NEXT, not on what just
+            # finished: after an Instagram profile the next one may well be a
+            # TikTok, and each tool paces on its own timer.
+            next_platform = "instagram"
             if has_more:
-                delay = max(0, int(self.settings.between_profiles))
+                with self.lock:
+                    for jid in self.pending:
+                        nx = self.jobs.get(jid)
+                        if nx is not None and nx.status == "queued":
+                            next_platform = getattr(nx, "platform", "instagram")
+                            break
+            if has_more:
+                if next_platform == "tiktok":
+                    delay = max(0, int(self.settings.between_tiktok))
+                else:
+                    delay = max(0, int(self.settings.between_profiles))
                 # Publish the deadline so the UI can count down honestly,
                 # rather than guessing from the last job's finish time.
                 with self.lock:
@@ -3085,7 +3249,114 @@ class Engine:
                     self.wait_started = 0.0
                     self.wait_until = 0.0
 
+    def _process_tiktok(self, job: Job) -> None:
+        """Download a TikTok profile with yt-dlp.
+
+        Mirrors the Instagram path's shape: same target folder layout, same
+        one-at-a-time worker, same "done but empty is a failure" rule. The
+        difference is that yt-dlp keeps its own --download-archive, so a re-run
+        quietly skips videos that are already on disk.
+        """
+        import tiktok_engine as tt
+
+        if not tt.available():
+            self._set(job, status="failed", finished_at=time.time(),
+                      error="yt-dlp is not installed",
+                      message="yt-dlp not found on PATH")
+            return
+
+        target_dir = self.output_root / job.username
+        target_dir.mkdir(parents=True, exist_ok=True)
+        archive = tt.archive_path(self.output_root, job.username)
+
+        count = int(getattr(job, "tiktok_count", 0) or 0)
+        if job.attempts >= job.max_attempts:
+            return
+        job.attempts += 1
+
+        # Per-job settings win so a queued job keeps the options it was added
+        # with, exactly like the Instagram side.
+        saved = getattr(job, "settings", None) or {}
+        tt_opts = saved.get("tiktok") if isinstance(saved, dict) else None
+        ttset = tt.TikTokSettings.from_dict(tt_opts or self.settings.tiktok)
+        cmd = tt.build_download_cmd(job.username, target_dir, archive, count,
+                                    settings=ttset)
+        self._log(job, f"$ {' '.join(cmd)}")
+        self._set(job, message=f"attempt {job.attempts}/{job.max_attempts}")
+
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, start_new_session=True,
+            )
+        except Exception as e:
+            self._set(job, status="failed", finished_at=time.time(),
+                      error=f"{type(e).__name__}: {e}")
+            return
+
+        with self.lock:
+            self._proc = proc
+
+        downloaded = 0
+        warned = False
+        for line in (proc.stdout or []):
+            if self.cancel_current or self.stop_requested:
+                break
+            line = line.rstrip()
+            if not line:
+                continue
+            kind = tt.classify(line)
+            if kind == "started-file":
+                downloaded += 1
+                self._set(job, posts=downloaded, last_line=line[:200])
+            elif kind == "progress":
+                self._set(job, last_line=line[:200])
+            elif kind == "warn":
+                warned = True
+                self._log(job, line)
+            elif kind == "already":
+                self._log(job, line)
+            else:
+                self._log(job, line)
+
+        rc = proc.wait()
+        with self.lock:
+            self._proc = None
+
+        if self.cancel_current:
+            self._set(job, status="cancelled", finished_at=time.time(), message="cancelled")
+            return
+        if self.stop_requested:
+            self._set(job, status="queued", message="stopped")
+            return
+
+        files = len(list(target_dir.glob("*.mp4")))
+        total_bytes = sum(p.stat().st_size for p in target_dir.glob("*.mp4"))
+
+        if rc != 0 and files == 0:
+            self._set(job, status="failed", finished_at=time.time(),
+                      error=f"yt-dlp exited {rc}", message="download failed")
+            return
+
+        if files == 0:
+            # Matches the Instagram rule: a clean run that produced nothing is
+            # not a success. Usually means the profile is private or empty.
+            self._set(job, status="failed", finished_at=time.time(),
+                      message="no videos downloaded")
+            return
+
+        self._set(job, status="done", finished_at=time.time(),
+                  posts=files, total_files=files, total_bytes=total_bytes,
+                  message=("done, some videos skipped" if warned else "done"))
+        self.save_state()
+
     def _process(self, job: Job) -> None:
+        # TikTok jobs are a different tool with different output; keep the two
+        # paths apart so instaloader's flags and retry rules never leak into
+        # yt-dlp runs (or the reverse).
+        if getattr(job, "platform", "instagram") == "tiktok":
+            return self._process_tiktok(job)
+
         target_dir = self.output_root / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
         session_user = self.session_username()
