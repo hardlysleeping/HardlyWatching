@@ -54,7 +54,7 @@ arrow keys), favourite, download a video, or trash it.
 Switch accounts with one click, or grab a login out of your browser so you never
 type a password here.
 
-![The sessions panel: three saved sessions with Use buttons, one marked in use, plus grab-from-browser and log-in options](docs/sessions.png)
+![The sessions panel: three saved sessions with Use buttons, one marked in use, plus grab-from-browser and log-in options](docs/sessions-panel.png)
 
 ---
 
