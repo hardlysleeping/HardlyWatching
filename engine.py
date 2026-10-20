@@ -74,6 +74,61 @@ STATE_FILE = Path(os.environ.get(
 INSTALOADER = shutil.which("instaloader") or str(Path.home() / ".local/bin/instaloader")
 
 
+# ---------------------------------------------------------------------------
+# Disk space guardrails
+#
+# Downloading fills a drive and, left alone, keeps going until the volume is
+# full -- which on a data drive means a failed write rather than a tidy stop.
+# These are percentages of the volume, checked per root, so a profile pinned to
+# another drive is judged against its own drive instead of the main one.
+#
+#   WARN  tell the user, keep downloading
+#   STOP  start nothing else, and halt a run that crosses it
+#
+# STOP is also the reserve, expressed as a check made BEFORE the disk fills
+# rather than after: at 95%, no job may start unless at least 5% of the volume
+# is free, which is the same rule reached earlier. The GiB floor keeps small
+# volumes from having a trivially tiny reserve.
+DISK_WARN_PCT = 90.0
+DISK_STOP_PCT = 95.0
+DISK_RESERVE_MIN_GB = 2.0
+
+
+def disk_usage(path) -> dict | None:
+    """Usage of the volume holding `path`, or None when it is not reachable.
+
+    A root on an unplugged drive is not an error, it is simply absent, and the
+    caller must never read that as "0 bytes free" -- that would block every
+    download because someone unplugged a backup disk.
+    """
+    try:
+        u = shutil.disk_usage(str(path))
+    except OSError:
+        return None
+    total = u.total or 0
+    if not total:
+        return None
+    pct = u.used / total * 100.0
+    reserve = max(DISK_RESERVE_MIN_GB * 2 ** 30, total * (100.0 - DISK_STOP_PCT) / 100.0)
+    if pct >= DISK_STOP_PCT or u.free < reserve:
+        level = "stop"
+    elif pct >= DISK_WARN_PCT:
+        level = "warn"
+    else:
+        level = "ok"
+    return {
+        "path": str(path),
+        "total": total,
+        "used": u.used,
+        "free": u.free,
+        "used_pct": round(pct, 1),
+        "free_gb": round(u.free / 2 ** 30, 1),
+        "total_gb": round(total / 2 ** 30, 1),
+        "reserve_gb": round(reserve / 2 ** 30, 1),
+        "level": level,
+    }
+
+
 def instaloader_available() -> bool:
     """True when an instaloader binary can actually be run.
 
@@ -1582,8 +1637,39 @@ def roots_status(self) -> list[dict]:
             "present": present,
             "receives": _same(p, self.output_root),
             "index": i,
+            # Space is reported per root, because each root can be a different
+            # drive: one filling up must not stop downloads to another.
+            "disk": disk_usage(p) if present else None,
         })
     return out
+
+
+def disk_worst(self) -> dict | None:
+    """The fullest reachable root, so one summary can drive the warning."""
+    order = {"ok": 0, "warn": 1, "stop": 2}
+    disks = [d for d in (r["disk"] for r in self.roots_status()) if d]
+    if not disks:
+        return None
+    return max(disks, key=lambda d: (order[d["level"]], d["used_pct"]))
+
+
+def disk_blocks(self, root=None) -> str:
+    """Why a download must not start for this folder, or '' when it may.
+
+    Called before a job starts, which is the only moment the app can decline to
+    make a drive fuller. `root` is the job's own drive when it is pinned to one;
+    otherwise the downloads folder.
+    """
+    path = root or self.output_root
+    u = disk_usage(path)
+    if u is None:
+        # Not reachable. That is a mounting problem with its own handling, and
+        # it must not be reported as a full disk.
+        return ""
+    if u["level"] != "stop":
+        return ""
+    return (f"{u['free_gb']} GB free on {u['path']} ({u['used_pct']}% used) — "
+            f"at the {DISK_STOP_PCT:.0f}% limit of {u['total_gb']} GB")
 
 
 def add_root(self, path: str) -> tuple[bool, str]:
@@ -2154,6 +2240,10 @@ class Engine:
         self.cancel_current: dict[str, bool] = {"instagram": False, "tiktok": False}
         self.paused = False          # Instagram: user pause, or a 429
         self.tt_paused = False       # TikTok: user pause only
+        # Set while a platform is refusing to start work because a drive is
+        # nearly full. Per platform, because the two queues can live on
+        # different drives and only one of them may be out of room.
+        self.disk_blocked: dict[str, str] = {"instagram": "", "tiktok": ""}
         self.stop_requested = False
         self.settings = Settings()
         self.active_session: str | None = None  # chosen instaloader session
@@ -2204,6 +2294,8 @@ class Engine:
     root_for = root_for
     _existing_root = _existing_root
     roots_status = roots_status
+    disk_worst = disk_worst
+    disk_blocks = disk_blocks
     add_root = add_root
     remove_root = remove_root
 
@@ -3374,6 +3466,12 @@ class Engine:
             "current_tiktok": self.current["tiktok"],
             "paused": self.paused,
             "tt_paused": self.tt_paused,
+            # Disk space, so the header can show it and a nearly-full drive can
+            # explain why a queue is not moving.
+            "disks": [r["disk"] for r in self.roots_status() if r["disk"]],
+            "roots": self.roots_status(),
+            "disk_worst": self.disk_worst(),
+            "disk_blocked": dict(self.disk_blocked),
             "limit_paused": self._limit_paused,
             # `busy` must mean "a profile is being downloaded right now". It used
             # to be true whenever the worker thread was alive with anything
@@ -3619,6 +3717,24 @@ class Engine:
                 self.save_state()
                 return  # genuinely idle; thread exits, this platform goes free
 
+            # Space check, before a single byte is written. This is the moment
+            # the app can decline to fill a drive further. The job has already
+            # been taken off the queue, so put it back at the FRONT: it keeps
+            # its place for the moment space is freed, instead of being consumed
+            # and marked failed for a problem it did not cause.
+            blocked = self.disk_blocks(job.root)
+            if blocked:
+                with self.lock:
+                    if job.id in self.pending:
+                        self.pending.remove(job.id)
+                    self.pending.insert(0, job.id)
+                    self.disk_blocked[platform] = blocked
+                self.save_state()
+                time.sleep(5.0)   # re-check periodically; space may be freed
+                continue
+            with self.lock:
+                self.disk_blocked[platform] = ""
+
             with self.lock:
                 self.current[platform] = job.username
                 self.cancel_current[platform] = False
@@ -3721,9 +3837,22 @@ class Engine:
 
         downloaded = 0
         warned = False
+        disk_stopped = ""
+        seen = 0
         for line in (proc.stdout or []):
             if self.cancel_current["tiktok"] or self.stop_requested:
                 break
+            seen += 1
+            # The check before the job starts keeps a run from being started on
+            # a nearly-full drive, but one profile can be bigger than the whole
+            # reserve. If the drive fills while this is running, stop here rather
+            # than write until the volume itself errors. Every 20 lines is a
+            # couple of seconds of output: statvfs on every line is pointless.
+            if seen % 20 == 0:
+                disk_stopped = self.disk_blocks(job.root)
+                if disk_stopped:
+                    self._log(job, f"stopping: {disk_stopped}")
+                    break
             line = line.rstrip()
             if not line:
                 continue
@@ -3749,6 +3878,18 @@ class Engine:
         rc = proc.wait()
         with self.lock:
             self._proc["tiktok"] = None
+
+        if disk_stopped:
+            # Out of space, not a failure: the files already written stay, and
+            # the job goes back in the queue so it resumes once space is freed.
+            # yt-dlp's archive means the finished videos are not fetched twice.
+            self._terminate_proc("tiktok")
+            with self.lock:
+                self.disk_blocked["tiktok"] = disk_stopped
+            self._set(job, status="queued", finished_at=None, fatal=False,
+                      error="", message="stopped: drive nearly full")
+            self.save_state()
+            return
 
         if self.cancel_current["tiktok"]:
             self._set(job, status="cancelled", finished_at=time.time(), message="cancelled")

@@ -22,6 +22,15 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **Disk space in the header, with a stop before the drive fills.** Every archive
+  folder's free space and percentage used is shown at the top of every tab, amber
+  from 90% and red at 95%. At 95% nothing new starts and a run that crosses the
+  limit is halted mid-way — enforced as a reserve checked before a job begins, so
+  a download only starts when at least 5% (or 2 GB) of the volume is free. This
+  is not a failure: the job goes back to the front of its queue, is not marked
+  failed, and resumes by itself once space is freed. Each folder is judged against
+  its own drive, and an unplugged drive counts as absent rather than full. The
+  banner names the folder, the numbers, and what to do about it.
 - **Shorts is a tab.** Download / Gallery / Shorts, swapped to like the others,
   in a phone-shaped column. `/shorts` still works on its own for the installed
   phone app.

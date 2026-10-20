@@ -537,6 +537,49 @@ Because instaloader's `--latest-stamps` record lives outside the media folder,
 moving or even deleting the whole tree never causes re-downloads — it still knows
 what you already have.
 
+### Telling Instagram and TikTok files apart
+
+They never mix, and no folder is ambiguous:
+
+- **Instagram** sits directly in the downloads folder: `<downloads>/<username>/`.
+- **TikTok** sits in a subfolder of it: `<downloads>/tiktok/<handle>/`.
+
+There is deliberately no `instagram/` subfolder, so a handle that exists on both
+platforms gets two separate folders rather than one shared pile. You can also
+tell the files apart at a glance: Instagram media is named by date
+(`2026-06-21_18-15-26_UTC_10.mp4`) and TikTok videos by their numeric id
+(`7698779338124053764.mp4`).
+
+Worth knowing: the downloads folder is called `instagram` because that is
+instaloader's own default name, and it now holds both platforms. Renaming it is
+fine — use **Change…** on the Downloads folder card.
+
+### Disk space
+
+Free space for every archive folder is shown in the header, and the app watches
+it so downloads cannot fill a drive by surprise:
+
+| Used | What happens |
+| --- | --- |
+| under 90% | nothing, no notice |
+| 90% | the chip turns amber and a banner appears. Downloads continue |
+| 95% | downloads stop. Nothing new starts, and a run that crosses the limit is halted mid-way |
+
+Stopping is deliberately *not* a failure. A profile that could not start because
+the drive is full goes back to the front of its queue, is **not** marked failed,
+and starts by itself once space is freed. A run halted part-way keeps the videos
+it already finished — TikTok's archive file means the rest are fetched later
+without re-downloading anything.
+
+The 95% rule is enforced as a reserve, checked *before* a job starts: a download
+may only begin if at least 5% of the volume (or 2 GB, whichever is larger) is
+free. Each archive folder is judged against its own drive, so filling one drive
+never stops downloads to another, and an unplugged drive is treated as absent
+rather than as full.
+
+When it stops, the banner says what to do: delete what you do not need from the
+Gallery, or add a folder on another drive and make it the downloads folder.
+
 ---
 
 ## Honest limitations

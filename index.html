@@ -33,6 +33,11 @@
   .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
   .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
   .dot.off{background:var(--err);box-shadow:0 0 8px var(--err)}
+  /* Disk space chip: quiet until it matters, then amber at 90%, red at 95%. */
+  .chip.warn{background:#241c0f;border-color:#5a4a1e;color:#fcd34d}
+  .chip.warn b{color:#fcd34d}
+  .chip.err{background:#1c1416;border-color:#5a2b2b;color:#fca5a5}
+  .chip.err b{color:#fca5a5}
 
   button{font:600 14px ui-sans-serif,system-ui,sans-serif;background:var(--panel-2);color:var(--text);
     border:1px solid var(--line);border-radius:9px;padding:9px 15px;cursor:pointer;
@@ -468,6 +473,11 @@
   <header>
     <h1>HardlyWatching <span id="hdrPlatform" class="hdrplat">Instagram</span></h1>
     <div class="sub" id="hdrSub">Instagram and TikTok → one queue, one gallery</div>
+    <!-- Drive space sits in the header, not the Download bar, so it stays on
+         screen on every tab. A drive filling up is the one status worth seeing
+         wherever you are, and the Gallery is where you go to delete things. -->
+    <span class="chip" id="diskChip" style="margin-left:auto"
+          title="Free space in the download folder">—</span>
   </header>
 
   <div class="tabs">
@@ -545,6 +555,7 @@
   <div class="ok-box" id="okBox"></div>
   <div class="banner" id="sessBox" style="display:none"></div>
   <div class="banner warn" id="coolBox" style="display:none"></div>
+  <div class="banner" id="diskBox" style="display:none"></div>
 
   <div class="composer" id="sessPanel" style="display:none">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1451,8 +1462,68 @@ function viewForPlatform(st){
           total_jobs: jobs.length};
 }
 
+// Free space in the header, and the one banner that explains a stalled queue.
+// The engine stops itself at 95% used, so this is the number that says why
+// nothing is downloading any more.
+function paintDisk(st){
+  const chip = $("diskChip");
+  const box = $("diskBox");
+  const disks = st.disks || [];
+  const worst = st.disk_worst || null;
+  const blocked = Object.values(st.disk_blocked || {}).filter(Boolean);
+
+  if(chip){
+    if(!disks.length){
+      chip.className = "chip";
+      chip.innerHTML = "<b>no folder</b>";
+      chip.title = "No download folder is reachable right now.";
+    } else {
+      const d = worst || disks[0];
+      const lvl = blocked.length || d.level === "stop" ? "err"
+                : d.level === "warn" ? "warn" : "";
+      chip.className = "chip" + (lvl ? " " + lvl : "");
+      // Used first because that is what the limit is measured in; the bar in
+      // the banner is the same figure.
+      chip.innerHTML = `<b>${d.free_gb} GB free</b> · ${d.used_pct}% used`;
+      chip.title = disks.map(x =>
+        `${x.path}\n  ${x.free_gb} GB free of ${x.total_gb} GB (${x.used_pct}% used)`).join("\n")
+        + `\nStops at 95%, warns at 90%.`;
+    }
+  }
+
+  if(!box) return;
+  const level = blocked.length ? "stop" : (worst ? worst.level : "ok");
+  if(level === "ok"){ box.style.display = "none"; return; }
+  const d = worst || {};
+  const stopping = level === "stop";
+  box.style.display = "flex";
+  box.innerHTML = `
+    <span style="font-size:18px;line-height:1">${stopping ? "⛔" : "⚠"}</span>
+    <div>
+      <b>${stopping
+        ? "Downloads stopped — the drive is nearly full."
+        : "The drive is filling up."}</b>
+      <div style="margin-top:4px">
+        <code>${esc(d.path || "")}</code> — <b>${d.free_gb} GB free</b> of
+        ${d.total_gb} GB (<b>${d.used_pct}% used</b>).
+        ${stopping
+          ? "Nothing new will start, and a run that crosses the limit is halted. Queued profiles are kept and are not marked failed — they resume on their own as soon as there is room."
+          : "Downloads still run, but they stop on their own once the drive reaches 95% used."}
+      </div>
+      <div style="margin-top:6px">
+        ${stopping ? "Make room to continue:" : "Worth doing soon:"}
+        remove what you do not need from the Gallery, or add a folder on another
+        drive under <b>Archive folders</b> and set it as the downloads folder, so
+        new profiles land there instead.
+      </div>
+    </div>`;
+}
+
 function render(st){
   lastState = st;  // cache for optimistic updates (reorder, etc.)
+  // Space is not queue-specific: show it on every tab, before the early return
+  // below skips the queue work.
+  paintDisk(st);
   // While the gallery or shorts tab is showing, the entire queue UI is
   // display:none. The 1.2s poll used to rebuild all of it anyway -- hundreds
   // of cards, invisible -- which showed up as the page stuttering whenever you
@@ -2659,6 +2730,11 @@ function showTab(which){
         if(el.id === "galleryPane" || el.id === "shortsPane" ||
            el.classList.contains("tabs") || el.tagName === "HEADER")
           continue;
+        // The disk warning stays on every tab. If downloads have stopped
+        // because a drive is full, that is exactly what you need to know while
+        // looking at the Gallery deciding what to delete. paintDisk owns its
+        // visibility, so leave it alone here.
+        if(el.id === "diskBox") continue;
         if(el.style.display !== "none") hiddenByTab.push([el, el.style.display]);
         el.style.display = "none";
       }
