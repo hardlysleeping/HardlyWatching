@@ -910,14 +910,16 @@ def root_for(self, username: str, platform: str = "instagram") -> Path | None:
     return None
 
 
-def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
+def gallery_posts(self, username: str, section: str = "main",
+                  platform: str = "instagram") -> list[dict]:
     """Group one section's media into posts, carousel parts in order.
 
     Each post is one Instagram post: a single image/video, or a carousel of
     up to 20. Parts are ordered by their numeric suffix, not by string --
-    otherwise `_10` would sort before `_2`.
+    otherwise `_10` would sort before `_2`. A TikTok profile has no carousels
+    or sidecars, so every video simply becomes its own post.
     """
-    base = self.root_for(username)
+    base = self.root_for(username, platform)
     if base is None:
         return []
     folder = base
@@ -1232,7 +1234,7 @@ def reconcile_deletions(self, username: str) -> list[str]:
     return added
 
 
-def gallery_sections(self, username: str) -> dict:
+def gallery_sections(self, username: str, platform: str = "instagram") -> dict:
     """Per-section gallery posts for one profile: main, favorites, trash.
 
     Media is grouped into posts, so a carousel's parts stay together and can
@@ -1244,7 +1246,7 @@ def gallery_sections(self, username: str) -> dict:
     """
     out = {}
     for key in ("main", "favorites", "trash"):
-        posts = self.gallery_posts(username, key)
+        posts = self.gallery_posts(username, key, platform)
         for p in posts:
             p["section"] = key
         out[key] = posts
@@ -1767,7 +1769,8 @@ def make_preview(src: Path) -> Path | None:
     return None
 
 
-def resolve_media(self, username: str, rel: str, section: str = "") -> Path | None:
+def resolve_media(self, username: str, rel: str, section: str = "",
+                  platform: str = "instagram") -> Path | None:
     """Map a requested gallery filename to a real file, or None.
 
     The file may live in the profile's own folder or in favorites/ or trash/,
@@ -1781,7 +1784,7 @@ def resolve_media(self, username: str, rel: str, section: str = "") -> Path | No
     suit: what is actually servable is decided by the file existing, which the
     path checks below already enforce.
     """
-    folder = self.root_for(username)
+    folder = self.root_for(username, platform)
     if folder is None:
         return None
     # `rel` is a bare filename, not a path.

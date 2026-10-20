@@ -2327,6 +2327,7 @@ function stopWaitTimer(){
 /* ---------- gallery (read-only view of completed archives) ---------- */
 
 let gProfile = null;      // username currently open, or null for the profile list
+let gPlatform = "instagram";  // platform of the profile currently open
 let gAll = null;          // null | "favorites" | "trash" — cross-profile view
 let gFilter = "all";      // "all" | "favorites" | "trash"
 let gType = "any";        // "any" | "photos" | "videos"
@@ -2495,11 +2496,11 @@ function buildAllBar(profileCount){
   bar.appendChild(mk(`Profiles (${profileCount})`, gAll === null,
     () => { gAll = null; renderGallery(); }));
   bar.appendChild(mk("♥ All Favourites", gAll === "favorites",
-    () => { gAll = "favorites"; gProfile = null; renderAllSection("favorites"); }));
+    () => { gAll = "favorites"; gProfile = null; gPlatform = "instagram"; renderAllSection("favorites"); }));
   bar.appendChild(mk("🗑 All Trash", gAll === "trash",
-    () => { gAll = "trash"; gProfile = null; renderAllSection("trash"); }));
+    () => { gAll = "trash"; gProfile = null; gPlatform = "instagram"; renderAllSection("trash"); }));
   bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
-    () => { gAll = "timeline"; gProfile = null; renderTimeline(); }));
+    () => { gAll = "timeline"; gProfile = null; gPlatform = "instagram"; renderTimeline(); }));
 
   // Interrupted-download leftovers. Only shown when there is something to
   // clean, so it is not permanent clutter for a tidy archive.
@@ -2858,7 +2859,7 @@ async function uploadFiles(fileList){
   if(failed.length) console.warn("upload failures", failed);
   allViewList = null;
   gAll = null;
-  gProfile = null;
+  gProfile = null; gPlatform = "instagram";
   renderGallery();
 }
 
@@ -3040,7 +3041,7 @@ function tlTile(post, monthKey){
   // Timeline only: jump to this person's full profile grid, with the post open.
   acts.appendChild(mk("👤", `Open ${post.username}'s profile`, async () => {
     const { sec, hit } = await fetchOnePost(post.username, post.post);
-    gProfile = post.username;
+    gProfile = post.username; gPlatform = "instagram";
     gAll = null;
     if(!$("galleryPane") || $("galleryPane").style.display === "none"){
       showTab("gallery");
@@ -3290,7 +3291,7 @@ async function renderGallery(){
     return;
   }
   host.innerHTML = profiles.map(p => `
-    <div class="pcard${p.downloading?" live":""}" data-profile="${esc(p.username)}">
+    <div class="pcard${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
       <img class="av" loading="lazy" alt=""
            src="/api/profile-pic?profile=${encodeURIComponent(p.username)}"
            onerror="this.style.visibility='hidden'">
@@ -3301,18 +3302,19 @@ async function renderGallery(){
       <div class="ct">${p.count} ${p.count===1?"item":"items"}</div>
     </div>`).join("");
   for(const card of host.querySelectorAll(".pcard"))
-    card.onclick = () => renderPhotos(card.dataset.profile);
+    card.onclick = () => renderPhotos(card.dataset.profile, card.dataset.platform);
   // Re-apply the filter AFTER the cards exist, so a live repaint cannot silently
   // undo what is typed in the box.
   wireProfileSearch();
   applyProfileSearch();
 }
 
-async function renderPhotos(username){
+async function renderPhotos(username, platform){
   const host = $("profileGrid");
   const sw0 = $("gSearchWrap");
   if(sw0) sw0.style.display = "none";   // the search box is for the profile list only
   gProfile = username;
+  gPlatform = platform || "instagram";
   gFilter = "all";
   gType = "any";
   gSeed = (Date.now() & 0x7fffffff);
@@ -3320,7 +3322,7 @@ async function renderPhotos(username){
   host.innerHTML = `<div class="gempty">Loading ${esc(username)}…</div>`;
   let data;
   try {
-    data = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}`)).json();
+    data = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}&platform=${encodeURIComponent(gPlatform)}`)).json();
   } catch(e){
     host.innerHTML = `<div class="gempty">Could not load photos.</div>`;
     return;
@@ -3345,13 +3347,15 @@ function tileFor(username, post, section){
   tile.dataset.section = srcSection;
   const mkSrc = (item) => `/media?profile=${encodeURIComponent(username)}`
       + `&file=${encodeURIComponent(item.file)}`
-      + (srcSection === "main" ? "" : `&section=${srcSection}`);
+      + (srcSection === "main" ? "" : `&section=${srcSection}`)
+      + `&platform=${gPlatform}`;
   // Grid tiles use the small cached thumbnail; the viewer uses the original.
   // A video's own file is far too heavy for a tile, so it shows a poster frame
   // here and the viewer plays the real thing.
   const mkThumb = (item) => `/thumb?profile=${encodeURIComponent(username)}`
       + `&file=${encodeURIComponent(item.file)}`
-      + (srcSection === "main" ? "" : `&section=${srcSection}`);
+      + (srcSection === "main" ? "" : `&section=${srcSection}`)
+      + `&platform=${gPlatform}`;
 
   const img = document.createElement("img");
   img.loading = "lazy"; img.alt = ""; img.src = mkThumb(first);
@@ -3364,7 +3368,8 @@ function tileFor(username, post, section){
   if(first.kind === "video"){
     const src = `/preview?profile=${encodeURIComponent(username)}`
       + `&file=${encodeURIComponent(first.file)}`
-      + (srcSection === "main" ? "" : `&section=${srcSection}`);
+      + (srcSection === "main" ? "" : `&section=${srcSection}`)
+      + `&platform=${gPlatform}`;
     let vid = null;
     // The hover clip is decoration. The buttons must never depend on it
     // starting: the preview has to be generated by ffmpeg on first request,
@@ -3532,7 +3537,7 @@ function drawPhotos(username, sec){
   const back = document.createElement("button");
   back.className = "gback";
   back.textContent = "← All profiles";
-  back.onclick = () => { gProfile = null; renderGallery(); };
+  back.onclick = () => { gProfile = null; gPlatform = "instagram"; renderGallery(); };
   bar.appendChild(back);
 
   const counts = {main: sec.main.length, favorites: sec.favorites.length, trash: sec.trash.length};
@@ -3945,7 +3950,8 @@ function mediaSrc(item, username, section){
   const heic = /\.(heic|heif)$/i.test(item.file || "");
   const ep = heic ? "/view" : "/media";
   return `${ep}?profile=${encodeURIComponent(username)}&file=${encodeURIComponent(item.file)}`
-       + (section === "main" ? "" : `&section=${section}`);
+       + (section === "main" ? "" : `&section=${section}`)
+       + `&platform=${gPlatform}`;
 }
 
 function openViewer(username, post, section, idx){

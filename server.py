@@ -438,8 +438,11 @@ class Handler(BaseHTTPRequestHandler):
             name = clean_profile_name((q.get("profile") or [""])[0])
             if not name:
                 return self.send_error(400)
+            plat = (q.get("platform") or ["instagram"])[0]
+            if plat not in ("instagram", "tiktok"):
+                plat = "instagram"
             return self._json({"profile": name,
-                               "sections": get_engine().gallery_sections(name)})
+                               "sections": get_engine().gallery_sections(name, plat)})
         if p == "/media":
             # Serve a file, but only one inside a finished profile's folder.
             from urllib.parse import parse_qs
@@ -447,9 +450,10 @@ class Handler(BaseHTTPRequestHandler):
             name = clean_profile_name((q.get("profile") or [""])[0])
             rel = (q.get("file") or [""])[0]
             sub = (q.get("section") or [""])[0]
+            plat = (q.get("platform") or ["instagram"])[0]
             if not name or not rel:
                 return self.send_error(400)
-            target = get_engine().resolve_media(name, rel, sub)
+            target = get_engine().resolve_media(name, rel, sub, plat)
             if target is None:
                 return self.send_error(404)
             # Allow the browser to cache: these files never change in place.
@@ -463,9 +467,10 @@ class Handler(BaseHTTPRequestHandler):
             name = clean_profile_name((q.get("profile") or [""])[0])
             rel = (q.get("file") or [""])[0]
             sub = (q.get("section") or [""])[0]
+            plat = (q.get("platform") or ["instagram"])[0]
             if not name or not rel:
                 return self.send_error(400)
-            target = get_engine().resolve_media(name, rel, sub)
+            target = get_engine().resolve_media(name, rel, sub, plat)
             if target is None:
                 return self.send_error(404)
             if target.suffix.lower() not in {".heic", ".heif"}:
@@ -502,9 +507,10 @@ class Handler(BaseHTTPRequestHandler):
             name = clean_profile_name((q.get("profile") or [""])[0])
             rel = (q.get("file") or [""])[0]
             sub = (q.get("section") or [""])[0]
+            plat = (q.get("platform") or ["instagram"])[0]
             if not name or not rel:
                 return self.send_error(400)
-            target = get_engine().resolve_media(name, rel, sub)
+            target = get_engine().resolve_media(name, rel, sub, plat)
             if target is None:
                 return self.send_error(404)
             thumb = make_thumb(target, target.suffix.lower())
@@ -521,9 +527,10 @@ class Handler(BaseHTTPRequestHandler):
             name = clean_profile_name((q.get("profile") or [""])[0])
             rel = (q.get("file") or [""])[0]
             sub = (q.get("section") or [""])[0]
+            plat = (q.get("platform") or ["instagram"])[0]
             if not name or not rel:
                 return self.send_error(400)
-            target = get_engine().resolve_media(name, rel, sub)
+            target = get_engine().resolve_media(name, rel, sub, plat)
             if target is None:
                 return self.send_error(404)
             prev = make_preview(target)
