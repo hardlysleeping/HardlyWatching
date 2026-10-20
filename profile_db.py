@@ -343,6 +343,20 @@ class ProfileDB:
                     "UPDATE clips SET shown=shown+1, last_shown=? WHERE path=?", (now, pth))
             self._conn.commit()
 
+    def known_reels(self) -> dict[str, bool]:
+        """{path: is_reel} for every clip already classified (0 or 1).
+
+        The reel flag is read once from the sidecar and never changes, so the
+        feed can skip re-reading thousands of sidecar files on every request.
+        Clips still unknown (-1) are left out and re-checked, in case a sidecar
+        appears after the video (instaloader writes them together, but a file
+        copied in by hand has neither).
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT path, is_reel FROM clips WHERE is_reel IN (0, 1)")
+            return {r["path"]: bool(r["is_reel"]) for r in cur}
+
     def set_weight(self, path: str, direction: str) -> float:
         """direction: 'more' or 'less'. Returns the new weight."""
         with self._lock:

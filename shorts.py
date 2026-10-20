@@ -62,11 +62,16 @@ def _reel_for(folder: Path, filename: str) -> bool | None:
     return None
 
 
-def scan(root: Path, limit_dirs: int = 5000) -> list[dict]:
+def scan(root: Path, limit_dirs: int = 5000,
+         known_reels: dict[str, bool] | None = None) -> list[dict]:
     """Every playable video under `root`, newest first.
 
     Uses scandir rather than rglob so a large archive does not stall the feed.
+    `known_reels` carries the reel flag for clips already classified, so their
+    sidecar is not re-read on every request -- reading thousands of JSON files
+    per poll is what made a large feed take seconds to answer.
     """
+    known_reels = known_reels or {}
     root = Path(root)
     out: list[dict] = []
     if not root.is_dir():
@@ -113,9 +118,13 @@ def scan(root: Path, limit_dirs: int = 5000) -> list[dict]:
             rel = f"{dir_rel}/{e.name}"
             # TikTok is short-form by definition, so every clip belongs in the
             # feed. Instagram only does when its sidecar says the post was a
-            # reel, which is read here rather than at play time.
+            # reel, which is read here rather than at play time -- except when
+            # we already classified this clip, in which case the flag is reused
+            # and the sidecar is not opened again.
             if platform == 'tiktok':
                 reel = True
+            elif rel in known_reels:
+                reel = known_reels[rel]
             else:
                 reel = _reel_for(full, e.name)
             out.append({
