@@ -317,6 +317,12 @@ class Handler(BaseHTTPRequestHandler):
             # Surface the on-disk listing cache so its state is inspectable
             # rather than a silent performance mystery.
             snap["cache"] = _cache.stats()
+            # What the automatic retry sweep is waiting on, so a red card can
+            # say "retrying in 40 min" instead of looking abandoned.
+            try:
+                snap["auto_retry"] = get_engine().retry_status()
+            except Exception:
+                snap["auto_retry"] = {"enabled": False, "waiting": []}
             return self._json(snap)
         if p == "/api/profile-pic":
             from urllib.parse import parse_qs

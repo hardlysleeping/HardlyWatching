@@ -83,7 +83,15 @@ def instaloader_available() -> bool:
 def instaloader_path() -> str:
     return shutil.which("instaloader") or INSTALOADER
 
-BETWEEN_PROFILES_SECONDS = 240  # 4 min. instaloader's own RateController already throttles
+BETWEEN_PROFILES_SECONDS = 240
+
+# Automatic retry of throttled jobs. Instagram refuses a profile for a while and
+# then serves it again, so a refusal is not an answer: the sweep re-queues it on
+# a widening delay. Eight hours on the last try means a genuinely stuck profile
+# is still tried once more after the longest plausible block, and then left
+# alone rather than churning forever.
+AUTO_RETRY_MAX = 4
+AUTO_RETRY_DELAYS = (15 * 60, 60 * 60, 3 * 60 * 60, 8 * 60 * 60)  # 4 min. instaloader's own RateController already throttles
                                 # inside each run (275 gql reqs/10 min), so this gap only
                                 # spaces out back-to-back full-profile bursts.
 
@@ -1795,6 +1803,11 @@ class Job:
     total_count: int = 0  # total posts, from "[ n/m ]" (0 = unknown)
     last_line: str = ""   # most recent output line, survives restarts
     heal_attempts: int = 0  # how many times a partial run was auto-refetched
+    # Automatic retry bookkeeping (survives a restart, so a sweep scheduled
+    # before a reboot still happens after it).
+    auto_retries: int = 0   # how many sweeps have re-queued this job
+    next_retry_at: float = 0.0  # when the sweep may pick it up again
+    fatal: bool = False     # decided unsalvageable (missing/private); never swept
     _counted_at: float = 0.0  # throttle for the on-disk rescan
 
     def effective(self, base: Settings) -> Settings:
@@ -2235,6 +2248,66 @@ class Engine:
         self.save_state()
         return n
 
+    # ---------- automatic retry sweep ----------
+    #
+    # Instagram throttles in waves: a batch of profiles gets refused, then the
+    # same profiles work fine an hour later. Without this, every refusal leaves
+    # a red card that only a human can clear, so the queue slowly fills with
+    # profiles that are perfectly fine. The sweep re-queues them on a widening
+    # delay instead, and gives up after a few tries so a truly broken profile
+    # does not retry forever.
+
+    def sweep_retries(self, now: float | None = None) -> int:
+        """Re-queue failed jobs whose backoff has elapsed. Returns how many."""
+        now = time.time() if now is None else now
+        n = 0
+        with self.lock:
+            for jid, j in self.jobs.items():
+                if j.status != "failed":
+                    continue
+                # A profile that really is gone must not be swept back in: the
+                # classification already decided that, and retrying it forever
+                # would just churn.
+                if j.fatal:
+                    continue
+                if j.auto_retries >= AUTO_RETRY_MAX:
+                    continue
+                if now < j.next_retry_at:
+                    continue
+                j.auto_retries += 1
+                j.attempts = 0
+                j.error = ""
+                j.message = (f"auto-retry {j.auto_retries}/{AUTO_RETRY_MAX} "
+                             f"after throttling")
+                j.finished_at = None
+                # Widening delay: 15min, 1h, 3h, 8h. Long enough for Instagram
+                # to forget, short enough that a real block clears in a day.
+                step = AUTO_RETRY_DELAYS[min(j.auto_retries, len(AUTO_RETRY_DELAYS)) - 1]
+                j.next_retry_at = now + step
+                j.status = "queued"
+                self.pending[:] = [x for x in self.pending if x != jid]
+                self.pending.append(jid)   # behind anything already waiting
+                n += 1
+        if n:
+            self._kick()
+            self.save_state()
+        return n
+
+    def retry_status(self) -> dict:
+        """What the sweep is waiting on, for the UI to show honestly."""
+        now = time.time()
+        waiting = []
+        for j in self.jobs.values():
+            if j.status == "failed" and not j.fatal and j.auto_retries < AUTO_RETRY_MAX:
+                waiting.append({
+                    "username": j.username,
+                    "tries": j.auto_retries,
+                    "in_seconds": max(0, int(j.next_retry_at - now)),
+                })
+        waiting.sort(key=lambda r: r["in_seconds"])
+        return {"enabled": AUTO_RETRY_MAX > 0, "max": AUTO_RETRY_MAX,
+                "waiting": waiting}
+
     def pause(self) -> None:
         self.paused = True
         self._limit_paused = False  # a user pause must never auto-clear
@@ -2580,6 +2653,13 @@ class Engine:
 
     def _run(self) -> None:
         while not self.stop_requested:
+            # Clear out anything whose backoff has elapsed before choosing the
+            # next job, so a swept job joins the queue the moment it is eligible
+            # rather than waiting for a separate timer.
+            try:
+                self.sweep_retries()
+            except Exception:
+                pass
             # Wait out both user-pause and any rate-limit cooldown BEFORE taking
             # a job. A 429 sets paused=True *and* cooldown_until, so the two
             # must be handled together or the worker sleeps forever in the
@@ -2809,9 +2889,19 @@ class Engine:
         # Attempts exhausted. Without this terminal status the job is left
         # "queued" and silently restarts forever.
         if not self.cancel_current and job.status not in ("done", "failed", "cancelled"):
-            self._set(job, status="failed", finished_at=time.time(),
-                      message="gave up after retries",
-                      error=job.error or "still rate limited after max attempts")
+            # Schedule an automatic retry rather than leaving a dead card the
+            # user has to clear by hand. The first delay is set here so the
+            # sweep has a deadline to work from.
+            if job.fatal:
+                self._set(job, status="failed", finished_at=time.time(),
+                          message="gave up", error=job.error)
+            else:
+                self._set(job, status="failed", finished_at=time.time(),
+                          next_retry_at=time.time() + AUTO_RETRY_DELAYS[0],
+                          message=("will retry automatically in "
+                                   f"{AUTO_RETRY_DELAYS[0] // 60} min "
+                                   f"(Instagram throttled it)"),
+                          error=job.error or "still rate limited after max attempts")
 
     def _build_cmd(self, job: Job, target_dir: Path, session_user: str | None,
                    s: Settings) -> list[str]:
@@ -2991,7 +3081,10 @@ class Engine:
         if proc.returncode == 0:
             return "fatal" if (fatal_hit and not retry_hit) else "ok"
         if fatal_hit and not retry_hit:
-            self._set(job, error=last_err)
+            # A profile that genuinely does not exist, or is private, is not a
+            # throttle: mark it fatal so the retry sweep never picks it up and
+            # quietly burns hours retrying something that cannot succeed.
+            self._set(job, error=last_err, fatal=True)
             return "fatal"
         if not retry_hit:
             # instaloader exits non-zero when it merely logged warnings (e.g.

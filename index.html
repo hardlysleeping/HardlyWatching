@@ -1022,6 +1022,13 @@ function setListHtml(id, html){
 
 function render(st){
   lastState = st;  // cache for optimistic updates (reorder, etc.)
+  // Fold the automatic retry countdown into each job, so a failed card can say
+  // how long until it tries again rather than looking permanently broken.
+  const ar = st.auto_retry || {};
+  const waits = new Map((ar.waiting || []).map(w => [w.username, w.in_seconds]));
+  for(const j of (st.jobs || [])){
+    j.auto_retry_in = j.status === "failed" ? (waits.get(j.username) || 0) : 0;
+  }
   // preserve which log panels are expanded (+ scroll offsets) across re-render.
   // Cards live in four containers, not just the queue list, so scan them all --
   // otherwise a log opened on the "Downloading now" card closes each poll.
@@ -1318,6 +1325,17 @@ function cardHtml(j, pos, qpos){
       // "Re-download all" turns it off and fetches every post again. They are
       // now labelled and coloured so the expensive one cannot be mistaken for
       // the cheap one.
+      if(j.status==="failed" && j.auto_retry_in > 0){
+        const t = document.createElement("span");
+        t.className = "hint";
+        t.style.marginLeft = "6px";
+        const m = Math.round(j.auto_retry_in / 60);
+        t.textContent = m >= 60
+          ? `auto-retry in ${Math.round(m/60)}h`
+          : `auto-retry in ${Math.max(1,m)}m`;
+        t.title = "Instagram throttled this profile; it will be retried automatically";
+        more.push(t);
+      }
       more.push(`<button class="small safe" data-requeue="${j.id}"
         title="Check for new posts only — anything already downloaded is skipped">${
         j.status==="failed"?"Retry":"Check for new"}</button>`);
