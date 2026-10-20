@@ -174,6 +174,10 @@ systemctl --user status hardlywatching
 journalctl --user -u hardlywatching -f
 ```
 
+**Start on login** can also be turned on or off from the app itself, under
+*Download settings → App*. It sets the same systemd unit the commands above do,
+so there is only ever one answer to whether it is enabled.
+
 ---
 
 ## How it works
@@ -190,6 +194,13 @@ A job is one profile. Jobs run **one at a time**. State lives in
 `~/.config/hardlywatching/state.json`, so closing the browser, restarting the app
 or rebooting all keep the queue, its order and any cooldown. Only a profile that
 was mid-download restarts from the beginning.
+
+**Instagram and TikTok share that one worker.** The sub-tabs split which queue
+you are looking at, not which one runs. The start button follows the sub-tab:
+on TikTok it reads **Start TikTok** and moves TikTok profiles ahead of the
+Instagram ones, so a few videos do not have to wait behind hundreds of profiles.
+A profile that is already downloading always finishes first — the queue is never
+interrupted mid-run.
 
 Re-running a profile does not re-download it. instaloader's `--fast-update` stops
 at the first file it already has, and `--latest-stamps` records what has been
@@ -257,13 +268,20 @@ familiar rung — 540, 720 or 1080 — rather than a pixel number.
 
 ## Shorts
 
-**Shorts** is a tab in the header (opens in its own page, at `/shorts`), a
-phone-sized, full-screen feed of downloaded videos. Swipe or use
-the arrow keys. Each clip has **like**, **trash**, **download**, **more** and
-**less**.
+**Shorts** is a tab in the header, next to Download and Gallery — a phone-shaped,
+full-screen feed of downloaded videos. Swipe or use the arrow keys. Each clip
+has **like**, **trash**, **download**, **more** and **less**.
+
+On a desktop there is a **seek bar** under the clip, and **← / →** jump five
+seconds. Every clip loops, so without those there is no way back to the start.
+
+`/shorts` also works on its own, which is what the installable phone app uses.
+The tab is the same player in a frame, so the two can never drift apart.
 
 It is deliberately random with repetition, so the same clip can come back.
-**More** and **less** change how often it reappears rather than hiding it.
+**More** and **less** change how often a **profile** reappears rather than
+hiding anything: judge the person, not the one clip. One video landing well
+means you want more from them, and every clip they posted follows.
 **Favourites** filters to liked clips.
 
 The order is reshuffled each time you reload the page or scroll back to the top,
@@ -531,8 +549,9 @@ what you already have.
   malformed data there and crashes instaloader; the job is marked done with a
   note instead of re-downloading everything.
 - **Private profiles** only work if your account follows them.
-- **No proxy support.** Per instaloader's own docs, cloud and VPN IPs tend to get
-  *stricter* limits, not looser.
+- **No proxy for Instagram.** Per instaloader's own docs, cloud and VPN IPs tend
+  to get *stricter* limits, not looser. TikTok does have an optional proxy
+  setting, including a bare Cloudflare Worker hostname.
 - **No authentication in the UI.** Treat it as a local tool.
 - **The GTK control panel** needs PyGObject; without it you get a terminal prompt
   offering the same functions.

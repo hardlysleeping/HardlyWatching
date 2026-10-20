@@ -2970,6 +2970,33 @@ class Engine:
         self._limit_paused = False
         self.kick_if_work()
 
+    def start_platform(self, platform: str) -> dict:
+        """Jump one platform's queued jobs to the front, then resume.
+
+        The queue is shared and there is a single worker, so a profile that is
+        already downloading cannot be interrupted. "Start TikTok" therefore
+        means: make the NEXT job the worker takes a TikTok one, instead of
+        waiting behind a few hundred Instagram profiles. Relative order inside
+        each platform is preserved.
+        """
+        platform = (platform or "").strip().lower()
+        if platform not in ("instagram", "tiktok"):
+            return {"ok": False, "error": "unknown platform"}
+        with self.lock:
+            mine, rest = [], []
+            for jid in self.pending:
+                job = self.jobs.get(jid)
+                same = (job is not None
+                        and getattr(job, "platform", "instagram") == platform
+                        and job.status == "queued")
+                (mine if same else rest).append(jid)
+            self.pending[:] = mine + rest
+            self.paused = False
+            self._limit_paused = False
+        self.save_state()
+        self.start()
+        return {"ok": True, "platform": platform, "moved": len(mine)}
+
     def clear_cooldown(self) -> None:
         """Drop the rate-limit cooldown (user override)."""
         with self.lock:
@@ -3050,6 +3077,10 @@ class Engine:
 
     def list_sessions(self) -> list[dict]:
         return list_sessions()
+
+    def browser_sessions(self) -> list[dict]:
+        """Instagram logins found in installed browsers (for the Grab panel)."""
+        return find_browser_sessions()
 
     def tiktok_browsers(self) -> list[str]:
         return find_tiktok_browsers()

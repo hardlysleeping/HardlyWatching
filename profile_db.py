@@ -43,6 +43,19 @@ CREATE TABLE IF NOT EXISTS clips (
     first_seen  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_clips_weight ON clips(weight DESC, last_shown ASC);
+
+-- How often a whole PROFILE reappears in the shorts feed. "Show more/less
+-- often" is about the person, not the individual clip: one video lands well
+-- and you want to see more from them, so the setting lives per profile and
+-- multiplies each of their clips' weights. A separate table (rather than a
+-- column on profiles) so it works for a profile that exists only on disk and
+-- has no imported row.
+CREATE TABLE IF NOT EXISTS profile_weights (
+    platform TEXT NOT NULL,
+    profile  TEXT NOT NULL,
+    weight   REAL NOT NULL DEFAULT 1.0,
+    PRIMARY KEY (platform, profile)
+);
 """
 
 
@@ -310,10 +323,16 @@ class ProfileDB:
         if not rows:
             return []
 
+        # A profile-level "show more/less" multiplies every clip from that
+        # profile, so the same setting applies whether you hit it on one of
+        # their videos or another.
+        pw = self._profile_weights()
+
         now = time.time()
         weights = []
         for r in rows:
             w = max(self.WEIGHT_MIN, float(r["weight"] or 1.0))
+            w *= pw.get((r["platform"], (r["profile"] or "").lower()), 1.0)
             # Staleness nudge: half a weight per hour unseen, capped, so a
             # high-weight clip still reappears more often but does not dominate.
             unseen_h = min(24.0, max(0.0, (now - (r["last_shown"] or 0)) / 3600.0))
@@ -368,6 +387,45 @@ class ProfileDB:
             w = w * self.WEIGHT_STEP if direction == "more" else w / self.WEIGHT_STEP
             w = max(self.WEIGHT_MIN, min(self.WEIGHT_MAX, w))
             self._conn.execute("UPDATE clips SET weight=? WHERE path=?", (w, path))
+            self._conn.commit()
+            return round(w, 3)
+
+    def _profile_weights(self) -> dict[tuple, float]:
+        """{(platform, profile_lower): weight} for every profile that has one.
+
+        Returned under the lock as a plain dict so the sampler can read it
+        without holding the connection.
+        """
+        with self._lock:
+            cur = self._conn.execute("SELECT platform, profile, weight FROM profile_weights")
+            return {(r["platform"], (r["profile"] or "").lower()): float(r["weight"] or 1.0)
+                    for r in cur}
+
+    def profile_weight(self, platform: str, profile: str) -> float:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT weight FROM profile_weights WHERE platform=? AND profile=?",
+                (platform, (profile or "").lower()))
+            row = cur.fetchone()
+            return round(float(row["weight"]), 3) if row else 1.0
+
+    def set_profile_weight(self, platform: str, profile: str, direction: str) -> float:
+        """Nudge how often a WHOLE profile appears. direction 'more'|'less'."""
+        key = (profile or "").strip().lower()
+        if not key:
+            return 1.0
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT weight FROM profile_weights WHERE platform=? AND profile=?",
+                (platform, key))
+            row = cur.fetchone()
+            w = float(row["weight"]) if row else 1.0
+            w = w * self.WEIGHT_STEP if direction == "more" else w / self.WEIGHT_STEP
+            w = max(self.WEIGHT_MIN, min(self.WEIGHT_MAX, w))
+            self._conn.execute(
+                "INSERT INTO profile_weights (platform, profile, weight) VALUES (?,?,?) "
+                "ON CONFLICT(platform, profile) DO UPDATE SET weight=excluded.weight",
+                (platform, key, w))
             self._conn.commit()
             return round(w, 3)
 

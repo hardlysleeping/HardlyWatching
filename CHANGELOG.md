@@ -3,6 +3,44 @@
 Notable changes to HardlyWatching. Format follows [Keep a Changelog](https://keepachangelog.com/);
 versioning is [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Shorts is a tab.** Download / Gallery / Shorts, swapped to like the others,
+  in a phone-shaped column. `/shorts` still works on its own for the installed
+  phone app.
+- **Start the platform you are looking at.** The start button follows the
+  Instagram/TikTok sub-tab: on TikTok it is **Start TikTok** and moves TikTok
+  profiles ahead of the Instagram queue, so they do not have to wait behind
+  hundreds of Instagram jobs. A profile already downloading finishes first.
+- **A seek bar in Shorts on desktop**, plus ← / → to jump 5 seconds. Each clip
+  loops, so without it there was no way to go back.
+- **"More / less often" applies to the profile**, not the single clip: one video
+  landing well means you want more from that person, and every clip they posted
+  follows. Both are clamped so a profile cannot dominate or vanish.
+- **Start on login** is a toggle in settings rather than something you have to
+  remember. It reads and sets the systemd unit, so the terminal and the app
+  never disagree.
+
+### Fixed
+
+- **Start on the TikTok tab looked like it only ever downloaded Instagram.** It
+  picked whatever was next in the shared queue; it now prioritises the platform
+  on screen.
+- **The "grab from a browser" list in Sessions was broken** — the server called
+  a method that did not exist, so the panel errored instead of listing browsers.
+- **Switching tabs used to un-hide panels you had closed**, including the
+  Sessions panel, which made the Download tab look like it had rearranged
+  itself.
+- **The Shorts feed re-read the whole archive on every batch**, about a second
+  per couple of swipes. The scan is now cached briefly, so refills are ~0.1 s
+  and opening the feed still reflects the current disk.
+- **A corrupt `state.json` can no longer empty the queue.** Saves are written to
+  a unique temp file, fsynced, validated, then swapped in, with the previous
+  state kept as a backup; loading recovers the first valid object from trailing
+  garbage and falls back through the backups.
+
 ## [0.1.0] — 2026-10-20
 
 First tagged release. Everything below is usable and tested against a real

@@ -248,6 +248,23 @@
   .tab:hover{border-color:var(--line-2);color:var(--text)}
   .tab.active{background:var(--panel-3);border-color:var(--accent);color:var(--text);font-weight:600}
 
+  /* ---- shorts tab -------------------------------------------------------
+     The feed is a phone-shaped column, like TikTok on the web. It lives in an
+     iframe pointing at /shorts so the exact same player serves the desktop
+     tab, the installed PWA and a plain browser -- one implementation, no
+     drift between a "tab" version and a "phone" version. */
+  .shorts-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  .shorts-head .small{font-size:12.5px;color:var(--muted);text-decoration:none;
+    border:1px solid var(--line);border-radius:8px;padding:5px 11px}
+  .shorts-head .small:hover{color:var(--text);border-color:var(--line-2)}
+  .shortsframe{
+    position:relative;width:100%;max-width:440px;margin:0 auto;
+    height:min(80vh,880px);border-radius:16px;overflow:hidden;
+    background:#08080c;border:1px solid var(--line);
+    box-shadow:0 18px 60px rgba(0,0,0,.45);
+  }
+  .shortsframe iframe{width:100%;height:100%;border:0;display:block;background:#08080c}
+
   /* ---------- gallery grid ---------- */
   .gallery-head{display:flex;align-items:center;gap:10px;margin:0 0 14px}
   .profile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));
@@ -456,8 +473,20 @@
   <div class="tabs">
     <button class="tab active" id="tabQueue">Download</button>
     <button class="tab" id="tabGallery">Gallery</button>
-    <a class="tab" id="tabShorts" href="/shorts" target="_blank" rel="noopener"
-       title="Full-screen feed of reels and TikTok videos">Shorts ↗</a>
+    <button class="tab" id="tabShorts" title="Full-screen feed of reels and TikTok videos">Shorts</button>
+  </div>
+
+  <div id="shortsPane" class="pane" style="display:none">
+    <div class="shorts-head">
+      <b style="font-size:16px">Shorts</b>
+      <span class="hint">TikTok videos and Instagram reels — scroll or swipe, like, trash, save</span>
+      <a class="small" id="shortsFull" href="/shorts" target="_blank" rel="noopener"
+         title="Open the standalone phone/PWA version">Open full screen ↗</a>
+    </div>
+    <div class="shortsframe">
+      <iframe id="shortsFrame" title="Shorts feed" allow="autoplay; fullscreen"
+              referrerpolicy="no-referrer"></iframe>
+    </div>
   </div>
 
   <div id="galleryPane" class="pane" style="display:none">
@@ -686,6 +715,21 @@ the rows that happened to be on screen.
         <input type="text" id="rootNew" class="txtin" style="flex:1;min-width:200px"
                placeholder="/run/media/you/DRIVE/instagram">
         <button class="small" id="rootAdd">Add archive folder…</button>
+      </div>
+    </div>
+    <div class="sgroup" style="margin-top:18px">App</div>
+    <div class="foldcard">
+      <div class="foldcard-head">
+        <b>Start on login</b>
+        <span class="hint">run the queue by itself when you log in</span>
+      </div>
+      <div class="hint" id="autostartNote" style="margin:4px 0 8px">
+        When on, the downloader starts at login and picks the queue back up
+        where it left off. Turn it off if you would rather start it yourself.
+      </div>
+      <div class="row" style="gap:8px;margin:0">
+        <button class="small" id="autostartBtn">…</button>
+        <span class="hint" id="autostartState" style="align-self:center"></span>
       </div>
     </div>
     <div class="sgrid" id="sgrid"></div>
@@ -1045,6 +1089,26 @@ function applySettingsPlatform(plat){
   });
 }
 
+async function loadAutostart(){
+  const btn = $("autostartBtn"), st = $("autostartState");
+  if(!btn) return;
+  try{
+    const r = await (await fetch("/api/autostart")).json();
+    if(!r.supported){
+      btn.textContent = "Not installed as a service";
+      btn.disabled = true;
+      if(st) st.textContent = "Run install-service.sh, then this can be toggled.";
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = r.enabled ? "Turn off" : "Turn on";
+    btn.dataset.want = r.enabled ? "0" : "1";
+    if(st) st.textContent = r.enabled ? "On — starts at login" : "Off — you start it";
+  }catch(e){
+    if(st) st.textContent = "Could not read the setting";
+  }
+}
+
 function buildSettings(){
   const IG_ONLY = ["posts","profile_pic","stories","highlights","reels","tagged","igtv",
     "captions","metadata_json","comments","geotags","compress_json","fast_update",
@@ -1281,8 +1345,17 @@ function setListHtml(id, html){
 // enough to run on every poll, and it keeps the tab strip honest.
 let lastQueueRender = null;
 
+// Which platform's queue is on screen. "instagram" | "tiktok". Declared before
+// any function that reads it: a `let` below a function that runs during setup
+// is a temporal-dead-zone crash, not a hoisted undefined.
+let activePlatform = "instagram";
+
 function renderLight(st){
-  const c = st.counts || {};
+  const cAll = st.counts || {};
+  // Follow the open sub-tab so the button label and its enabled state agree
+  // with what is actually on screen.
+  const c = (cAll.by_platform && cAll.by_platform[activePlatform]) || cAll;
+  const tt = activePlatform === "tiktok";
   paused = st.paused;
   const cd = st.cooldown_remaining || 0;
   const run = $("runBtn");
@@ -1297,10 +1370,14 @@ function renderLight(st){
         ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
         : "Resume the queue";
     } else if((c.queued || 0) > 0){
-      run.textContent = "Start"; run.className = "small primary";
-      run.title = "Start downloading the queue";
+      run.textContent = tt ? "Start TikTok" : "Start";
+      run.className = "small primary";
+      run.title = tt
+        ? "Download TikTok profiles next, ahead of the Instagram queue"
+        : "Start downloading the queue";
     } else {
-      run.textContent = "Start"; run.className = "small primary";
+      run.textContent = tt ? "Start TikTok" : "Start";
+      run.className = "small primary";
       run.disabled = true; run.title = "Nothing queued yet";
     }
     if((c.queued || 0) > 0 || st.current || paused) run.disabled = false;
@@ -1323,9 +1400,6 @@ function renderLight(st){
   }
 }
 
-// Which platform's queue is on screen. "instagram" | "tiktok".
-let activePlatform = "instagram";
-
 // Return a copy of the state carrying only the active platform's jobs, with
 // counts recomputed so the header does not claim a total from the other side.
 function viewForPlatform(st){
@@ -1347,15 +1421,18 @@ function viewForPlatform(st){
 
 function render(st){
   lastState = st;  // cache for optimistic updates (reorder, etc.)
-  // While the gallery tab is showing, the entire queue UI is display:none. The
-  // 1.2s poll used to rebuild all of it anyway -- hundreds of cards, invisible
-  // -- which showed up as the page stuttering whenever you were looking at a
-  // photo. Anything visible in the gallery is patched separately by
-  // patchGalleryCounts, so skipping the queue here loses nothing that is on
-  // screen. The tab switch calls render() again on return, so the queue is
-  // never stale when you actually look at it.
+  // While the gallery or shorts tab is showing, the entire queue UI is
+  // display:none. The 1.2s poll used to rebuild all of it anyway -- hundreds
+  // of cards, invisible -- which showed up as the page stuttering whenever you
+  // were looking at a photo or a video. Anything visible in the gallery is
+  // patched separately by patchGalleryCounts, so skipping the queue here loses
+  // nothing that is on screen. The tab switch calls render() again on return,
+  // so the queue is never stale when you actually look at it.
   const gp = $("galleryPane");
-  if(gp && gp.style.display !== "none"){
+  const sp = $("shortsPane");
+  const awayFromQueue = (gp && gp.style.display !== "none")
+    || (sp && sp.style.display !== "none");
+  if(awayFromQueue){
     renderLight(st);
     return;
   }
@@ -1456,10 +1533,15 @@ function render(st){
   // it look as though they had been removed from the wrong place.
   renderRemoved(activePlatform === "instagram" ? (st.removed || []) : []);
 
-  // One button whose label always matches what clicking it does.
+  // One button whose label always matches what clicking it does. On the
+  // Download tab it acts on the platform whose queue is on screen: "Start" on
+  // the TikTok sub-tab has to begin TikTok work, not silently pick up whatever
+  // sits at the top of the shared queue (which is why it looked like the
+  // button only ever started Instagram).
   paused = st.paused;
   const cd = st.cooldown_remaining || 0;
   const run = $("runBtn");
+  const tt = activePlatform === "tiktok";
   if(st.current){
     run.textContent = "Pause";
     run.className = "small";
@@ -1469,14 +1551,16 @@ function render(st){
     run.className = "small primary";
     run.title = cd > 0 ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min` : "Resume the queue";
   } else if((c.queued||0) > 0){
-    run.textContent = "Start";
+    run.textContent = tt ? "Start TikTok" : "Start";
     run.className = "small primary";
-    run.title = "Start downloading the queue";
+    run.title = tt
+      ? "Download TikTok profiles next, ahead of the Instagram queue"
+      : "Start downloading the queue";
   } else {
-    run.textContent = "Start";
+    run.textContent = tt ? "Start TikTok" : "Start";
     run.className = "small primary";
     run.disabled = true;
-    run.title = "Nothing queued yet";
+    run.title = tt ? "Nothing TikTok queued yet" : "Nothing queued yet";
   }
   if((c.queued||0) > 0 || st.current || paused) run.disabled = false;
 
@@ -2259,7 +2343,17 @@ $("runBtn").onclick = async () => {
   const st = await (await fetch("/api/state")).json();
   if(st.current){ await post("/api/pause",{}); toast("Pausing after this profile"); }
   else if(st.paused){ await post("/api/resume",{}); toast("Resumed"); }
-  else { await post("/api/resume",{}); toast("Started"); }
+  else {
+    // Start the platform whose queue is on screen. Without this, Start on the
+    // TikTok tab simply picked up whatever was at the top of the shared queue
+    // (usually Instagram), which is why it looked like TikTok could not start.
+    const r = await post("/api/start",{platform: activePlatform});
+    if(r && r.ok){
+      const n = r.moved || 0;
+      toast(n ? `Starting ${activePlatform === "tiktok" ? "TikTok" : "Instagram"} — ${n} queued`
+              : `Starting ${activePlatform === "tiktok" ? "TikTok" : "Instagram"}`);
+    } else toast("Started");
+  }
   tick();
 };
 $("openRoot").onclick = () => post("/api/open-folder",{});
@@ -2327,6 +2421,18 @@ $("changeFolderBtn").addEventListener("click", () => {
 
 buildSettings();
 applySettingsPlatform("ig");
+loadAutostart();
+$("autostartBtn").onclick = async () => {
+  const btn = $("autostartBtn");
+  const want = btn.dataset.want === "1";
+  btn.disabled = true;
+  try{
+    const r = await post("/api/autostart", {enabled: want});
+    if(r.ok) toast(r.enabled ? "Will start on login" : "Will not start on login");
+    else toast(r.error || "Could not change it");
+  }catch(e){ toast("Could not change it"); }
+  loadAutostart();
+};
 tick();
 setInterval(tick,1200);
 
@@ -2371,28 +2477,89 @@ let gSort = "random";     // "random" | "newest" | "oldest"
 let gSeed = 1;            // makes the random order stable for one view
 let gReq = 0;             // guards against out-of-order responses
 
-function showTab(which){
-  // Two tabs only: Download (both platforms, queue and finished together) and
-  // Gallery. Instagram and TikTok share one worker and one list, so they share
-  // one tab -- splitting them made the queue look like two different apps.
-  const gallery = which === "gallery";
-  $("tabQueue").classList.toggle("active", !gallery);
-  $("tabGallery").classList.toggle("active", gallery);
-  $("galleryPane").style.display = gallery ? "" : "none";
-  for(const el of document.querySelectorAll(".wrap > *")){
-    if(el.id === "galleryPane" ||
-       el.classList.contains("tabs") || el.tagName === "HEADER")
-      continue;
-    el.style.display = gallery ? "none" : "";
+// Which elements the current tab switch hid, so returning restores exactly
+// those. Blanket-setting display:"" on return would also un-hide panels the
+// user had deliberately closed (the sessions panel, for one), which made the
+// Download tab look like it had rearranged itself.
+let hiddenByTab = [];
+let inOtherTab = false;
+
+// The platform badge and the "paste profiles" line only describe the Download
+// tab. Painting them while Gallery or Shorts is open says the wrong thing.
+function paintHeader(tab){
+  const hp = $("hdrPlatform"), hs = $("hdrSub");
+  if(!hp || !hs) return;
+  if(tab === "gallery"){
+    hp.style.display = "none";
+    hs.textContent = "everything downloaded, grouped by profile";
+  } else if(tab === "shorts"){
+    hp.style.display = "none";
+    hs.textContent = "Instagram reels and TikTok videos, one after another";
+  } else {
+    hp.style.display = "";
+    const ig = activePlatform === "instagram";
+    hp.textContent = ig ? "Instagram" : "TikTok";
+    hs.textContent = ig
+      ? "paste profiles → queue runs one at a time, auto-resumes on rate limits"
+      : "paste a profile or your following list → videos download one profile at a time";
   }
+}
+
+function showTab(which){
+  // Three top-level tabs: Download (queue + finished for both platforms),
+  // Gallery, and Shorts. Shorts was a separate page reachable only through a
+  // link; it is a tab now so it is swapped to like everything else, while
+  // /shorts still works standalone for the installed phone/PWA copy.
+  const gallery = which === "gallery";
+  const shorts = which === "shorts";
+  $("tabQueue").classList.toggle("active", !gallery && !shorts);
+  $("tabGallery").classList.toggle("active", gallery);
+  $("tabShorts").classList.toggle("active", shorts);
+  $("galleryPane").style.display = gallery ? "" : "none";
+  const sp = $("shortsPane");
+  if(sp){
+    sp.style.display = shorts ? "" : "none";
+    // Load the feed the first time the tab is opened, not on page load: the
+    // player pulls clips from disk and there is no reason to pay for that
+    // before it is looked at.
+    if(shorts && !sp.dataset.loaded){
+      const f = $("shortsFrame");
+      if(f) f.src = "/shorts?embed=1";
+      sp.dataset.loaded = "1";
+    }
+  }
+  const other = gallery || shorts;
+  if(other){
+    // Capture ONCE, on the way out of the Download tab. Re-scanning on a
+    // Gallery -> Shorts switch would record the elements we had just hidden as
+    // "already hidden" and never restore them, leaving both platform panes
+    // blank on the way back.
+    if(!inOtherTab){
+      hiddenByTab = [];
+      for(const el of document.querySelectorAll(".wrap > *")){
+        if(el.id === "galleryPane" || el.id === "shortsPane" ||
+           el.classList.contains("tabs") || el.tagName === "HEADER")
+          continue;
+        if(el.style.display !== "none") hiddenByTab.push([el, el.style.display]);
+        el.style.display = "none";
+      }
+      inOtherTab = true;
+    }
+  } else if(inOtherTab){
+    for(const [el, prev] of hiddenByTab) el.style.display = prev;
+    hiddenByTab = [];
+    inOtherTab = false;
+  }
+  paintHeader(which);
   if(gallery) renderGallery();
   // The poll skips the queue while another pane is showing, so coming back has
   // to draw it from the last state we saw.
-  else if(lastQueueRender) render(lastQueueRender);
+  else if(!shorts && lastQueueRender) render(lastQueueRender);
 }
 
 $("tabQueue").onclick = () => showTab("queue");
 $("tabGallery").onclick = () => showTab("gallery");
+$("tabShorts").onclick = () => showTab("shorts");
 
 // ---- platform sub-tabs --------------------------------------------------
 // Both platforms feed the same queue and the same worker, so this only swaps
@@ -2404,10 +2571,8 @@ function showPlatform(which){
   $("subTt").classList.toggle("active", !ig);
   $("igPane").style.display = ig ? "" : "none";
   $("ttPane").style.display = ig ? "none" : "";
-  $("hdrPlatform").textContent = ig ? "Instagram" : "TikTok";
-  $("hdrSub").textContent = ig
-    ? "paste profiles → queue runs one at a time, auto-resumes on rate limits"
-    : "paste a profile or your following list → videos download one profile at a time";
+  // Keep the header consistent with the tab + platform in one place.
+  paintHeader("queue");
   // The queue below the paste box belongs to the selected platform, so it has
   // to be redrawn immediately rather than waiting for the next poll.
   if(lastQueueRender) render(lastQueueRender);

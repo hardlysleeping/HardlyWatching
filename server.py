@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -85,6 +86,70 @@ def _profile_db():
     # never hold two connections to the same database.
     from profile_db import _shared_db
     return _shared_db()
+
+
+# The shorts feed rescans the archive on every request (~1 s for ~19k files on
+# an external drive), and the feed refills after only a couple of swipes -- so
+# without a cache each swipe cost a full directory walk. The result is held
+# briefly: a clip downloaded a moment ago shows up within the TTL, and an
+# explicit refresh bypasses it entirely.
+_SCAN_TTL = 15.0
+_scan_cache: dict = {"t": 0.0, "root": None, "found": None}
+_scan_lock = threading.Lock()
+
+
+def _scan_clips(root, force: bool = False):
+    import shorts
+    now = time.time()
+    with _scan_lock:
+        c = _scan_cache
+        if (not force and c["found"] is not None and c["root"] == str(root)
+                and (now - c["t"]) < _SCAN_TTL):
+            return c["found"]
+        db = _profile_db()
+        found = shorts.scan(root, known_reels=db.known_reels())
+        c.update(t=now, root=str(root), found=found)
+        return found
+
+
+def _invalidate_scan():
+    """Drop the cached scan, e.g. just after a download finishes."""
+    with _scan_lock:
+        _scan_cache["found"] = None
+
+
+def _systemctl(*args) -> tuple[int, str]:
+    try:
+        r = subprocess.run(["systemctl", "--user", *args],
+                           capture_output=True, text=True, timeout=10)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except Exception as e:
+        return 1, str(e)
+
+
+# The unit this app is normally installed as. "Start on login" is exactly
+# systemd's idea of that unit being enabled, so it is read and set through
+# systemctl instead of kept in our own settings: a second copy would drift the
+# moment anyone used the terminal.
+SERVICE_UNIT = "hardlywatching.service"
+
+
+def autostart_state() -> dict:
+    rc, out = _systemctl("is-enabled", SERVICE_UNIT)
+    state = (out.splitlines() or [""])[0].strip()
+    if state in ("", "not-found") or "No such" in out or "not found" in out.lower():
+        return {"ok": True, "supported": False, "enabled": False, "state": state or "absent"}
+    return {"ok": True, "supported": True, "enabled": state == "enabled", "state": state}
+
+
+def set_autostart(want: bool) -> dict:
+    rc, out = _systemctl("enable" if want else "disable", SERVICE_UNIT)
+    st = autostart_state()
+    if rc != 0 and not st.get("supported"):
+        return {**st, "ok": False,
+                "error": "Not running as a service, so there is nothing to enable. "
+                         "Install it with install-service.sh first."}
+    return {**st, "ok": rc == 0, "error": "" if rc == 0 else out}
 
 
 def _open_folder(path: Path) -> None:
@@ -374,6 +439,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_file(HERE / "shorts.html")
         if p == "/shorts.webmanifest":
             return self._serve_file(HERE / "shorts.webmanifest")
+        if p == "/api/autostart":
+            # Read-only: whether the service starts itself at login.
+            return self._json(autostart_state())
+        if p == "/api/tiktok/browsers":
+            # Which browsers are signed into TikTok (yt-dlp takes a name, not a
+            # cookie file, so this is a plain list).
+            return self._json({"browsers": get_engine().tiktok_browsers()})
         if p.startswith("/api/shorts/file/"):
             # Stream a clip from the archive. resolve() refuses anything that
             # escapes the output root, so a traversal attempt 404s.
@@ -810,14 +882,14 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/shorts/feed":
             # Newest-first scan of what is actually on disk, synced into the
             # clips table, then a weighted pick. Verifying against disk each
-            # call is what makes a deleted file drop out of the feed.
-            import shorts
+            # call is what makes a deleted file drop out of the feed; the scan
+            # itself is cached for a few seconds so a swipe does not re-walk
+            # the whole archive.
             limit = int(body.get("limit") or 20)
             fav = bool(body.get("favourites"))
             seen = body.get("exclude") or []
             db = _profile_db()
-            known = db.known_reels()
-            found = shorts.scan(get_engine().output_root, known_reels=known)
+            found = _scan_clips(get_engine().output_root, force=bool(body.get("refresh")))
             db.sync_clips(found)
             alive = [f["path"] for f in found]
             by_path = {f["path"]: f for f in found}
@@ -839,10 +911,19 @@ class Handler(BaseHTTPRequestHandler):
             if action == "trash":
                 db.set_trashed(path, True)
                 return self._json({"ok": True})
-            if action == "more":
-                return self._json({"ok": True, "weight": db.set_weight(path, "more")})
-            if action == "less":
-                return self._json({"ok": True, "weight": db.set_weight(path, "less")})
+            if action in ("more", "less"):
+                # "Show more/less often" is about the PERSON, not this one
+                # clip: one video landing well means you want more from them.
+                # Falls back to the clip when its profile is unknown.
+                c = db.clip(path) or {}
+                target = str(body.get("target") or "profile")
+                if target == "profile" and c.get("profile"):
+                    w = db.set_profile_weight(c.get("platform") or "instagram",
+                                              c.get("profile"), action)
+                    return self._json({"ok": True, "scope": "profile",
+                                       "profile": c.get("profile"), "weight": w})
+                return self._json({"ok": True, "scope": "clip",
+                                   "weight": db.set_weight(path, action)})
             return self._json({"ok": False, "error": "unknown action"})
 
         if p == "/api/tiktok/cookies-from-browser":
@@ -952,6 +1033,13 @@ class Handler(BaseHTTPRequestHandler):
             get_engine().resume()
             return self._json({"ok": True})
 
+        if p == "/api/start":
+            # Start downloads, optionally ahead of the other platform's queue.
+            return self._json(get_engine().start_platform(str(body.get("platform") or "")))
+
+        if p == "/api/autostart":
+            return self._json(set_autostart(bool(body.get("enabled"))))
+
         if p == "/api/cooldown/clear":
             # The countdown is a safety brake, not a lock: Instagram's own wait
             # is a guess, and someone who can see it has cleared (a fresh IP, a
@@ -973,9 +1061,6 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/session/forget":
             ok = get_engine().forget_session(str(body.get("username") or ""))
             return self._json({"ok": ok})
-
-        if p == "/api/tiktok/browsers":
-            return self._json({"browsers": get_engine().tiktok_browsers()})
 
         if p == "/api/session/browsers":
             return self._json({"browsers": get_engine().browser_sessions()})

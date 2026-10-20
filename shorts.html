@@ -51,6 +51,10 @@
     background:linear-gradient(to bottom,rgba(0,0,0,.65),transparent);
   }
   .topbar .title{font-size:.82rem;font-weight:600;letter-spacing:.02em}
+  /* Embedded in the main app's Shorts tab: the surrounding page already has a
+     tab strip and a heading, so ours would just be a duplicate. */
+  .embed .topbar{background:linear-gradient(to bottom,rgba(0,0,0,.45),transparent)}
+  .embed .topbar .title{display:none}
   .topbar .count{font-size:.72rem;color:var(--muted);margin-left:auto}
   .filt{
     border:1px solid rgba(255,255,255,.28);background:transparent;color:var(--fg);
@@ -85,6 +89,34 @@
   }
   .bottombar .who{font-size:.9rem;font-weight:600}
   .bottombar .meta{font-size:.7rem;color:var(--muted);margin-top:.15rem}
+
+  /* ---- scrub bar ----
+     Desktop-only: a touch device already has the video's own controls, and a
+     thin slider under a thumb is worse than useless there. On a mouse it is
+     the only way to rewind, so it is always there. */
+  .scrub{
+    position:fixed;left:0;right:0;z-index:22;
+    bottom:calc(env(safe-area-inset-bottom) + 4.5rem);
+    display:flex;align-items:center;gap:.55rem;
+    padding:0 1.05rem;pointer-events:none;
+  }
+  .scrub .t{font-size:.62rem;color:var(--muted);font-variant-numeric:tabular-nums;
+    min-width:2.7rem;text-align:center}
+  .scrub input{
+    pointer-events:auto;flex:1;min-width:0;height:18px;margin:0;padding:0;
+    -webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;
+  }
+  .scrub input::-webkit-slider-runnable-track{height:4px;border-radius:999px;
+    background:rgba(255,255,255,.3)}
+  .scrub input::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;
+    margin-top:-5px;border-radius:50%;background:var(--fg);border:none}
+  .scrub input::-moz-range-track{height:4px;border-radius:999px;
+    background:rgba(255,255,255,.3)}
+  .scrub input::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
+    background:var(--fg);border:none}
+  /* Hide the mouse-only control on a touch screen. !important so an inline
+     display:"" (used to show it again when the feed loads) cannot override it. */
+  @media (pointer:coarse){ .scrub{display:none !important} }
 
   /* ---- states ---- */
   .msg{
@@ -134,13 +166,22 @@
     <div class="lbl">trash</div>
   </div>
   <div>
-    <button class="act" id="moreBtn" aria-label="Show more often">&#8679;</button>
+    <button class="act" id="moreBtn" aria-label="Show more often from this profile"
+            title="See more from this profile">&#8679;</button>
     <div class="lbl">more</div>
   </div>
   <div>
-    <button class="act" id="lessBtn" aria-label="Show less often">&#8681;</button>
+    <button class="act" id="lessBtn" aria-label="Show less often from this profile"
+            title="See less from this profile">&#8681;</button>
     <div class="lbl">less</div>
   </div>
+</div>
+
+<div class="scrub" id="scrubWrap" style="display:none">
+  <span class="t" id="tCur">0:00</span>
+  <input type="range" id="scrub" min="0" max="1000" value="0" step="1"
+         aria-label="Seek">
+  <span class="t" id="tDur">0:00</span>
 </div>
 
 <div class="bottombar" id="bottombar" style="display:none">
@@ -154,9 +195,17 @@
 "use strict";
 
 const feed = document.getElementById("feed");
-const TOP = 4;            // clips fetched per batch
-const REFILL_AT = 2;      // fetch more when this many remain below the fold
+const TOP = 8;            // clips fetched per batch (8, not 4: each batch is a
+                          // server round trip and the feed should not stall
+                          // every couple of swipes)
+const REFILL_AT = 3;      // fetch more when this many remain below the fold
 const MAX_EXCLUDE = 400;  // remember this many recently shown, then forget
+
+// Opened inside the main app's Shorts tab (an iframe of /shorts?embed=1) rather
+// than standalone: the surrounding page supplies the tabs and title, so ours is
+// dropped. Everything else behaves identically in both modes.
+if(new URLSearchParams(location.search).get("embed") === "1")
+  document.documentElement.classList.add("embed");
 
 let clips = [];           // loaded clips, in feed order
 let idx = 0;              // index of the clip in view
@@ -169,6 +218,11 @@ let seen = [];            // recently shown, sent back so they are deprioritised
 // of those just pause the page. A force-close wipes sessionStorage, which is
 // what should start a new sitting -- not losing focus for a minute.
 const SESSION_KEY = "shorts.session.v1";
+// The first fetch of a page load bypasses the server's short-lived scan cache,
+// so opening the feed always reflects what is on disk right now. Later batches
+// (and a scroll-to-top reshuffle) reuse it, because a second full walk of the
+// archive per swipe is what made the feed feel slow.
+let refreshNext = true;
 function loadSession(){
   try{
     const raw = sessionStorage.getItem(SESSION_KEY);
@@ -231,6 +285,13 @@ function clipEl(c){
   // from starting on its own, which left every clip sitting paused at 0.00.
   // Sound is opt-in through the tap-to-unmute control.
   v.muted = true;
+  // Drive the desktop scrub bar from whichever clip is actually in view.
+  v.addEventListener("loadedmetadata", () => {
+    if(v.closest(".clip") === current()) paintScrub(v);
+  });
+  v.addEventListener("timeupdate", () => {
+    if(v.closest(".clip") === current()) paintScrub(v);
+  });
   // Fall back to a poster-free black frame rather than a broken icon.
   wrap.appendChild(v);
 
@@ -254,6 +315,7 @@ function renderEmpty(message, sub){
   $("topbar").style.display = "";
   $("rail").style.display = "none";
   $("bottombar").style.display = "none";
+  $("scrubWrap").style.display = "none";
   $("count").textContent = "";
   feed.innerHTML = '<div class="msg"><h2>' + message + "</h2><p>" + sub + "</p></div>";
 }
@@ -270,7 +332,11 @@ async function fetchMore(){
       limit: TOP,
       favourites,
       exclude: seen.slice(-MAX_EXCLUDE),
+      // A forced reshuffle should see a clip that was downloaded a moment ago,
+      // so it bypasses the server's short-lived scan cache once.
+      refresh: refreshNext,
     });
+    refreshNext = false;
     const got = r.clips || [];
     if(!got.length && !clips.length){
       renderEmpty(
@@ -289,6 +355,7 @@ async function fetchMore(){
     $("topbar").style.display = "";
     $("rail").style.display = "";
     $("bottombar").style.display = "";
+    $("scrubWrap").style.display = "";
     // Mark the clip now in view straight away. onScrollSettled is otherwise
     // only reachable by scrolling, so the first clip of every session went
     // unrecorded and could come back immediately.
@@ -409,6 +476,49 @@ function fillRail(){
   $("count").textContent = (idx + 1) + " / " + clips.length;
 }
 
+// ---- desktop scrub bar ---------------------------------------------------
+// The feed loops each clip, so there is no "end" to rewind to; the slider is
+// the only way back on a desktop where the native controls are hidden.
+
+let scrubbing = false;
+
+function fmtTime(s){
+  if(!isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60), ss = Math.floor(s % 60);
+  return m + ":" + String(ss).padStart(2, "0");
+}
+
+function paintScrub(v){
+  const d = v.duration;
+  const known = isFinite(d) && d > 0;
+  $("tDur").textContent = known ? fmtTime(d) : "0:00";
+  if(scrubbing) return;                 // the user is holding the thumb
+  $("tCur").textContent = fmtTime(v.currentTime);
+  if(known) $("scrub").value = String(Math.round(v.currentTime / d * 1000));
+}
+
+function seekTo(seconds){
+  const v = current() && current().querySelector("video");
+  if(!v) return;
+  const d = v.duration;
+  const t = isFinite(d) && d > 0 ? Math.max(0, Math.min(d - 0.05, seconds)) : Math.max(0, seconds);
+  try{ v.currentTime = t; }catch(e){}
+  paintScrub(v);
+}
+
+$("scrub").addEventListener("pointerdown", () => { scrubbing = true; });
+$("scrub").addEventListener("input", () => {
+  const v = current() && current().querySelector("video");
+  if(!v) return;
+  const d = v.duration;
+  if(!(isFinite(d) && d > 0)) return;
+  v.currentTime = (Number($("scrub").value) / 1000) * d;
+  $("tCur").textContent = fmtTime(v.currentTime);
+});
+const endScrub = () => { scrubbing = false; };
+$("scrub").addEventListener("change", endScrub);
+window.addEventListener("pointerup", endScrub);
+
 // ---- scrolling -----------------------------------------------------------
 
 let scrollTimer = null;
@@ -486,14 +596,17 @@ $("trashBtn").onclick = async () => {
   toast("Trashed");
 };
 
+// "More / less often" is about the PERSON, not the one clip. One video landing
+// well means you want more from them, so the server nudges the whole profile
+// and every clip from it follows.
 $("moreBtn").onclick = async () => {
-  const r = await act("more");
-  if(r && r.weight) toast("Shows more often (" + r.weight + "×)");
+  const r = await act("more", {target: "profile"});
+  if(r && r.weight) toast("More from @" + (r.profile || "this profile") + " (" + r.weight + "×)");
 };
 
 $("lessBtn").onclick = async () => {
-  const r = await act("less");
-  if(r && r.weight) toast("Shows less often (" + r.weight + "×)");
+  const r = await act("less", {target: "profile"});
+  if(r && r.weight) toast("Less from @" + (r.profile || "this profile") + " (" + r.weight + "×)");
 };
 
 $("dlBtn").onclick = () => {
@@ -528,6 +641,16 @@ document.addEventListener("keydown", e => {
   }else if(e.key === "ArrowUp" || e.key === "k"){
     e.preventDefault();
     feed.scrollBy({top: -window.innerHeight, behavior: "smooth"});
+  }else if(e.key === "ArrowLeft"){
+    // Rewind 5s. The clip loops, so without this there is no way back on a
+    // desktop once the native controls are out of the way.
+    e.preventDefault();
+    const v = current() && current().querySelector("video");
+    if(v) seekTo(v.currentTime - 5);
+  }else if(e.key === "ArrowRight"){
+    e.preventDefault();
+    const v = current() && current().querySelector("video");
+    if(v) seekTo(v.currentTime + 5);
   }else if(e.key === " "){
     e.preventDefault();
     const v = current()?.querySelector("video");
