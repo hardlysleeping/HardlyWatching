@@ -2125,6 +2125,7 @@ async function uploadFiles(fileList){
 // Month index from the server, and the state of the month currently shown.
 // The index is ~2.8KB (176 months, one count each) rather than the 7.6MB of
 // every post: the slider needs the months, and only one month is ever fetched.
+let tlOnlyFavs = false;   // favourites-only timeline
 let tlMonths = [];        // [["2026-10", 513], ...] oldest first
 let tlIndex = 0;          // position in tlMonths
 let tlReq = 0;
@@ -2147,8 +2148,15 @@ function tlDecadeOptions(){
   return years;
 }
 
+// Which timeline is loaded, so switching the filter refetches the index and
+// does not show the other one's month counts.
+let tlIndexedFavs = null;
+
 async function loadTimelineIndex(){
-  const r = await (await fetch("/api/timeline")).json();
+  const q = tlOnlyFavs ? "?favorites=1" : "";
+  const r = await (await fetch("/api/timeline" + q)).json();
+  tlIndexedFavs = tlOnlyFavs;
+  tlCache.clear();
   tlMonths = Object.entries(r.months || {}).sort((a, b) => a[0] < b[0] ? -1 : 1);
   // Open on the newest month with posts: that is what you would look at first.
   tlIndex = Math.max(0, tlMonths.length - 1);
@@ -2159,19 +2167,31 @@ async function fetchMonth(key){
   if(tlCache.has(key)) return tlCache.get(key);
   // 600 is the server's cap; a month is typically a few hundred posts.
   const r = await (await fetch(
-    `/api/timeline-month?month=${encodeURIComponent(key)}&limit=600`)).json();
+    `/api/timeline-month?month=${encodeURIComponent(key)}&limit=600`
+    + (tlOnlyFavs ? "&favorites=1" : ""))).json();
   const posts = r.posts || [];
   tlCache.set(key, posts);
   return posts;
 }
 
+// Fetch a profile's posts and find one post in it. Used by the timeline to open
+// a post in the full viewer, where carousel navigation and keyboard both work.
+async function fetchOnePost(username, postId){
+  const r = await (await fetch(
+    `/api/photos?profile=${encodeURIComponent(username)}`)).json();
+  const sec = r.sections || {main:[], favorites:[], trash:[]};
+  const all = (sec.main || []).concat(sec.favorites || [], sec.trash || []);
+  return { sec, hit: all.find(p => p.post === postId) };
+}
+
 function tlTile(post, monthKey){
   const tile = document.createElement("div");
-  tile.className = "ptile";
+  tile.className = "ptile" + (post.favorite ? " faved" : "");
   const img = document.createElement("img");
   img.loading = "lazy"; img.alt = "";
   img.src = `/thumb?profile=${encodeURIComponent(post.username)}`
-    + `&file=${encodeURIComponent(post.file)}`;
+    + `&file=${encodeURIComponent(post.file)}`
+    + (post.section === "favorites" ? "&section=favorites" : "");
   tile.appendChild(img);
   const who = document.createElement("span");
   who.className = "ptile-user";
@@ -2189,25 +2209,104 @@ function tlTile(post, monthKey){
     c.textContent = post.count;
     tile.appendChild(c);
   }
-  // Opening one fetches that profile's posts and lands on the same post, so
-  // the viewer keeps its full behaviour (favourite, trash, carousel).
-  tile.onclick = async () => {
-    // Land on this exact post. The overview tile has only a filename, so the
-    // profile's posts are fetched once and the matching one is opened; if it is
-    // not found (deleted/moved since) the profile grid is shown instead.
-    const r = await (await fetch(
-      `/api/photos?profile=${encodeURIComponent(post.username)}`)).json();
-    const sec = r.sections || {main:[], favorites:[], trash:[]};
-    const all = (sec.main || []).concat(sec.favorites || [], sec.trash || []);
-    const hit = all.find(p => p.post === post.post);
-    gProfile = post.username;
-    drawPhotos(post.username, sec);
-    if(hit){
-      const s = (sec.main || []).includes(hit) ? "main" : "main";
-      openViewer(post.username, hit, hit.section || s, 0);
-    }
+
+  // Clicks on the tile open the bigger view. Buttons stop propagation, so
+  // acting on a post never also opens it.
+  tile.onclick = () => tlOpenBig(post);
+
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  tile.appendChild(acts);
+
+  const mk = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.title = title;
+    b.onclick = (e) => { e.stopPropagation(); e.preventDefault(); fn(b); };
+    return b;
   };
+
+  // Favourite, in place, exactly like the profile grid: flip immediately, and
+  // only move the file back if the server refuses.
+  let faved = !!post.favorite;
+  const heart = mk(faved ? "♥" : "♡",
+    faved ? "Remove from favourites" : "Add to favourites",
+    async (btn) => {
+      const was = faved;
+      faved = !faved;
+      paintHeart(btn, tile, faved);
+      const section = faved ? "favorites" : "main";
+      const res = await movePhoto(post.username, post.file, section, true);
+      if(!res){
+        faved = was;
+        paintHeart(btn, tile, faved);
+        return;
+      }
+      post.favorite = faved;
+      post.section = section;
+      toast(faved ? "Favourited" : "Removed from favourites");
+      // In the favourites-only timeline a post that is no longer a favourite
+      // does not belong here, so it leaves the grid rather than lingering.
+      if(tlOnlyFavs && !faved){
+        tile.remove();
+        noteTimelineChanged();
+      }
+    });
+  acts.appendChild(heart);
+
+  acts.appendChild(mk("⤢", "Open bigger", () => tlOpenBig(post)));
+
+  acts.appendChild(mk("🗑", "Move to trash", async () => {
+    if(!confirm(`Move this post by ${post.username} to trash?`)) return;
+    const ok = await movePhoto(post.username, post.file, "trash", true);
+    if(!ok) return;
+    toast("Moved to trash");
+    tile.remove();
+    noteTimelineChanged();
+  }));
+
+  // Timeline only: jump to this person's full profile grid, with the post open.
+  acts.appendChild(mk("👤", `Open ${post.username}'s profile`, async () => {
+    const { sec, hit } = await fetchOnePost(post.username, post.post);
+    gProfile = post.username;
+    gAll = null;
+    if(!$("galleryPane") || $("galleryPane").style.display === "none"){
+      showTab("gallery");
+    }
+    drawPhotos(post.username, sec);
+    if(hit) openViewer(post.username, hit, hit.section || "main", 0);
+  }));
+
+  if(post.caption) tile.title = post.caption;
   return tile;
+}
+
+// Called when a post leaves the timeline (trashed, or un-favourited while the
+// favourites filter is on). Recounts what is on screen so the label does not
+// keep claiming a post that is gone.
+function noteTimelineChanged(){
+  const grid = $("profileGrid") ? $("profileGrid").querySelector(".pgrid") : null;
+  const count = $("profileGrid") ? $("profileGrid").querySelector(".tlbar .hint") : null;
+  if(!grid || !count || !tlMonths.length) return;
+  const shown = grid.querySelectorAll(".ptile").length;
+  const total = tlMonths[tlIndex][1];
+  const label = tlLabel(tlMonths[tlIndex][0]);
+  count.textContent = `${label} · ${shown} of ${total} post${total===1?"":"s"}`
+    + ` · ${tlIndex + 1} of ${tlMonths.length}`;
+}
+
+function paintHeart(btn, tile, on){
+  btn.textContent = on ? "♥" : "♡";
+  btn.title = on ? "Remove from favourites" : "Add to favourites";
+  tile.classList.toggle("faved", on);
+}
+
+// Open a timeline post in the existing viewer: real size, carousel, keyboard,
+// and the same favourite/trash controls as everywhere else.
+async function tlOpenBig(post){
+  const { sec, hit } = await fetchOnePost(post.username, post.post);
+  if(!hit){ toast("That post is no longer there"); return; }
+  openViewer(post.username, hit, post.section || "main", 0);
 }
 
 async function renderTimeline(){
@@ -2217,7 +2316,7 @@ async function renderTimeline(){
   const mine = ++tlReq;
   host.innerHTML = `<div class="gempty">Loading the timeline…</div>`;
 
-  if(!tlMonths.length){
+  if(!tlMonths.length || tlIndexedFavs !== tlOnlyFavs){
     try { await loadTimelineIndex(); }
     catch(e){ host.innerHTML = `<div class="gempty">Could not load the timeline.</div>`; return; }
     if(mine !== tlReq) return;
@@ -2261,7 +2360,22 @@ async function renderTimeline(){
   const count = document.createElement("span");
   count.className = "hint";
 
-  bar.append(prev, ySel, mSel, slider, next, jump, count);
+  // Favourites-only filter. Rebuilds the whole timeline against a different
+  // list, so it reloads the index rather than filtering what is on screen --
+  // the month counts and the slider length both change.
+  const favChip = document.createElement("button");
+  favChip.className = "fchip" + (tlOnlyFavs ? " on" : "");
+  favChip.textContent = "♥ Favourites only";
+  favChip.title = "Show only posts you have favourited, across every profile";
+  favChip.onclick = () => {
+    tlOnlyFavs = !tlOnlyFavs;
+    tlMonths = [];
+    tlIndex = 0;
+    tlCache.clear();
+    renderTimeline();
+  };
+
+  bar.append(prev, ySel, mSel, slider, next, jump, favChip, count);
   host.innerHTML = "";
   host.appendChild(bar);
 
