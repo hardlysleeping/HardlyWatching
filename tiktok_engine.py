@@ -29,6 +29,14 @@ DEFAULT_COUNT = 5
 QUALITY_CHOICES = (360, 480, 720, 1080, 1440, 2160)
 
 
+# Browser names yt-dlp's --cookies-from-browser accepts. It exits 2 on anything
+# else, so this list is a hard constraint, not a suggestion. Firefox forks (Zen,
+# LibreWolf) are absent on purpose: they are read through the firefox extractor
+# by profile path, "firefox:/path/to/profile".
+YTDLP_BROWSERS = {"brave", "chrome", "chromium", "edge", "firefox",
+                  "opera", "safari", "vivaldi", "whale"}
+
+
 @dataclass
 class TikTokSettings:
     """yt-dlp options, named the way the UI labels them.
@@ -234,12 +242,34 @@ def build_download_cmd(handle: str, dest: Path, archive: Path,
                        settings: TikTokSettings | None = None) -> list[str]:
     s = settings or TikTokSettings()
     cmd = _base_download_cmd(handle, dest, archive, count, s)
-    if s.cookies_from_browser:
+    spec = (s.cookies_from_browser or "").strip()
+    if spec:
         # Same idea as the Instagram side: reuse a browser login rather than
         # asking for a password. Optional -- public profiles work without it.
-        cmd += ['--cookies-from-browser', s.cookies_from_browser]
+        #
+        # yt-dlp exits 2 on a browser name it does not know, so one bad stored
+        # value fails every TikTok download instantly with an opaque "yt-dlp
+        # exited 2" (this happened: "zen" was saved and nothing downloaded for
+        # hours). Drop an unusable spec and run without cookies instead, which
+        # still works for public profiles, and let the caller surface a warning.
+        if spec.split(":", 1)[0].lower() in YTDLP_BROWSERS:
+            cmd += ['--cookies-from-browser', spec]
     cmd.append(profile_url(handle))
     return cmd
+
+
+def cookie_spec_problem(spec: str) -> str:
+    """Why this --cookies-from-browser value would be rejected, or '' if fine."""
+    spec = (spec or "").strip()
+    if not spec:
+        return ""
+    browser = spec.split(":", 1)[0].lower()
+    if browser in YTDLP_BROWSERS:
+        return ""
+    return (f"yt-dlp has no browser called '{browser}'. Supported: "
+            + ", ".join(sorted(YTDLP_BROWSERS))
+            + ". Firefox forks such as Zen and LibreWolf are used as "
+              "firefox:/path/to/their/profile.")
 
 
 # Lines yt-dlp prints that mean something went wrong for one video but the run

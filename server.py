@@ -946,10 +946,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "unknown action"})
 
         if p == "/api/tiktok/cookies-from-browser":
-            browser = str(body.get("browser") or "").strip().lower()
+            # Do not lowercase here: a Firefox-fork spec carries a profile PATH
+            # (firefox:/home/... ), and lowercasing it points at nothing.
+            browser = str(body.get("browser") or "").strip()
             if not browser:
                 # Auto-pick: the best detected browser with TikTok cookies.
-                cands = get_engine().tiktok_browsers()
+                eng = get_engine()
+                cands = eng.tiktok_browsers()
                 if not cands:
                     return self._json({"ok": False,
                                        "error": "No browser with a TikTok login was found. "

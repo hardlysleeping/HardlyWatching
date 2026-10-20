@@ -266,6 +266,11 @@ BROWSER_GLOBS = [
 ]
 
 
+# Browsers that store cookies in Firefox's format. They are NOT valid yt-dlp
+# browser names, so each is reached as firefox:<profile directory> instead.
+FIREFOX_FAMILY = {"Firefox", "Zen", "LibreWolf"}
+
+
 def _browser_roots() -> list[Path]:
     """Base folders to look under for browser profiles, per OS."""
     home = Path.home()
@@ -337,18 +342,21 @@ def find_browser_sessions() -> list[dict]:
 
 
 def find_tiktok_browsers() -> list[str]:
-    """Browser names (yt-dlp's spelling) that have a TikTok cookie store.
+    """yt-dlp cookie specs for browsers that have a TikTok cookie store.
 
-    yt-dlp's --cookies-from-browser takes a browser name, not a file, so
-    this only needs to know which browsers are logged into TikTok at all.
-    Detection is the same scan as the Instagram side, restricted to stores
-    that actually contain a tiktok.com cookie.
+    yt-dlp takes `--cookies-from-browser BROWSER[:PROFILE]` and **rejects any
+    browser name it does not know** with an immediate exit 2, so a wrong label
+    here does not degrade -- it fails every TikTok download instantly. Its
+    accepted names are a fixed list, and the Firefox forks are not on it: Zen
+    and LibreWolf are read through the firefox extractor by pointing it at their
+    profile directory, `firefox:/path/to/profile`, which is the same cookie
+    format. So the spec returned here is the one that goes straight onto the
+    command line, not a bare label.
     """
     out: list[str] = []
     seen: set[str] = set()
     # Map our internal labels to yt-dlp's expected names.
     label_to_ytdlp = {
-        "Firefox": "firefox", "Zen": "zen", "LibreWolf": "librewolf",
         "Chrome": "chrome", "Chromium": "chromium", "Edge": "edge",
         "Brave": "brave", "Vivaldi": "vivaldi", "Opera": "opera",
         "Safari": "safari",
@@ -377,10 +385,21 @@ def find_tiktok_browsers() -> list[str]:
                         ).fetchall()
                     finally:
                         conn.close()
-                    if rows:
-                        name = label_to_ytdlp.get(label, label.lower())
-                        if name not in out:
-                            out.append(name)
+                    if not rows:
+                        continue
+                    if label in FIREFOX_FAMILY:
+                        # Firefox, Zen and LibreWolf all store the same
+                        # cookies.sqlite; name the directory so yt-dlp reads the
+                        # right one and never complains about the fork's name.
+                        name = f"firefox:{p.parent}"
+                    else:
+                        name = label_to_ytdlp.get(label, "")
+                    # Belt and braces: never hand yt-dlp a name it will reject.
+                    import tiktok_engine as _tt
+                    if name.split(":", 1)[0] not in _tt.YTDLP_BROWSERS:
+                        continue
+                    if name not in out:
+                        out.append(name)
                 except Exception:
                     pass
     return out
@@ -3138,12 +3157,25 @@ class Engine:
         return find_tiktok_browsers()
 
     def set_tiktok_cookies_browser(self, browser: str) -> dict:
-        """Set tiktok.cookies_from_browser. Empty string clears it."""
-        browser = (browser or "").strip().lower()
-        if browser and browser not in find_tiktok_browsers():
-            # Allow a manual value even if we did not detect it; the user may
-            # know their browser better than our scan does.
-            pass
+        """Set tiktok.cookies_from_browser. Empty string clears it.
+
+        Validated before it is stored: yt-dlp exits 2 on a browser name it does
+        not know, so an unchecked value here does not just fail to help -- it
+        fails every TikTok download with an opaque "yt-dlp exited 2". Saving
+        "zen" once was enough to stall the whole TikTok queue.
+        """
+        # Keep the case of a profile PATH (firefox:/home/... has a real path in
+        # it); only the browser part is case-insensitive.
+        browser = (browser or "").strip()
+        if ":" in browser:
+            head, tail = browser.split(":", 1)
+            browser = f"{head.strip().lower()}:{tail}"
+        else:
+            browser = browser.lower()
+        import tiktok_engine as _tt
+        problem = _tt.cookie_spec_problem(browser)
+        if problem:
+            return {"ok": False, "error": problem, "browser": ""}
         with self.lock:
             self.settings.tiktok["cookies_from_browser"] = browser
         self.save_state()
