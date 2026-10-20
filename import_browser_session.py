@@ -25,7 +25,6 @@ try:
     from instaloader import Instaloader
 except ModuleNotFoundError:
     # instaloader may live in a pipx venv rather than this interpreter.
-    import sysconfig
     import glob as _glob
     _cands = _glob.glob(str(Path.home() / ".local/share/pipx/venvs/instaloader/lib/python*/site-packages"))
     for _c in _cands:

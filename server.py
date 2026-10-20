@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from engine import (Engine, OUTPUT_ROOT, UPLOAD_EXTS, clean_profile_name,
+from engine import (Engine, UPLOAD_EXTS, clean_profile_name,
                     make_preview, make_thumb, _cache, _media_cache_forget)
 
 HERE = Path(__file__).resolve().parent
@@ -711,13 +711,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "count": new_count, "total": job.tiktok_total,
                                "revived": revived, "username": job.username})
 
-        if p == "/api/tiktok/profiles":
-            db = _profile_db()
-            return self._json({
-                "count": db.count("tiktok"),
-                "recent": db.recent("tiktok", int(body.get("limit") or 50)),
-            })
-
         if p == "/api/shorts/feed":
             # Newest-first scan of what is actually on disk, synced into the
             # clips table, then a weighted pick. Verifying against disk each
@@ -851,6 +844,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
 
         if p == "/api/cooldown/clear":
+            # The countdown is a safety brake, not a lock: Instagram's own wait
+            # is a guess, and someone who can see it has cleared (a fresh IP, a
+            # long gap) should not have to wait out a timer the app invented.
             get_engine().clear_cooldown()
             return self._json({"ok": True})
 
@@ -868,9 +864,6 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/session/forget":
             ok = get_engine().forget_session(str(body.get("username") or ""))
             return self._json({"ok": ok})
-
-        if p == "/api/session/refresh":
-            return self._json({"sessions": get_engine().list_sessions()})
 
         if p == "/api/session/browsers":
             return self._json({"browsers": get_engine().browser_sessions()})

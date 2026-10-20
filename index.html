@@ -1434,9 +1434,19 @@ function render(st){
   const cb = $("coolBox");
   if(cd > 0){
     const mins = Math.ceil(cd/60);
+    // The escape hatch is offered but not encouraged: clearing the wait and
+    // retrying is what turns a temporary throttle into a longer one, so the
+    // wording says so rather than presenting it as a normal option.
     cb.innerHTML = `<b>Instagram rate-limited this IP.</b> Pausing ${mins} min before trying
-      again — retrying sooner extends the block. Nothing is being downloaded meanwhile.`;
+      again — retrying sooner extends the block. Nothing is being downloaded meanwhile.` +
+      `<div style="margin-top:8px"><button class="small" id="coolClear"
+        title="Only if you know the limit has passed, e.g. after changing network">Clear the wait</button></div>`;
     cb.style.display = "block";
+    const cc = $("coolClear");
+    if(cc) cc.onclick = async () => {
+      if(!confirm("Clear the wait and allow downloading again?\n\nRetrying while still limited usually makes the block longer.")) return;
+      try{ await post("/api/cooldown/clear", {}); tick(); }catch(e){ toast("Could not clear the wait"); }
+    };
   } else cb.style.display = "none";
 
   if(!settings) fillSettings(st.settings||{});

@@ -15,7 +15,7 @@ not listed is not configurable, rather than silently ignored.
 
 import shutil
 import subprocess
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 YTDLP = shutil.which("yt-dlp") or "yt-dlp"

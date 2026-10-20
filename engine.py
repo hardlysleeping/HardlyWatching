@@ -1797,7 +1797,9 @@ def move_media(self, username: str, name: str, section: str) -> tuple[bool, str]
     if root is None:
         return False, "profile folder missing"
     try:
-        root_real = root.resolve(strict=True)
+        # Resolving proves the folder is really there rather than a dangling
+        # mount point; the result is only used as that check.
+        root.resolve(strict=True)
     except OSError:
         return False, "profile folder missing"
 
