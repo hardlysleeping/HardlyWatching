@@ -42,12 +42,23 @@ reboots, and browse what you hoarded.
 waiting list and finished list side by side. Both page and search, so a queue of
 hundreds is still easy to navigate.
 
-![The queue screen: eight profiles waiting, one finished, with the page and search controls](docs/queue.png)
+![The queue screen: profiles waiting and finished, with the page and search controls](docs/queue.png)
+
+**TikTok** — the same download screen for TikTok, with per-profile controls for
+how many videos to grab. Start with five, raise it later; only the missing ones
+download.
+
+![The TikTok queue: profiles with grab-newest count controls](docs/tiktok.png)
+
+**Downloading** — one profile runs at a time. The header names it while the rest
+of the queue waits, and a pacing gap spaces runs out.
+
+![A profile downloading with the rest of the queue waiting](docs/downloading.png)
 
 **Gallery** — every profile you have archived, marked while it is downloading, plus
 archive-wide views and a box to add your own photos or folders.
 
-![The gallery: profile cards each marked downloading, with All Favourites, All Trash and Timeline](docs/gallery.png)
+![The gallery: profile cards, with All Favourites, All Trash and Timeline](docs/gallery.png)
 
 **One profile** — its posts as a grid, filterable by media type and sorted however
 you like.
@@ -64,6 +75,12 @@ directly. Filter to just favourites if you want.
 arrow keys), favourite, download a video, or trash it.
 
 ![A post enlarged over the grid, with previous and next arrows and action buttons](docs/viewer.png)
+
+**Shorts** — a full-screen, phone-sized feed of your reels and TikTok videos.
+Swipe through it, like, trash, download, or change how often a clip comes back.
+It is a separate tab in the header, and can be installed to a phone home screen.
+
+![The shorts feed on a phone-sized screen](docs/shorts.png)
 
 **Sessions** — every saved Instagram login in one list, with the one in use marked.
 Switch accounts with one click, or grab a login out of your browser so you never
@@ -240,7 +257,8 @@ familiar rung — 540, 720 or 1080 — rather than a pixel number.
 
 ## Shorts
 
-`/shorts` is a phone-sized, full-screen feed of downloaded videos. Swipe or use
+**Shorts** is a tab in the header (opens in its own page, at `/shorts`), a
+phone-sized, full-screen feed of downloaded videos. Swipe or use
 the arrow keys. Each clip has **like**, **trash**, **download**, **more** and
 **less**.
 
@@ -253,8 +271,16 @@ so the feed does not start the same way twice. Switching tabs, backgrounding the
 app or letting the phone sleep is **not** a new session — it carries on where you
 left off, and only closing it starts over.
 
-It covers TikTok videos and Instagram videos alike (Instagram does not record
-which of its videos were reels, so all of them are included rather than guessing).
+**It shows reels, not every video.** Every TikTok clip belongs in the feed,
+since short-form is all TikTok is. For Instagram it shows reels and nothing
+else: ordinary profile videos and IGTV are left out.
+
+Which posts are reels is read from instaloader's own record for each post
+(`is_reel_media` in the saved `.json`), not guessed from the file or the length.
+That works on an archive you already have — nothing needs re-downloading — and
+carousel slides (`_2`, `_3`…) are matched to their post, so a multi-video reel
+does not go missing. A video whose post record is absent is left out rather
+than assumed to be a reel.
 
 Videos start **muted**, because browsers block autoplay with sound. Tap a clip to
 play or pause it.

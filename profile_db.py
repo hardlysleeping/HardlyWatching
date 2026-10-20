@@ -80,6 +80,9 @@ class ProfileDB:
         ("profiles", "state", "TEXT NOT NULL DEFAULT 'active'"),
         ("profiles", "reason", "TEXT DEFAULT ''"),
         ("profiles", "excluded_at", "REAL DEFAULT 0"),
+        # 1 = a reel, 0 = an Instagram video that is not a reel, -1 = not known
+        # (no sidecar). Stored rather than re-read on every feed request.
+        ("clips", "is_reel", "INTEGER NOT NULL DEFAULT -1"),
     ]
 
     def _migrate(self):
@@ -253,18 +256,23 @@ class ProfileDB:
                 path = e.get("path")
                 if not path:
                     continue
+                # None means "no sidecar to read", which is not the same as
+                # "not a reel" -- store -1 so a later run with the file present
+                # can fill it in rather than freezing a wrong answer.
+                flag = e.get("is_reel")
+                reel = -1 if flag is None else (1 if flag else 0)
                 cur = self._conn.execute("SELECT path FROM clips WHERE path=?", (path,))
                 if cur.fetchone():
                     self._conn.execute(
-                        "UPDATE clips SET profile=?, clip_id=? WHERE path=?",
-                        (e.get("profile", ""), e.get("clip_id", ""), path),
+                        "UPDATE clips SET profile=?, clip_id=?, is_reel=? WHERE path=?",
+                        (e.get("profile", ""), e.get("clip_id", ""), reel, path),
                     )
                 else:
                     self._conn.execute(
-                        "INSERT INTO clips (path, profile, platform, clip_id, first_seen) "
-                        "VALUES (?,?,?,?,?)",
+                        "INSERT INTO clips (path, profile, platform, clip_id, is_reel, first_seen) "
+                        "VALUES (?,?,?,?,?,?)",
                         (path, e.get("profile", ""), e.get("platform", "tiktok"),
-                         e.get("clip_id", ""), now),
+                         e.get("clip_id", ""), reel, now),
                     )
                     new += 1
             self._conn.commit()
@@ -281,9 +289,16 @@ class ProfileDB:
         """
         import random
         with self._lock:
+            # The feed is for short-form video only: every TikTok clip, and
+            # Instagram only where the sidecar marked the post as a reel.
+            # Unknown (-1) is excluded rather than guessed at, because showing
+            # an ordinary video in a reels feed is the mistake worth avoiding.
+            # Parenthesised: without it AND binds tighter than OR, and the
+            # favourites filter would apply to the Instagram branch only.
             cur = self._conn.execute(
-                "SELECT * FROM clips WHERE trashed=0" +
-                (" AND liked=1" if favourites_only else "")
+                "SELECT * FROM clips WHERE trashed=0 AND ("
+                "platform='tiktok' OR (platform='instagram' AND is_reel=1))"
+                + (" AND liked=1" if favourites_only else "")
             )
             rows = [dict(r) for r in cur]
         if known_paths:

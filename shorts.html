@@ -247,9 +247,14 @@ function clipEl(c){
 }
 
 function renderEmpty(message, sub){
-  $("topbar").style.display = "none";
+  // The Favourites button lives in the topbar. Hiding the bar here would also
+  // hide the only way back out of Favourites mode, so with no favourites yet
+  // you would be stuck in an empty screen with no control to leave it. Keep
+  // the bar; hide only what has nothing to show (the rail and bottombar).
+  $("topbar").style.display = "";
   $("rail").style.display = "none";
   $("bottombar").style.display = "none";
+  $("count").textContent = "";
   feed.innerHTML = '<div class="msg"><h2>' + message + "</h2><p>" + sub + "</p></div>";
 }
 

@@ -244,7 +244,7 @@
   .tabs{display:flex;gap:6px;margin:0 0 16px}
   .tab{background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
     border-radius:9px;padding:8px 18px;font-size:13.5px;cursor:pointer;
-    font-family:inherit;transition:.15s}
+    font-family:inherit;transition:.15s;display:inline-block;text-decoration:none}
   .tab:hover{border-color:var(--line-2);color:var(--text)}
   .tab.active{background:var(--panel-3);border-color:var(--accent);color:var(--text);font-weight:600}
 
@@ -456,6 +456,8 @@
   <div class="tabs">
     <button class="tab active" id="tabQueue">Download</button>
     <button class="tab" id="tabGallery">Gallery</button>
+    <a class="tab" id="tabShorts" href="/shorts" target="_blank" rel="noopener"
+       title="Full-screen feed of reels and TikTok videos">Shorts ↗</a>
   </div>
 
   <div id="galleryPane" class="pane" style="display:none">
@@ -1937,7 +1939,7 @@ function cardHtml(j, pos, qpos){
 
 // How many videos to keep for one TikTok profile.
 //
-// Shown as "35 / 379" -- what it will fetch out of what exists. The buttons
+// Shown as "35 / 120" -- what it will fetch out of what exists. The buttons
 // step the target up or down; going past the profile's total just means all of
 // them, and stepping down never reaches zero because 0 already means "all".
 // yt-dlp records what it already fetched, so raising the number downloads only
@@ -1948,8 +1950,8 @@ function ttCountBar(j){
   const shown = cur ? cur : (tot ? tot : "all");
   const out = tot ? `${shown} / ${tot}` : `${shown}`;
   // Say what the controls do, not just that they are a number: these set how
-  // many videos to grab, counted from the newest backwards. "5 / 379" on its
-  // own is ambiguous -- it could as easily mean 5 downloaded out of 379.
+  // many videos to grab, counted from the newest backwards. "5 / 120" on its
+  // own is ambiguous -- it could as easily mean 5 downloaded out of 120.
   const tip = "How many videos to grab, starting from the most recent";
   const label = cur ? `newest ${shown} of ${tot || "?"}` : `all ${tot || ""}`.trim();
   // Number first and largest, steppers quieter either side. Reading left to

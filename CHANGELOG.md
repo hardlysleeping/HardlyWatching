@@ -23,6 +23,9 @@ library; the honest gaps are listed at the end rather than left out.
 - **A shorts feed** at `/shorts` — a vertical, full-screen video feed for a
   phone or as an installed app. Like, trash, download, or change how often a
   clip reappears; filter to favourites. The order reshuffles per session.
+- **Reels only.** The feed shows every TikTok clip and Instagram reels, not
+  ordinary Instagram videos. The distinction comes from instaloader's own post
+  record, so it applies to archives that already exist.
 - **Exclusions on both platforms.** Removing a profile, or deleting one from the
   gallery, stops it coming back on the next paste. Nothing is deleted; the
   Excluded list restores it.
@@ -67,9 +70,6 @@ library; the honest gaps are listed at the end rather than left out.
 
 - **The gallery viewer is Instagram-only.** TikTok profiles list in the gallery
   but do not open as posts.
-- **Instagram reels are not separated** from other videos in the shorts feed.
-  Instagram does not record which videos were reels, so all are included rather
-  than guessing.
 - A queued job does not remember which drive it came from; with more than one
   archive root, work could land on the wrong one.
 - The `/shorts` app has only been tested in a desktop browser, not on a real
