@@ -17,7 +17,7 @@
 <br clear="left">
 
 **What this adds:** paste 200 profiles once and let them drain over days, survive
-reboots, and browse what you collected.
+reboots, and browse what you hoarded.
 
 ---
 
