@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,8 +25,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from engine import (Engine, OUTPUT_ROOT, clean_profile_name, make_preview,
-                    make_thumb, _cache)
+from engine import (Engine, OUTPUT_ROOT, UPLOAD_EXTS, clean_profile_name,
+                    make_preview, make_thumb, _cache, _media_cache_forget)
 
 HERE = Path(__file__).resolve().parent
 
@@ -151,6 +152,142 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    # ---------- upload ----------
+
+    # A single file is capped so one enormous upload cannot exhaust memory: the
+    # body is read into RAM before being written out. Raise via the env var if
+    # you ever need to push something bigger.
+    MAX_UPLOAD = int(os.environ.get("INSTA_MAX_UPLOAD", 512 * 1024 * 1024))
+
+    def _upload(self) -> None:
+        """Accept files from the browser and write them into a profile folder.
+
+        multipart/form-data is parsed here by hand rather than with `cgi`, which
+        is gone in Python 3.13+. The body is read whole, split on the boundary,
+        and each part's filename and bytes are taken out. Files are written to a
+        temporary name in the destination and renamed on success, so an
+        interrupted or cancelled upload can never leave a half file that the
+        gallery would show as a truncated image.
+        """
+        ctype = self.headers.get("Content-Type") or ""
+        m = re.search(r'boundary="?([^";]+)"?', ctype)
+        if "multipart/form-data" not in ctype or not m:
+            return self._json({"ok": False,
+                               "message": "Expected a multipart upload."}, 400)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return self._json({"ok": False, "message": "Empty upload."}, 400)
+        if n > self.MAX_UPLOAD:
+            return self._json({"ok": False, "message":
+                f"That upload is larger than the {self.MAX_UPLOAD // (1024*1024)}MB "
+                "limit."}, 413)
+
+        raw = self.rfile.read(n)
+        boundary = b"--" + m.group(1).encode()
+
+        # Parts are: headers, blank line, content. Split on the boundary and
+        # keep only the pieces that actually carry a filename.
+        profile = ""
+        section = "main"
+        files: list[tuple[str, bytes]] = []
+        for chunk in raw.split(boundary):
+            if not chunk or chunk in (b"--", b"--\r\n", b"\r\n"):
+                continue
+            if b"\r\n\r\n" not in chunk:
+                continue
+            head, _, content = chunk.partition(b"\r\n\r\n")
+            # Trim the CRLF that belongs to the boundary, not the file.
+            if content.endswith(b"\r\n"):
+                content = content[:-2]
+            head_text = head.decode("utf-8", "replace")
+            fm = re.search(r'filename="([^"]*)"', head_text)
+            nm = re.search(r'name="([^"]*)"', head_text)
+            field = nm.group(1) if nm else ""
+            if fm is not None:
+                name = os.path.basename(fm.group(1) or "")
+                if name:
+                    files.append((name, content))
+            elif field == "profile":
+                profile = content.decode("utf-8", "replace").strip()
+            elif field == "section":
+                section = content.decode("utf-8", "replace").strip() or "main"
+
+        if not files:
+            return self._json({"ok": False, "message": "No files in that upload."}, 400)
+        if not profile:
+            return self._json({"ok": False, "message": "Pick a profile first."}, 400)
+
+        eng = get_engine()
+        username = clean_profile_name(profile)
+        if not username:
+            return self._json({"ok": False, "message": "That profile name is not usable."}, 400)
+
+        # Write into the folder that already holds this profile, so uploading to
+        # an existing archive adds to it. A brand new name goes to the root that
+        # receives downloads, which must be mounted -- otherwise files would
+        # land in a directory that is not there.
+        base = eng.root_for(username)
+        if base is None:
+            root = eng.output_root
+            try:
+                if not root.is_dir():
+                    return self._json({"ok": False, "message":
+                        f"{root} is not there right now. Is the drive mounted?"}, 400)
+                base = root / username
+                base.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                return self._json({"ok": False,
+                                   "message": f"Could not create {base}: {e}"}, 400)
+        if section in ("favorites", "trash"):
+            base = base / section
+            try:
+                base.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                return self._json({"ok": False,
+                                   "message": f"Could not create {base}: {e}"}, 400)
+
+        saved, skipped, failed = [], [], []
+        for name, data in files:
+            # Only media the gallery can actually display, and never a path.
+            if name != os.path.basename(name):
+                failed.append((name, "unusable filename"))
+                continue
+            if os.path.splitext(name)[1].lower() not in UPLOAD_EXTS:
+                skipped.append(name)
+                continue
+            dest = base / name
+            # Do not silently overwrite something already archived: keep both,
+            # with a suffix, so an upload can never destroy a download.
+            if dest.exists():
+                stem, ext = os.path.splitext(name)
+                k = 2
+                while (base / f"{stem}_{k}{ext}").exists() and k < 1000:
+                    k += 1
+                dest = base / f"{stem}_{k}{ext}"
+            tmp = base / (dest.name + ".uploading")
+            try:
+                tmp.write_bytes(data)
+                tmp.replace(dest)      # atomic: appears complete or not at all
+                saved.append(dest.name)
+            except OSError as e:
+                failed.append((name, str(e)))
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+        # The folder changed, so the listing cache for it is now wrong.
+        _cache.drop(str(base))
+        _media_cache_forget(base)
+
+        return self._json({"ok": bool(saved), "profile": username,
+                           "saved": saved, "skipped": skipped,
+                           "failed": [{"file": f, "why": w} for f, w in failed],
+                           "section": section})
+
     def _serve_file(self, path: Path, cache: bool = False) -> None:
         if not path.is_file():
             self.send_error(404)
@@ -192,12 +329,27 @@ class Handler(BaseHTTPRequestHandler):
             d = get_engine().root_for(name)
             if d is None:
                 return self.send_error(404)
-            # instaloader names these <user>_<date>_UTC_profile_pic.<ext>
+            # instaloader names these <user>_<date>_UTC_profile_pic.<ext>, so
+            # that pattern is tried first when it exists.
             hits = sorted(d.glob("*_profile_pic.*"),
                           key=lambda x: x.stat().st_mtime, reverse=True)
-            if not hits:
+            if hits:
+                return self._serve_file(hits[0])
+            # A folder that did not come from instaloader -- your own uploaded
+            # photos -- has no such file, so fall back to the newest image in
+            # the folder. That is the "picture of them" a hand-made profile
+            # folder should show, instead of a broken avatar.
+            try:
+                imgs = [f for f in d.iterdir()
+                        if f.is_file()
+                        and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
+                        and f.stat().st_size > 0]
+            except OSError:
                 return self.send_error(404)
-            return self._serve_file(hits[0])
+            if not imgs:
+                return self.send_error(404)
+            imgs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            return self._serve_file(imgs[0])
         if p == "/api/health":
             return self._json({"ok": True})
         if p == "/api/job-log":
@@ -284,6 +436,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         p = urlparse(self.path).path
+
+        # Uploads are multipart/form-data and can be large, so they are handled
+        # before the JSON body is read: _read_json() would try to parse the
+        # whole upload as JSON.
+        if p == "/api/upload":
+            return self._upload()
+
         body = self._read_json()
 
         if p == "/api/add":

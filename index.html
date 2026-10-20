@@ -225,6 +225,18 @@
      observer never saw it and paging stopped after the first batch. */
   .gmore{grid-column:1/-1;text-align:center;color:var(--muted);font-size:12px;
     padding:18px 0;min-height:44px;display:block}
+  /* Upload zone. Subtle by default so it does not compete with the grid, and
+     it lights up when files are dragged over it. */
+  .dropzone{border:1px dashed var(--line);border-radius:12px;padding:12px 14px;
+    margin-bottom:14px;background:var(--panel);transition:.15s}
+  .dropzone.over{border-color:var(--accent);background:rgba(120,120,255,.07)}
+  .dropzone .dz-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+    margin-bottom:6px}
+  .dropzone .dz-target{display:flex;align-items:center;gap:6px;color:var(--muted);
+    font-size:12px;flex-wrap:wrap}
+  .dropzone select,.dropzone input{background:var(--panel-3);color:var(--text);
+    border:1px solid var(--line);border-radius:7px;padding:5px 8px;font-size:12px;
+    font-family:inherit}
   .pcard{position:relative}
   .pcard .nm{font-size:12px;color:var(--text);word-break:break-all;line-height:1.3}
   .pcard .ct{font-size:11px;color:var(--muted);margin-top:3px}
@@ -362,6 +374,31 @@
       <span class="hint" id="galleryHint" style="margin-left:auto">done archives only</span>
     </div>
     <div class="gbar" id="allBar" style="margin-bottom:16px"></div>
+
+    <!-- Upload. The picker uses a plain file input with webkitdirectory, which
+         on a phone opens the photo picker and on a desktop allows a whole
+         folder -- one control covers both, with no native picker to invoke
+         server-side. Files can also be dropped anywhere on the gallery. -->
+    <div id="dropZone" class="dropzone">
+      <input type="file" id="uploadInput" multiple accept="image/*,video/*" hidden>
+      <input type="file" id="uploadDir" webkitdirectory directory multiple hidden>
+      <div class="dz-row">
+        <b>Add your own photos</b>
+        <span class="hint" id="upHint"></span>
+      </div>
+      <div class="dz-row">
+        <button class="small" id="pickFiles">Choose files</button>
+        <button class="small" id="pickFolder">Choose folder</button>
+        <span class="dz-target">
+          into
+          <select id="upProfile" title="Which profile the files are added to"></select>
+          <input id="upNew" placeholder="or type a new name" size="18"
+                 title="Type a name to create a new folder, e.g. Holidays">
+        </span>
+      </div>
+      <div class="hint">…or drag files here. JPG, PNG, WEBP, MP4, MOV.</div>
+    </div>
+
     <div class="profile-grid" id="profileGrid"></div>
   </div>
 
@@ -1828,6 +1865,127 @@ function paintSortBtn(){
   b.title = s.title + " — click to change";
 }
 
+/* ---------- upload your own photos ---------- */
+
+// Where the files go: an existing profile picked from the list, or a new name
+// typed in. A new name is just a folder, so it appears in the gallery like any
+// other profile, named exactly as typed.
+function uploadTarget(){
+  const typed = ($("upNew") ? $("upNew").value : "").trim();
+  if(typed) return typed;
+  const sel = $("upProfile");
+  return sel ? sel.value : "";
+}
+
+// Keep the picker in step with the profiles on screen, without clobbering a
+// choice the user already made.
+function fillUploadProfiles(profiles){
+  const sel = $("upProfile");
+  if(!sel) return;
+  const want = [...profiles].map(p => p.username).sort((a,b) =>
+    a.toLowerCase().localeCompare(b.toLowerCase()));
+  const have = [...sel.options].map(o => o.value).filter(v => v !== "");
+  if(have.join("\n") === want.join("\n")) return;
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">(new name…)</option>`
+    + want.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join("");
+  if(want.includes(keep)) sel.value = keep;
+}
+
+function sayUpload(msg){
+  const h = $("upHint");
+  if(h) h.textContent = msg;
+}
+
+async function uploadFiles(fileList){
+  const files = [...(fileList || [])];
+  if(!files.length) return;
+  const profile = uploadTarget();
+  if(!profile){
+    toast("Pick a profile, or type a new name to create one");
+    if($("upNew")) $("upNew").focus();
+    return;
+  }
+
+  // Sent in batches: one huge multipart body would have to be built entirely in
+  // memory, and a single failure would lose the whole selection. A batch also
+  // gives a progress number on screen, which matters when it is 300 photos
+  // from a phone.
+  const BATCH = 12;
+  let saved = 0, skipped = [], failed = [];
+  let created = null;
+  const t0 = Date.now();
+
+  for(let i = 0; i < files.length; i += BATCH){
+    const slice = files.slice(i, i + BATCH);
+    const fd = new FormData();
+    fd.append("profile", profile);
+    fd.append("section", "main");
+    for(const f of slice) fd.append("files", f, f.name);
+    let r;
+    try {
+      r = await (await fetch("/api/upload", {method:"POST", body:fd})).json();
+    } catch(e){
+      failed.push(...slice.map(f => ({file:f.name, why:"upload failed"})));
+      continue;
+    }
+    if(!r.ok && !(r.saved || []).length){
+      sayUpload("");
+      toast(r.message || "Upload failed");
+      return;
+    }
+    created = r.profile || created;
+    saved += (r.saved || []).length;
+    skipped.push(...(r.skipped || []));
+    failed.push(...(r.failed || []));
+    const done = Math.min(i + BATCH, files.length);
+    sayUpload(`uploading ${done}/${files.length}…`);
+  }
+
+  sayUpload("");
+  if($("upNew")) $("upNew").value = "";
+  const bits = [`${saved} added to ${created}`];
+  if(skipped.length) bits.push(`${skipped.length} skipped (not an image or video)`);
+  if(failed.length) bits.push(`${failed.length} failed`);
+  bits.push(`${((Date.now()-t0)/1000).toFixed(1)}s`);
+  toast(bits.join(" · "));
+  if(failed.length) console.warn("upload failures", failed);
+  allViewList = null;
+  gAll = null;
+  gProfile = null;
+  renderGallery();
+}
+
+(function wireUpload(){
+  const inp = $("uploadInput"), dir = $("uploadDir");
+  const pick = $("pickFiles"), pickDir = $("pickFolder"), zone = $("dropZone");
+  if(!inp || !zone) return;
+  if(pick) pick.onclick = () => inp.click();
+  if(pickDir && dir) pickDir.onclick = () => dir.click();
+  inp.onchange = () => { uploadFiles(inp.files); inp.value = ""; };
+  if(dir) dir.onchange = () => { uploadFiles(dir.files); dir.value = ""; };
+
+  // Drag and drop over the whole gallery. dragenter/dragleave are counted
+  // because they fire for every child element, so a naive toggle flickers.
+  let depth = 0;
+  const on = () => zone.classList.add("over");
+  const off = () => zone.classList.remove("over");
+  document.addEventListener("dragenter", (e) => {
+    if(!$("galleryPane") || $("galleryPane").style.display === "none") return;
+    if(![...(e.dataTransfer?.types || [])].includes("Files")) return;
+    depth++; on();
+  });
+  document.addEventListener("dragleave", () => { if(depth > 0 && --depth === 0) off(); });
+  document.addEventListener("dragover", (e) => { if(depth) e.preventDefault(); });
+  document.addEventListener("drop", (e) => {
+    if(!$("galleryPane") || $("galleryPane").style.display === "none") return;
+    if(![...(e.dataTransfer?.types || [])].includes("Files")) return;
+    e.preventDefault();
+    depth = 0; off();
+    uploadFiles(e.dataTransfer.files);
+  });
+})();
+
 async function renderGallery(){
   const host = $("profileGrid");
   if(gProfile) return renderPhotos(gProfile);
@@ -1847,6 +2005,7 @@ async function renderGallery(){
   }
   if(mine !== gReq) return;
   const profiles = sortProfiles(data.profiles || []);
+  fillUploadProfiles(profiles);
   buildAllBar(profiles.length);
   const live = profiles.filter(p => p.downloading).length;
   $("galleryHint").textContent = profiles.length

@@ -404,6 +404,11 @@ def clean_profile_name(raw: str) -> str | None:
 # and `.json` are deliberately absent: a killed download leaves 0-byte temps.
 GALLERY_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov"}
 GALLERY_VIDEO_EXTS = {".mp4", ".mov"}
+# What an upload is allowed to write. Deliberately the same set the gallery can
+# display: storing something it would then refuse to show is just a confusing
+# way to fill the disk. .heic is absent on purpose -- see the note in the docs;
+# a phone HEIC would be skipped, not silently mangled.
+UPLOAD_EXTS = GALLERY_EXTS
 
 
 # Listing a profile folder means touching every file in it: the biggest
@@ -511,6 +516,19 @@ class _Cache:
 
 
 _cache = _Cache(CACHE_DB)
+
+
+def _media_cache_forget(folder: Path) -> None:
+    """Drop a folder's cached listing after something wrote into it.
+
+    Uploads add files without going through _gallery_media(), so the memory and
+    SQLite rows for that folder are stale the moment a file lands. Both are
+    cleared here rather than waiting for the directory stamp to be noticed,
+    because the next request may well be the one that lists the new file.
+    """
+    key = str(folder)
+    _MEDIA_CACHE.pop(key, None)
+    _cache.drop(key)
 
 
 def _dir_stamp(folder: Path) -> tuple | None:
