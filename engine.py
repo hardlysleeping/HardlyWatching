@@ -886,6 +886,19 @@ def _same(a: Path, b: Path) -> bool:
     return ra == rb
 
 
+def _existing_root(self, username: str, platform: str = "instagram") -> Path | None:
+    """The archive root `username` already lives on, or None.
+
+    Same scan as root_for(), but returns the root directory rather than the
+    profile's folder, so a job can be pinned to the drive its archive is on.
+    """
+    for root in self.roots:
+        folder = (root / "tiktok" / username) if platform == "tiktok" else (root / username)
+        if folder.is_dir():
+            return root
+    return None
+
+
 def root_for(self, username: str, platform: str = "instagram") -> Path | None:
     """The folder an archive for `username` actually lives in, or None.
 
@@ -2006,6 +2019,10 @@ class Job:
     private: bool = False  # TikTok profile yt-dlp reported as not visible
     tiktok_total: int = 0  # how many videos the profile has; 0 = not known yet
     parent_id: str | None = None  # for a reels job: the main job it follows
+    root: str = ""  # archive root this job downloads into; "" = the current
+                    # downloads folder. Pinned when the profile already exists
+                    # on some root, so a re-run lands on its own drive instead
+                    # of splitting one profile across two.
     attempts: int = 0
     max_attempts: int = 6
     added_at: float = field(default_factory=time.time)
@@ -2106,6 +2123,7 @@ class Engine:
     move_media = move_media
     set_output_root = set_output_root
     root_for = root_for
+    _existing_root = _existing_root
     roots_status = roots_status
     add_root = add_root
     remove_root = remove_root
@@ -2354,13 +2372,20 @@ class Engine:
                 effective = Job(username=name, settings=overrides or None).effective(self.settings)
 
                 job = Job(username=name, kind="main", settings=overrides or None)
+                # Pin to the drive the profile already lives on, so a re-run
+                # (or "check for new") updates its existing archive instead of
+                # starting a second copy on the downloads folder.
+                root = self._existing_root(name)
+                if root is not None:
+                    job.root = str(root)
                 self.jobs[job.id] = job
                 self.pending.append(job.id)
                 added.append(job)
 
                 if effective.reels:
                     reels_job = Job(username=name, kind="reels", parent_id=job.id,
-                                    settings={**(overrides or {}), "reels": True})
+                                    settings={**(overrides or {}), "reels": True},
+                                    root=job.root)
                     self.jobs[reels_job.id] = reels_job
                     self.pending.append(reels_job.id)
                     added.append(reels_job)
@@ -2429,6 +2454,9 @@ class Engine:
                     continue
                 job = Job(username=h, kind="main", platform="tiktok",
                           tiktok_count=count)
+                root = self._existing_root(h, "tiktok")
+                if root is not None:
+                    job.root = str(root)
                 self.jobs[job.id] = job
                 self.pending.append(job.id)
                 added.append(job)
@@ -3029,7 +3057,8 @@ class Engine:
                 return {"ok": False, "error": f"{kind} pass already queued"}
 
             job = Job(username=src.username, kind=kind, parent_id=src.id,
-                      settings={**(src.settings or {}), kind: True})
+                      settings={**(src.settings or {}), kind: True},
+                      root=getattr(src, "root", ""))
             self.jobs[job.id] = job
 
             # Insert right after the source job when it is still waiting;
@@ -3397,8 +3426,10 @@ class Engine:
         # TikTok gets its own folder next to the Instagram profiles rather than
         # mixed in with them. One shared folder made the gallery ambiguous and
         # meant a TikTok handle could collide with an Instagram profile of the
-        # same name. Each platform stays independently deletable.
-        tt_root = self.output_root / "tiktok"
+        # same name. Each platform stays independently deletable. A job pinned
+        # to a drive keeps downloading there even if the downloads folder moves.
+        base_root = Path(job.root) if job.root else self.output_root
+        tt_root = base_root / "tiktok"
         target_dir = tt_root / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
         archive = tt.archive_path(tt_root, job.username)
@@ -3504,7 +3535,9 @@ class Engine:
         if getattr(job, "platform", "instagram") == "tiktok":
             return self._process_tiktok(job)
 
-        target_dir = self.output_root / job.username
+        # A job pinned to a drive keeps downloading there even after the
+        # downloads folder moves, so one profile never splits across roots.
+        target_dir = (Path(job.root) if job.root else self.output_root) / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
         session_user = self.session_username()
         cfg = job.effective(self.settings)
