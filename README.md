@@ -19,6 +19,9 @@
 **What this adds:** paste 200 profiles once and let them drain over days, survive
 reboots, and browse what you hoarded.
 
+> **Use at your own risk.** Downloading at scale can get your IP blocked, rate
+> limited, or your account banned. See [Use at your own risk](#use-at-your-own-risk).
+
 ---
 
 ## Screenshots
@@ -434,6 +437,51 @@ what you already have.
   offering the same functions.
 
 ---
+
+## Use at your own risk
+
+Downloading at scale can get your **IP address blocked, rate-limited, or your
+account banned** — by Instagram, by TikTok, or by your network provider. This is
+true of instaloader and yt-dlp used directly, too; this project does not make it
+safer, it just makes it easier to run a lot of it unattended.
+
+The pacing and limits exist to reduce the chance of being noticed, not to
+guarantee you won't be. They are a speed bump, not a shield. Things that make a
+block or ban more likely:
+
+- Adding hundreds of profiles and leaving it running for days
+- Shortening the waits between profiles in Settings
+- Logging in with a password instead of using a saved session
+- Running it from a shared or datacentre IP, or a VPN others also use
+- Downloading the same account repeatedly after it has started refusing you
+
+A block usually looks like empty downloads, `feedback_required`, 429s, or login
+failures. If that starts happening, stop for a day rather than retrying — retrying
+is what turns a temporary throttle into a longer one. Your account is the thing
+at risk here, and it is not recoverable by editing a setting.
+
+**No warranty.** This software is provided as-is. If your account is limited or
+banned, if a download fails, or if a file is lost, that is on you, not on this
+project. Nothing here is designed to evade detection.
+
+### Private accounts
+
+There are **two** kinds, and they behave very differently:
+
+**1. Private, and you follow them.** This works normally. Your session is
+logged in, so instaloader sees what you see and downloads the account. Nothing
+special is needed — add it like any other profile.
+
+**2. Private, and you don't follow them** (or they removed you, or you were
+following from an account other than the one signed in). This **cannot work**,
+for anyone, by any method. The content is not visible to your account, so there
+is nothing to download. The job stops and is marked as private rather than
+retrying. Adding the same name again will fail the same way.
+
+A profile you *were* following that later blocks or removes you can flip from
+case 1 to case 2 on its own. That shows up as a profile that used to download and
+now does not — it is not a bug, and re-adding it will not help. Check it in a
+browser while signed in as the same account before assuming something broke.
 
 ## Legal
 
