@@ -1,18 +1,23 @@
 # Instagram Downloader
 
-**A local web interface for [instaloader](https://instaloader.github.io/).**
+> ### This is a web UI for [instaloader](https://instaloader.github.io/) — it has no downloader of its own.
+>
+> <img src="docs/instaloader-logo.png" width="64" height="64" alt="instaloader logo" align="left" hspace="12" vspace="4">
+>
+> Every request to Instagram, and every file on disk, is made and written by
+> **[instaloader](https://github.com/instaloader/instaloader)** —
+> a separate, mature command-line tool
+> ([docs](https://instaloader.github.io/) · [PyPI](https://pypi.org/project/instaloader/) · [source](https://github.com/instaloader/instaloader)).
+> This repository adds a browser interface on top: a persistent queue, pacing, and
+> a gallery. It reimplements none of it and never talks to Instagram itself — it
+> builds instaloader's command line and runs it.
+>
+> **Want to install a downloader? Install instaloader.** If you have it and only
+> want it, you don't need this project at all.
+<br clear="left">
 
-This project is a frontend only. All downloading is done by
-[instaloader](https://github.com/instaloader/instaloader) — the established
-command-line tool (GPL-3.0, also on
-[PyPI](https://pypi.org/project/instaloader/)). Nothing here reimplements it or
-talks to Instagram directly: it builds instaloader's command line, runs it, and
-gives you a queue and a gallery on top.
-
-If you want to download one profile once, you do not need this — use
-[instaloader on its own](https://instaloader.github.io/). This is for keeping a
-larger archive over time, where you want a queue that survives reboots, sane
-pacing, and a way to actually browse what you collected.
+**What this adds:** paste 200 profiles once and let them drain over days, survive
+reboots, and browse what you collected.
 
 ---
 
@@ -55,8 +60,8 @@ type a password here.
 
 ## Install and run
 
-You need **Python 3.10+** and an **Instagram account**. Nothing else — no pip
-packages to install yourself, no compiling, no config files to write.
+You need **Python 3.10+** and an **Instagram account**. You do **not** need to
+install instaloader yourself — `run.py` does it for you (see below).
 
 ```bash
 git clone https://github.com/hardlysleeping/insta-desktop.git
