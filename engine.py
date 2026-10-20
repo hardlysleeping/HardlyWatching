@@ -587,20 +587,34 @@ def _parse_filename_date(name: str) -> float:
 def _media_info(folder: Path, name: str) -> dict:
     """One gallery item: name, kind, timestamp and optional caption.
 
-    The sidecar JSON instaloader writes next to each post carries the true
-    `date` and the caption, which beats parsing the filename. It is not
-    guaranteed to exist, so the filename is the fallback.
+    Three sources, best first, and each one is recorded so the UI can be honest
+    about what it is showing:
+
+      1. the sidecar JSON instaloader writes next to each post -- the true
+         posting date and the caption;
+      2. instaloader's filename stamp, `<YYYY-MM-DD>_<HH-MM-SS>_UTC.ext`;
+      3. the file's own mtime.
+
+    Step 3 exists because a folder of your own photos has neither of the first
+    two: without it every such file was ts=0, which sorted as "no date" and
+    showed a blank label. The mtime is not the date the photo was taken (the
+    camera writes that into EXIF, which is not read here), so a file dated this
+    way is marked `ts_src: "mtime"` and the UI can say so rather than pass a
+    guess off as a fact.
     """
     path = folder / name
     kind = "video" if path.suffix.lower() in GALLERY_VIDEO_EXTS else "image"
     ts = _parse_filename_date(name)
+    ts_src = "name" if ts else ""
     caption = ""
     title = ""
     is_video = None
     try:
         raw = path.with_suffix(".json").read_bytes()
         node = (json.loads(raw) or {}).get("node") or {}
-        ts = float(node.get("date") or ts)
+        if node.get("date"):
+            ts = float(node["date"])
+            ts_src = "json"
         cap = node.get("caption")
         if isinstance(cap, str):
             caption = cap.strip()
@@ -609,6 +623,16 @@ def _media_info(folder: Path, name: str) -> dict:
             is_video = bool(node["is_video"])
     except (OSError, ValueError, TypeError):
         pass
+    if not ts:
+        # No sidecar, no instaloader stamp: fall back to the file's mtime so the
+        # item still sorts into the timeline instead of landing in a "no date"
+        # pile. A directory read failure here leaves it undated, as before.
+        try:
+            ts = path.stat().st_mtime
+            ts_src = "mtime"
+        except OSError:
+            ts = 0.0
+            ts_src = ""
     if is_video is not None:
         kind = "video" if is_video else "image"
     post_id = name.split("_UTC")[0]
@@ -616,6 +640,7 @@ def _media_info(folder: Path, name: str) -> dict:
         "file": name,
         "kind": kind,
         "ts": ts,
+        "ts_src": ts_src,
         "date": (datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
                  .strftime("%Y-%m-%d %H:%M UTC") if ts else ""),
         "caption": caption[:300],
@@ -721,6 +746,10 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
         posts.append({
             "post": stamp,
             "ts": first["ts"],
+            # Where the date came from: json | name | mtime | "". The UI marks
+            # mtime-dated items, because that is the file's timestamp rather
+            # than when the photo was actually taken.
+            "ts_src": first.get("ts_src", ""),
             "date": first["date"],
             "caption": first["caption"],
             "title": first["title"],

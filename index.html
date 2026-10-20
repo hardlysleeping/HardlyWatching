@@ -1968,7 +1968,18 @@ function tileFor(username, post, section){
   meta.className = "pmeta";
   const when = document.createElement("span");
   when.className = "pdate";
-  when.textContent = post.date || post.post.slice(0, 10);
+  // A date taken from the file's own timestamp is marked, so it is not mistaken
+  // for when the photo was actually taken. Files with no date at all (an
+  // instaloader name that failed to parse and no readable mtime) show a dash
+  // rather than being silently blank.
+  if(post.ts_src === "mtime"){
+    when.textContent = "~" + (post.date || "").slice(0, 10);
+    when.title = "Date from the file's timestamp, not the original posting date";
+  } else if(post.date){
+    when.textContent = post.date;
+  } else {
+    when.textContent = post.post ? post.post.slice(0, 10) : "no date";
+  }
   meta.appendChild(when);
   if(post.items.some(i => i.kind === "video")){
     const vb = document.createElement("span");
@@ -2449,7 +2460,14 @@ function paintViewer(){
   const many = srcs.length > 1;
   host.querySelector(".vcount").textContent = many
     ? `${idx+1} / ${srcs.length}` : "";
-  host.querySelector(".vdate").textContent = post.date || "";
+  const vd = host.querySelector(".vdate");
+  if(post.ts_src === "mtime" && post.date){
+    vd.textContent = "~" + post.date + "  (file date)";
+    vd.title = "Taken from the file's timestamp; the original date is unknown";
+  } else {
+    vd.textContent = post.date || "";
+    vd.title = "";
+  }
   host.querySelector(".vcap").textContent = post.caption || post.title || "";
   host.querySelector(".vnav.prev").style.visibility = many ? "visible" : "hidden";
   host.querySelector(".vnav.next").style.visibility = many ? "visible" : "hidden";
