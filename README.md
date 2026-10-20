@@ -544,5 +544,9 @@ Service and the rights of the people whose content you are archiving.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE). This project bundles no instaloader code;
-instaloader is installed separately under its own licence (GPL-3.0).
+GPL-3.0 — see [LICENSE](LICENSE).
+
+This project bundles no instaloader or yt-dlp code: both are installed
+separately and keep their own licences (instaloader is MIT; check yt-dlp's
+licence with its own distribution). GPL-3.0 applies to this project's own
+code, and it is not imported from either tool.
