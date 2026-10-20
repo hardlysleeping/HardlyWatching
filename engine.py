@@ -604,13 +604,19 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
     for stamp, items in grouped.items():
         items.sort(key=lambda i: i["part"])
         first = items[0]
+        # Only the fields the grid and viewer actually read are kept per item.
+        # _media_info() also produces ts/date/caption/title/post, but every one
+        # of those is already on the post below and measured identical to it
+        # across 10,648 items -- repeating them on each part was 30% of the
+        # payload for a large profile (1.8MB of JSON to draw one screen).
         posts.append({
             "post": stamp,
             "ts": first["ts"],
             "date": first["date"],
             "caption": first["caption"],
             "title": first["title"],
-            "items": items,
+            "items": [{"file": i["file"], "kind": i["kind"], "part": i["part"]}
+                      for i in items],
             "count": len(items),
         })
     posts.sort(key=lambda p: p["ts"])
@@ -1750,9 +1756,12 @@ class Engine:
             job.started_at = None
             if force_full:
                 job.settings = {**(job.settings or {}), "fast_update": False}
-            # Guard against a duplicate entry in the pending order.
+            # A retry is you asking for this one next, so it goes to the FRONT
+            # of the queue. It used to append to the tail, which put a failed
+            # profile behind however many hundred jobs were already waiting --
+            # you press retry and nothing visibly happens.
             self.pending[:] = [x for x in self.pending if x != job_id]
-            self.pending.append(job_id)
+            self.pending.insert(0, job_id)
         self._kick()
         self.save_state()
         return True
@@ -1826,8 +1835,13 @@ class Engine:
                     j.message = "re-queued"
                     j.finished_at = None
                     self.pending[:] = [x for x in self.pending if x != jid]
-                    self.pending.append(jid)
                     n += 1
+            # Retried jobs go to the front, keeping the order they were
+            # retried in so they run in the order they are listed.
+            if n:
+                retried = [jid for jid, j in self.jobs.items()
+                           if j.status == "queued" and jid not in self.pending]
+                self.pending[:] = retried + self.pending
         if n:
             self._kick()
         self.save_state()
