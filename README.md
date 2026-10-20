@@ -1,19 +1,24 @@
-# Instagram Downloader
+# Instagram and TikTok Downloader
 
-> ### This is a web UI for [instaloader](https://instaloader.github.io/) — it has no downloader of its own.
+> ### This is a web UI for **[instaloader](https://instaloader.github.io/)** and **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — it has no downloader of its own.
 >
 > <img src="docs/instaloader-logo.png" width="64" height="64" alt="instaloader logo" align="left" hspace="12" vspace="4">
 >
-> Every request to Instagram, and every file on disk, is made and written by
-> **[instaloader](https://github.com/instaloader/instaloader)** —
-> a separate, mature command-line tool
-> ([docs](https://instaloader.github.io/) · [PyPI](https://pypi.org/project/instaloader/) · [source](https://github.com/instaloader/instaloader)).
-> This repository adds a browser interface on top: a persistent queue, pacing, and
-> a gallery. It reimplements none of it and never talks to Instagram itself — it
-> builds instaloader's command line and runs it.
+> Every file on disk is written by one of two separate, mature command-line
+> tools, and this repository runs them:
 >
-> **Want to install a downloader? Install instaloader.** If you have it and only
-> want it, you don't need this project at all.
+> | what you download | the tool that does it | project |
+> |---|---|---|
+> | Instagram profiles | **instaloader** | [docs](https://instaloader.github.io/) · [PyPI](https://pypi.org/project/instaloader/) · [source](https://github.com/instaloader/instaloader) |
+> | TikTok profiles | **yt-dlp** (with ffmpeg) | [docs](https://github.com/yt-dlp/yt-dlp#readme) · [PyPI](https://pypi.org/project/yt-dlp/) · [source](https://github.com/yt-dlp/yt-dlp) |
+>
+> This project adds a browser interface on top: a persistent queue, pacing, and a
+> gallery. It reimplements neither downloader and never talks to Instagram or
+> TikTok itself — it builds their command lines and runs them.
+>
+> **Want a downloader? Install [instaloader](https://instaloader.github.io/) or
+> [yt-dlp](https://github.com/yt-dlp/yt-dlp).** If you have them and only want them,
+> you don't need this project at all.
 <br clear="left">
 
 **What this adds:** paste 200 profiles once and let them drain over days, survive

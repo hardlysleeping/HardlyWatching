@@ -615,6 +615,25 @@ class Handler(BaseHTTPRequestHandler):
             # Only the new ones, and only when the user asked to check, because
             # this costs one request per profile and that is exactly the kind
             # of traffic that gets an IP noticed.
+            # Fill in each profile's video total now, so the count the queue
+            # shows has its denominator from the start instead of only after
+            # someone presses a step button.
+            #
+            # Capped deliberately: this is one listing request per profile, and
+            # a large paste would otherwise fire hundreds of requests back to
+            # back -- exactly the pattern that gets an IP throttled. Anything not
+            # filled here is looked up the first time its count is changed, and
+            # the UI shows the total as unknown until then rather than guessing.
+            total_cap = int(body.get("totals") or 25)
+            targets = added[:max(0, total_cap)]
+            if targets:
+                import tiktok_engine as _tt
+                for job in targets:
+                    try:
+                        job.tiktok_total = _tt.profile_total(job.username)
+                    except Exception:
+                        job.tiktok_total = 0
+
             private = []
             if body.get("probe") and added:
                 import tiktok_engine as _tt
