@@ -1,6 +1,13 @@
-# Instagram and TikTok Downloader
+# HardlyWatching
 
-> ### This is a web UI for **[instaloader](https://instaloader.github.io/)** and **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — it has no downloader of its own.
+### A self-hosted viewer and download queue for Instagram and TikTok
+
+Paste the profiles you follow, let them download over days while you sleep, and
+browse what you have collected in one place — grid, timeline, and a full-screen
+short-video feed for your phone. Both platforms live in the same app behind one
+queue and one gallery.
+
+> ### It is a web UI for **[instaloader](https://instaloader.github.io/)** and **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — it has no downloader of its own.
 >
 > <img src="docs/instaloader-logo.png" width="64" height="64" alt="instaloader logo" align="left" hspace="12" vspace="4">
 >

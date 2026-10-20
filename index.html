@@ -21,6 +21,11 @@
   h1 span{background:linear-gradient(90deg,var(--accent),var(--accent-2));
     -webkit-background-clip:text;background-clip:text;color:transparent}
   .sub{color:var(--muted);font-size:13px}
+  /* Platform badge beside the app name: the title is the product, and which
+     platform you are looking at is a detail, not the heading. */
+  .hdrplat{font-size:12px;font-weight:600;letter-spacing:.02em;vertical-align:middle;
+    padding:2px 9px;border-radius:999px;margin-left:8px;
+    border:1px solid var(--line-2);color:var(--muted);background:var(--panel-2)}
   .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:16px 0 12px}
   .chip{font-size:12px;padding:4px 10px;border-radius:999px;background:var(--panel-2);
     border:1px solid var(--line);color:var(--muted);display:inline-flex;align-items:center;gap:6px}
@@ -444,8 +449,8 @@
 <body>
 <div class="wrap">
   <header>
-    <h1><span id="hdrPlatform">Instagram</span> <span>Downloader</span></h1>
-    <div class="sub" id="hdrSub">paste profiles → queue runs one at a time, auto-resumes on rate limits</div>
+    <h1>HardlyWatching <span id="hdrPlatform" class="hdrplat">Instagram</span></h1>
+    <div class="sub" id="hdrSub">Instagram and TikTok → one queue, one gallery</div>
   </header>
 
   <div class="tabs">
