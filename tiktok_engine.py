@@ -14,6 +14,7 @@ not listed is not configurable, rather than silently ignored.
 """
 
 import shutil
+import subprocess
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
@@ -191,7 +192,7 @@ def _base_download_cmd(handle: str, dest: Path, archive: Path, count: int,
     if s.limit_rate:
         cmd += ['--limit-rate', s.limit_rate]
     if s.proxy:
-        cmd += ['--proxy', s.proxy]
+        cmd += ['--proxy', normalise_proxy(s.proxy)]
 
     # yt-dlp accepts these without dashes, but takes them more reliably with.
     if s.date_after:
@@ -202,6 +203,30 @@ def _base_download_cmd(handle: str, dest: Path, archive: Path, count: int,
     if count and count > 0:
         cmd += ['--playlist-end', str(count)]
     return cmd
+
+
+
+
+def normalise_proxy(raw: str) -> str:
+    """Turn what people actually paste into a URL yt-dlp will accept.
+
+    A Cloudflare Worker or other basic proxy is usually copied as a bare
+    hostname such as `my-proxy.example.workers.dev`, but yt-dlp needs a scheme.
+    Anything without one is treated as HTTPS, because a Worker is HTTPS-only and
+    an http:// request to it just fails. A bare host also gets the default port
+    so an unreachable proxy reports a connection error rather than a malformed
+    URL.
+    """
+    p = (raw or "").strip()
+    if not p:
+        return ""
+    if "://" in p:
+        return p
+    p = "https://" + p
+    host = p.split("://", 1)[1]
+    if ":" not in host.split("/", 1)[0]:
+        p = p.rstrip("/") + ":443" if "/" not in host else p
+    return p
 
 
 def build_download_cmd(handle: str, dest: Path, archive: Path,
@@ -258,3 +283,35 @@ if __name__ == '__main__':
     print('yt-dlp:   ', available())
     print('ffmpeg:   ', ffmpeg_available())
     print('list cmd: ', ' '.join(build_list_cmd(h, n)))
+
+# What yt-dlp prints when a profile cannot be listed because it is not visible,
+# as opposed to not existing at all. Both end in the same "Unable to extract
+# secondary user ID" error, so the warning is the only reliable signal.
+_PRIVATE_MARK = 'private or has embedding disabled'
+
+
+def probe_private(handle: str, timeout: int = 75) -> bool | None:
+    """True if TikTok says the profile is private, False if it is listable.
+
+    Returns None when the probe could not reach a conclusion -- a timeout, a
+    network failure, or any error that is not the private marker. Unknown must
+    never be reported as private: wrongly flagging a working profile as
+    un-downloadable is worse than queueing one that turns out not to work,
+    because the user would stop trying something that actually does work.
+    """
+    try:
+        cmd = build_list_cmd(handle, 1)
+        # The private marker arrives as a WARNING, which the normal download
+        # command suppresses. Drop it here so the line is actually readable.
+        cmd = [c for c in cmd if c != '--no-warnings']
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    blob = ((proc.stdout or '') + (proc.stderr or '')).lower()
+    if _PRIVATE_MARK in blob:
+        return True
+    if proc.returncode == 0:
+        return False
+    # Any other failure is not something we can classify.
+    return None

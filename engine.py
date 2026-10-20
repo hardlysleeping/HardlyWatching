@@ -1973,6 +1973,7 @@ class Job:
     kind: str = "main"  # "main" | "reels" | "tagged" — extra passes run as follow-up jobs
     platform: str = "instagram"  # "instagram" (instaloader) | "tiktok" (yt-dlp)
     tiktok_count: int = 0  # 0 = all; otherwise newest N videos
+    private: bool = False  # TikTok profile yt-dlp reported as not visible
     parent_id: str | None = None  # for a reels job: the main job it follows
     attempts: int = 0
     max_attempts: int = 6
@@ -3108,11 +3109,24 @@ class Engine:
 
     def _counts(self) -> dict:
         with self.lock:
-            c = {"queued": 0, "running": 0, "done": 0, "failed": 0, "cancelled": 0}
+            keys = ("queued", "running", "done", "failed", "cancelled")
+            c: dict = {k: 0 for k in keys}
+            # Per platform as well, because the Download tab shows one platform
+            # at a time: a global total would count profiles the user cannot
+            # see on the tab they are looking at. Private is tracked apart from
+            # the statuses because a private profile is still queued -- it just
+            # will not download.
+            by: dict[str, dict[str, int]] = {}
             for j in self.jobs.values():
-                key = j.status if j.status in c else ("running" if j.status == "retrying" else None)
+                key = j.status if j.status in keys else ("running" if j.status == "retrying" else None)
+                plat = getattr(j, "platform", "instagram")
+                d = by.setdefault(plat, {k: 0 for k in keys + ("private",)})
                 if key:
                     c[key] += 1
+                    d[key] += 1
+                if getattr(j, "private", False):
+                    d["private"] += 1
+            c["by_platform"] = by
             return c
 
     def _next_platform(self) -> str:
@@ -3382,6 +3396,11 @@ class Engine:
                 self._set(job, last_line=line[:200])
             elif kind == "warn":
                 warned = True
+                # yt-dlp says this for a profile it cannot see. Record it on the
+                # job so the queue can show it in red: it is not a temporary
+                # failure, and retrying it will never succeed.
+                if "private or has embedding disabled" in line.lower():
+                    self._set(job, private=True)
                 self._log(job, line)
             elif kind == "already":
                 self._log(job, line)
@@ -3403,6 +3422,14 @@ class Engine:
         total_bytes = sum(p.stat().st_size for p in target_dir.glob("*.mp4"))
 
         if rc != 0 and files == 0:
+            # A private profile is fatal, not a failure worth retrying, and the
+            # queue keeps showing it in red so it is not mistaken for a profile
+            # that will work next time.
+            if getattr(job, "private", False):
+                self._set(job, status="failed", finished_at=time.time(), fatal=True,
+                          error="private profile - yt-dlp cannot download it",
+                          message="private, cannot download")
+                return
             self._set(job, status="failed", finished_at=time.time(),
                       error=f"yt-dlp exited {rc}", message="download failed")
             return

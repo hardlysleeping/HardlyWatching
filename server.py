@@ -611,6 +611,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
             db.mark_imported("tiktok", [j.username for j in added])
+            # Ask TikTok whether each newly queued profile is actually visible.
+            # Only the new ones, and only when the user asked to check, because
+            # this costs one request per profile and that is exactly the kind
+            # of traffic that gets an IP noticed.
+            private = []
+            if body.get("probe") and added:
+                import tiktok_engine as _tt
+                for job in added:
+                    verdict = _tt.probe_private(job.username)
+                    if verdict is True:
+                        job.private = True
+                        private.append(job.username)
             return self._json({
                 "ok": True,
                 "parsed": len(handles),
@@ -618,6 +630,8 @@ class Handler(BaseHTTPRequestHandler):
                 "skipped": len(handles) - len(added),
                 "excluded": len(blocked),
                 "excluded_handles": blocked[:20],
+                "private": len(private),
+                "private_handles": private[:20],
                 "urls": tiktok_handles.to_urls(handles, "tiktok"),
             })
 

@@ -583,15 +583,6 @@ the rows that happened to be on screen.
         <div id="ttResult" class="hint" style="margin-top:10px"></div>
       </div>
 
-      <div class="card">
-        <h3 style="margin-top:0">Already imported</h3>
-        <p class="hint" style="margin-top:0">
-          Remembered in a local database, so re-pasting the same list only adds
-          what is new.
-        </p>
-        <div id="ttKnown" class="hint">—</div>
-      </div>
-
   </div><!-- /ttPane -->
 
   <!-- Excluded covers BOTH platforms: it is about who you removed, not which
@@ -991,7 +982,7 @@ const SPEC = [
   {k:"tiktok.date_after", l:"Only videos on/after", d:"--dateafter YYYYMMDD. blank = no limit", t:"str", flag:"--dateafter", dotted:true},
   {k:"tiktok.date_before", l:"Only videos on/before", d:"--datebefore YYYYMMDD. blank = no limit", t:"str", flag:"--datebefore", dotted:true},
   {k:"tiktok.cookies_from_browser", l:"Cookies from browser", d:"--cookies-from-browser, e.g. firefox. blank = none", t:"str", flag:"--cookies-from-browser", dotted:true},
-  {k:"tiktok.proxy", l:"Proxy", d:"--proxy. blank = none", t:"str", flag:"--proxy", dotted:true},
+  {k:"tiktok.proxy", l:"Proxy", d:"--proxy. Blank = direct. A Cloudflare Worker URL works too, e.g. my-proxy.workers.dev", t:"str", flag:"--proxy", dotted:true},
   {group:"When the queue is empty"},
   {k:"autocheck", l:"Check for new posts automatically", d:"when nothing is queued, look for new posts on every archived profile", t:"bool", flag:"(app)"},
   {k:"autocheck_hours", l:"Only if idle for (hours)", d:"won't check more often than this. 0 = off", t:"num", flag:"(app)"},
@@ -1365,9 +1356,15 @@ function render(st){
     sb.style.display = "none";
   }
 
-  const c = st.counts||{};
+  // The chip follows the open sub-tab, so it counts what is on screen rather
+  // than both platforms at once.
+  const cAll = st.counts||{};
+  const c = (cAll.by_platform && cAll.by_platform[activePlatform === "tiktok" ? "tiktok" : "instagram"]) || cAll;
+  const nPriv = c.private||0;
   $("statChip").innerHTML =
-    `<b>${c.queued||0}</b> queued · <b>${c.done||0}</b> done` +
+    `<b>${c.queued||0}</b> queued` +
+    (nPriv?` · <b style="color:var(--err)" title="yt-dlp cannot download a private TikTok profile">${nPriv} private</b>`:"") +
+    ` · <b>${c.done||0}</b> done` +
     (c.failed?` · <b style="color:var(--err)">${c.failed} failed</b>`:"");
   $("queueHint").textContent = st.current ? "downloading: "+st.current : "";
 
@@ -2268,7 +2265,6 @@ function showPlatform(which){
   $("subTt").classList.toggle("active", !ig);
   $("igPane").style.display = ig ? "" : "none";
   $("ttPane").style.display = ig ? "none" : "";
-  if(!ig) loadTiktokKnown();
   $("hdrPlatform").textContent = ig ? "Instagram" : "TikTok";
   $("hdrSub").textContent = ig
     ? "paste profiles → queue runs one at a time, auto-resumes on rate limits"
@@ -2283,15 +2279,6 @@ $("subTt").onclick = () => showPlatform("tt");
 // ---- TikTok import -------------------------------------------------------
 // The pasted text is a whole page dump. The server parses it (the same parser
 // the CLI uses), so the browser never needs to understand TikTok's markup.
-
-async function loadTiktokKnown(){
-  try{
-    const r = await post("/api/tiktok/profiles", {limit: 1});
-    $("ttKnown").textContent = r.count
-      ? `${r.count} profile${r.count === 1 ? "" : "s"} remembered from previous imports.`
-      : "Nothing imported yet.";
-  }catch(e){ $("ttKnown").textContent = "—"; }
-}
 
 // Excluded is its own list so it never sits in the way of the queue or the
 // import box. Restoring is one click and puts the person back in the queue;
@@ -2387,7 +2374,6 @@ $("ttImportBtn").onclick = async () => {
       (r.skipped ? `, ${r.skipped} already in the list.` : ".") +
       " Nothing has started — remove any you don't want, then press Start.";
     $("ttInput").value = "";
-    loadTiktokKnown();
   }catch(e){ $("ttResult").textContent = "Error: " + e.message; }
   finally{ $("ttImportBtn").disabled = false; }
 };
