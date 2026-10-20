@@ -367,6 +367,11 @@ class Handler(BaseHTTPRequestHandler):
             if not jid:
                 return self.send_error(400)
             return self._json(get_engine().job_log(jid))
+        if p == "/api/partials":
+            # Preview of interrupted-download leftovers, so the UI can say what
+            # it would free before deleting anything.
+            return self._json(get_engine().sweep_partials(dry_run=True))
+
         if p == "/api/gallery":
             # Profiles whose archive is finished and still on disk.
             return self._json({"profiles": get_engine().gallery_profiles()})
@@ -498,6 +503,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/purge-removed":
             return self._json({"purged": get_engine().purge_removed()})
+
+        if p == "/api/partials/clear":
+            return self._json(get_engine().sweep_partials(dry_run=False))
 
         if p == "/api/requeue":
             return self._json({
@@ -690,6 +698,9 @@ def main() -> None:
     eng = get_engine()
     eng.output_root.mkdir(parents=True, exist_ok=True)
     _ensure_instaloader()
+    # Clear interrupted-download leftovers from a previous run. Backgrounded so
+    # housekeeping never delays the UI.
+    eng.cleanup_partials_at_startup()
     # Resume queued work -- only when actually run as the server. Importing
     # this module must never start a worker against the user's real queue.
     eng.kick_if_work()

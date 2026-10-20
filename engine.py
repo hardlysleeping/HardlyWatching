@@ -2062,6 +2062,27 @@ class Engine:
             self.worker = threading.Thread(target=self._run, daemon=True)
             self.worker.start()
 
+    def cleanup_partials_at_startup(self) -> None:
+        """Remove interrupted-download leftovers once per start.
+
+        Runs in a background thread: on a large archive the directory walk takes
+        a moment, and the UI should not wait on housekeeping to appear. Any
+        failure here is logged and ignored -- leaving stale .temp files is
+        harmless, so cleanup must never be able to break startup.
+        """
+        def _work():
+            try:
+                res = self.sweep_partials(dry_run=False)
+                if res["count"]:
+                    print(f"cleaned {res['count']} interrupted download(s), "
+                          f"{res['bytes'] // 1024} KB freed", flush=True)
+                    self.save_state()
+            except Exception as e:
+                print(f"partial cleanup skipped: {e}", flush=True)
+
+        threading.Thread(target=_work, daemon=True,
+                         name="cleanup-partials").start()
+
     def kick_if_work(self) -> None:
         """Start the worker if there is queued work pending.
 
@@ -2204,6 +2225,62 @@ class Engine:
             if self.restore(jid):
                 n += 1
         return n
+
+    def sweep_partials(self, dry_run: bool = False) -> dict:
+        """Delete leftovers from interrupted downloads.
+
+        instaloader writes `<name>.temp` while fetching and renames it only on
+        success, so a killed download leaves a `.temp` behind. Those are pure
+        junk: the real filename does not exist, so fast-update fetches the post
+        again on the next run -- meaning the leftover is not only wasted space,
+        it is not even a safety net.
+
+        Deliberately only `.temp` files. It does NOT touch 0-byte media files:
+        those are the placeholders the trash flow leaves, and deleting them
+        would make instaloader re-download everything you deleted on purpose.
+        """
+        roots = [self.output_root] + [r for r in self.roots
+                                      if not _same(r, self.output_root)]
+        found = []
+        freed = 0
+        errors = []
+        for root in roots:
+            try:
+                if not root.is_dir():
+                    continue
+                profiles = [p for p in root.iterdir() if p.is_dir()]
+            except OSError:
+                continue
+            for prof in profiles:
+                try:
+                    entries = list(prof.iterdir())
+                except OSError:
+                    continue
+                for f in entries:
+                    if not f.is_file():
+                        continue
+                    # .temp only. Never a tombstone placeholder.
+                    if not f.name.lower().endswith(".temp"):
+                        continue
+                    try:
+                        size = f.stat().st_size
+                    except OSError:
+                        continue
+                    found.append({"profile": prof.name, "name": f.name,
+                                  "bytes": size})
+                    freed += size
+                    if not dry_run:
+                        try:
+                            f.unlink()
+                        except OSError as e:
+                            errors.append(f"{prof.name}/{f.name}: {e}")
+        if found and not dry_run:
+            # The listing cache may still mention them; cheap to drop.
+            for root in roots:
+                _media_cache_forget(root)
+        return {"count": len(found), "bytes": freed,
+                "files": sorted(found, key=lambda r: -r["bytes"])[:50],
+                "errors": errors, "dry_run": dry_run}
 
     def purge_removed(self) -> int:
         """Empty the removed-jobs archive."""

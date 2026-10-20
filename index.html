@@ -1688,6 +1688,17 @@ function buildAllBar(profileCount){
     () => { gAll = "trash"; gProfile = null; renderAllSection("trash"); }));
   bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
     () => { gAll = "timeline"; gProfile = null; renderTimeline(); }));
+
+  // Interrupted-download leftovers. Only shown when there is something to
+  // clean, so it is not permanent clutter for a tidy archive.
+  const junk = document.createElement("button");
+  junk.className = "fchip";
+  junk.id = "cleanJunk";
+  junk.style.display = "none";
+  junk.title = "Delete .temp files left behind by interrupted downloads";
+  junk.onclick = cleanJunk;
+  bar.appendChild(junk);
+  refreshJunk();
 }
 
 async function renderAllSection(section){
@@ -2262,6 +2273,38 @@ async function renderTimeline(){
 
   syncControls();
   showIndex(tlIndex);
+}
+
+// Leftovers from interrupted downloads. `.temp` files only: the 0-byte media
+// files next to them are trashed-item placeholders, and deleting those would
+// make instaloader fetch back everything that was deliberately deleted.
+let junkInfo = null;
+
+async function refreshJunk(){
+  const btn = $("cleanJunk");
+  if(!btn) return;
+  let r;
+  try { r = await (await fetch("/api/partials")).json(); }
+  catch(e){ btn.style.display = "none"; return; }
+  junkInfo = r;
+  if(!r.count){ btn.style.display = "none"; return; }
+  btn.style.display = "";
+  btn.textContent = `🧹 Clean ${r.count} incomplete (${fmtBytes(r.bytes)})`;
+}
+
+async function cleanJunk(){
+  if(!junkInfo || !junkInfo.count) return;
+  const list = junkInfo.files.slice(0, 6)
+    .map(f => `  ${f.profile}/${f.name}`).join("\n");
+  const more = junkInfo.count > 6 ? `\n  …and ${junkInfo.count - 6} more` : "";
+  if(!confirm(`Delete ${junkInfo.count} leftover file${junkInfo.count===1?"":"s"} `
+    + `from interrupted downloads?\n\n${list}${more}\n\n`
+    + `These are incomplete downloads, not your archived media. `
+    + `Anything still missing will be fetched again on the next check.`)) return;
+  const r = await post("/api/partials/clear", {});
+  toast(`Removed ${r.count}, freed ${fmtBytes(r.bytes)}`
+    + (r.errors && r.errors.length ? ` (${r.errors.length} failed)` : ""));
+  refreshJunk();
 }
 
 async function renderGallery(){
