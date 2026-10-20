@@ -243,6 +243,15 @@
     color:#fff;border-radius:5px;padding:1px 6px;font-size:11px;pointer-events:none}
   .ptile-part{position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.72);
     color:#fff;border-radius:5px;padding:1px 6px;font-size:11px;pointer-events:none}
+  /* Pager under the Waiting and Finished lists: search, page stepper, page
+     size and a jump-to-page select, on one row that wraps. */
+  .pager{display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+    margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+  .pager .listsearch{background:var(--panel-3);color:var(--text);
+    border:1px solid var(--line);border-radius:7px;padding:4px 8px;
+    font-size:12px;font-family:inherit;max-width:190px}
+  .pager input.listsearch{flex:1;min-width:110px}
+  .pager button.small{padding:3px 9px}
   .gsearch{display:flex;align-items:center;gap:8px;margin-bottom:12px}
   .gsearch input{flex:1;max-width:340px;background:var(--panel-3);color:var(--text);
     border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:13px;
@@ -566,6 +575,7 @@ https://www.instagram.com/a.third.profile/"></textarea>
           <div id="removedList" style="margin-top:10px"></div>
         </div>
         <div id="list" class="list"></div>
+        <div id="queuePager" class="pager" style="display:none"></div>
         <div id="viewerHost"></div>
         <div id="empty" class="empty">
           <b>Nothing queued yet.</b><br>
@@ -582,6 +592,7 @@ https://www.instagram.com/a.third.profile/"></textarea>
             <span class="hint" id="doneHint"></span>
             <button class="small" id="clearFinishedBtn" style="margin-left:auto">Clear</button></div>
           <div id="doneList" class="list"></div>
+          <div id="donePager" class="pager" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -1256,22 +1267,219 @@ function render(st){
   const doneSec = $("doneSection");
   if(finished.length){
     doneSec.style.display = "block";
-    $("doneHint").textContent = finished.length + " done";
-    setListHtml("doneList", finished.map(j=>cardHtml(j, "", 0)).join(""));
+    paintPaged("done", finished, $("doneHint"), "done");
   } else {
     doneSec.style.display = "none";
     setListHtml("doneList", "");
+    paintPager("done", 0, 0, $("doneHint"), "done");
   }
 
   $("empty").style.display = jobs.length ? "none" : "block";
   $("removedBtn").style.display = (st.removed && st.removed.length) ? "" : "none";
 
-  // position numbers only for queued items
-  let qpos = 0;
-  setListHtml("list", queued.map((j)=>{
-    qpos++;
-    return cardHtml(j, String(qpos), qpos);
-  }).join(""));
+  // Waiting list. Paged and searchable: with hundreds queued, rendering every
+  // card was both slow and a lot of scrolling to find one name.
+  paintPagedQueue(queued);
+}
+
+/* ---------- paged, searchable job lists ---------- */
+
+// Waiting and Finished each get their own page size, page number and search
+// term. Rendering every card was slow with hundreds queued and meant scrolling
+// a long way to find one name, so each list shows a page at a time with a
+// pager underneath. Both are client-side: the state poll already carries every
+// job, so filtering and paging cost no requests.
+const listUI = {
+  queue: { size: 10, page: 0, q: "" },
+  done:  { size: 10, page: 0, q: "" },
+};
+const PAGE_SIZES = [10, 15, 20];
+
+// The jobs currently in the list, so a pager click can repaint without
+// waiting for the next poll.
+const listData = { queue: [], done: [] };
+
+function matchJob(j, q){
+  if(!q) return true;
+  const hay = `${j.username || ""} ${j.status || ""} ${j.message || ""} `
+            + `${j.error || ""} ${j.kind || ""}`.toLowerCase();
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every(w => hay.includes(w));
+}
+
+function pageSlice(key){
+  const ui = listUI[key];
+  const all = listData[key] || [];
+  const hits = ui.q ? all.filter(j => matchJob(j, ui.q)) : all;
+  const pages = Math.max(1, Math.ceil(hits.length / ui.size));
+  // Searching or shrinking the page size can leave you past the end; clamp
+  // rather than showing an empty list with a live pager.
+  if(ui.page > pages - 1) ui.page = pages - 1;
+  if(ui.page < 0) ui.page = 0;
+  const start = ui.page * ui.size;
+  return { hits, pages, start, slice: hits.slice(start, start + ui.size) };
+}
+
+function paintPagedQueue(queued){
+  // Called with no argument from the pager: keep the list we already have.
+  // Assigning the undefined argument directly emptied it, so a page click
+  // blanked the list and looked like the button did nothing.
+  if(queued) listData.queue = queued;
+  paintPaged("queue", null, $("queueHint"), null);
+  const { hits, start, slice } = pageSlice("queue");
+  // Position numbers stay the real queue position, not the row number, so a
+  // card still says where it actually sits in the queue.
+  setListHtml("list", slice.map((j, i) => cardHtml(j, String(start + i + 1),
+                                                   start + i + 1)).join(""));
+  if(!slice.length){
+    setListHtml("list", hits.length ? "" :
+      `<div class="hint" style="padding:10px 2px">` +
+      (listUI.queue.q ? `No waiting profile matches “${esc(listUI.queue.q)}”.`
+                      : "Nothing waiting.") + `</div>`);
+  }
+  paintPager("queue", hits.length, null, $("queueHint"), "waiting");
+}
+
+// Finished entries are already grouped by person (see groupFinished), so they
+// page over that grouped list, not over raw jobs.
+function paintPaged(key, items, hintEl, noun){
+  if(items) listData[key] = items;
+  const { hits, slice } = pageSlice(key);
+  const html = slice.map(j => cardHtml(j, "", 0)).join("");
+  setListHtml(key === "done" ? "doneList" : "list", html);
+  if(key === "done"){
+    if(!slice.length && hits.length === 0){
+      setListHtml("doneList", listUI.done.q
+        ? `<div class="hint" style="padding:10px 2px">No finished profile matches “${esc(listUI.done.q)}”.</div>`
+        : "");
+    }
+  }
+  paintPager(key, hits.length, hintEl, null, noun);
+}
+
+function paintPager(key, total, _hint, hintEl, noun){
+  const bar = $(key === "done" ? "donePager" : "queuePager");
+  if(!bar) return;
+  const ui = listUI[key];
+  const all = (listData[key] || []).length;
+  const { hits, pages } = pageSlice(key);
+  const count = hits.length;
+
+  if(!all){ bar.style.display = "none"; return; }
+  bar.style.display = "flex";
+
+  const hint = hintEl || $(key === "done" ? "doneHint" : "queueHint");
+  if(hint){
+    const showing = count ? `showing ${ui.page * ui.size + 1}–${Math.min((ui.page + 1) * ui.size, count)}` : "none";
+    hint.textContent = ui.q
+      ? `${count} of ${all} match`
+      : `${all} ${noun || ""}`.trim() + (count ? ` · ${showing}` : "");
+  }
+
+  // The poll repaints this bar every 1.2s. Rebuilding it from scratch would
+  // destroy the search box's focus and selection while you are typing, so the
+  // controls are created once and only their values are updated afterwards.
+  if(bar.dataset.built === key){
+    const box = bar.querySelector("input.listsearch");
+    if(box && document.activeElement !== box && box.value !== ui.q) box.value = ui.q;
+    const lbl = bar.querySelector(".pagelabel");
+    if(lbl) lbl.textContent = pages > 1 ? `page ${ui.page + 1} / ${pages}` : "";
+    const prev = bar.querySelector('[data-step="-1"]');
+    const next = bar.querySelector('[data-step="1"]');
+    if(prev) prev.disabled = ui.page <= 0;
+    if(next) next.disabled = ui.page >= pages - 1;
+    const sizeSel = bar.querySelector("select[data-role=size]");
+    if(sizeSel && document.activeElement !== sizeSel) sizeSel.value = String(ui.size);
+    const jmpSel = bar.querySelector("select[data-role=jump]");
+    if(jmpSel){
+      // Rebuild only when the number of pages changed.
+      if(jmpSel.options.length !== pages){
+        jmpSel.innerHTML = "";
+        for(let i = 0; i < pages; i++){
+          const o = document.createElement("option");
+          o.value = String(i); o.textContent = `→ page ${i + 1}`;
+          jmpSel.appendChild(o);
+        }
+      }
+      if(document.activeElement !== jmpSel) jmpSel.value = String(ui.page);
+    }
+    return;
+  }
+
+  bar.innerHTML = "";
+  bar.dataset.built = key;
+  const mk = (label, fn, disabled, title, step) => {
+    const b = document.createElement("button");
+    b.className = "small";
+    b.textContent = label;
+    if(title) b.title = title;
+    if(step !== undefined) b.dataset.step = String(step);
+    b.disabled = !!disabled;
+    b.onclick = fn;
+    return b;
+  };
+
+  // Search
+  const box = document.createElement("input");
+  box.type = "search";
+  box.className = "listsearch";
+  box.placeholder = key === "done" ? "Search finished…" : "Search waiting…";
+  box.value = ui.q;
+  box.oninput = () => {
+    ui.q = box.value.trim();
+    ui.page = 0;
+    repaintList(key);
+  };
+  bar.appendChild(box);
+
+  const pageLabel = document.createElement("span");
+  pageLabel.className = "hint pagelabel";
+  pageLabel.style.marginLeft = "auto";
+  pageLabel.textContent = pages > 1 ? `page ${ui.page + 1} / ${pages}` : "";
+
+  bar.appendChild(mk("‹", () => { ui.page--; repaintList(key); },
+                     ui.page <= 0, "Previous page", -1));
+  bar.appendChild(pageLabel);
+  bar.appendChild(mk("›", () => { ui.page++; repaintList(key); },
+                     ui.page >= pages - 1, "Next page", 1));
+
+  // Page size, as a plain select so it is obvious and needs no explanation.
+  const sel = document.createElement("select");
+  sel.className = "listsearch";
+  sel.dataset.role = "size";
+  sel.title = "How many to show at a time";
+  for(const n of PAGE_SIZES){
+    const o = document.createElement("option");
+    o.value = String(n); o.textContent = `${n} per page`;
+    if(n === ui.size) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    ui.size = parseInt(sel.value, 10) || 10;
+    ui.page = 0;
+    repaintList(key);
+  };
+  bar.appendChild(sel);
+
+  // Jump to a page directly when there are many.
+  if(pages > 2){
+    const jmp = document.createElement("select");
+    jmp.className = "listsearch";
+    jmp.dataset.role = "jump";
+    jmp.title = "Jump to page";
+    for(let i = 0; i < pages; i++){
+      const o = document.createElement("option");
+      o.value = String(i); o.textContent = `→ page ${i + 1}`;
+      if(i === ui.page) o.selected = true;
+      jmp.appendChild(o);
+    }
+    jmp.onchange = () => { ui.page = parseInt(jmp.value, 10) || 0; repaintList(key); };
+    bar.appendChild(jmp);
+  }
+}
+
+function repaintList(key){
+  if(key === "queue") paintPagedQueue();
+  else paintPaged("done", listData.done, $("doneHint"), "done");
 }
 
 /* Build one job card. `pos` is the queue position label ("" for pinned rows);
