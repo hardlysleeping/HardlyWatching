@@ -245,6 +245,23 @@
     color:#fff;border-radius:5px;padding:1px 6px;font-size:11px;pointer-events:none}
   /* Pager under the Waiting and Finished lists: search, page stepper, page
      size and a jump-to-page select, on one row that wraps. */
+  /* Folder cards in settings: the downloads folder and the archive list are
+     different things and used to look like one confusing list. */
+  /* Shown only when polling has failed repeatedly: the page is stale and the
+     user should not have to guess why clicking things does nothing. */
+  .offline{position:fixed;top:0;left:0;right:0;z-index:9999;
+    background:#5a2a25;color:#fbe9e6;padding:9px 14px;font-size:13px;
+    display:flex;align-items:center;gap:10px;justify-content:center;
+    border-bottom:1px solid #7d3a33}
+  .offline button{background:#fbe9e6;color:#5a2a25;border:0;font-weight:600}
+  .foldcard{background:var(--panel-3);border:1px solid var(--line);border-radius:10px;
+    padding:11px 13px;margin-bottom:10px}
+  .foldcard-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:6px}
+  .foldpath{font-family:ui-monospace,monospace;font-size:12px;color:var(--text);
+    word-break:break-all;background:var(--panel);border:1px solid var(--line);
+    border-radius:6px;padding:6px 9px;margin-bottom:6px}
+  .tagtag{background:rgba(120,120,255,.18);color:var(--text);border-radius:5px;
+    padding:1px 6px;font-size:10.5px;white-space:nowrap}
   .pager{display:flex;align-items:center;gap:7px;flex-wrap:wrap;
     margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
   .pager .listsearch{background:var(--panel-3);color:var(--text);
@@ -519,20 +536,40 @@ https://www.instagram.com/a.third.profile/"></textarea>
       <button class="small" id="showAdv">Show advanced</button>
       <button class="small" id="resetSettings">Reset to defaults</button>
     </div>
-    <div class="sgroup" style="margin-top:0">Archive folders</div>
-    <div class="hint" style="margin:0 0 8px">
-      Every folder the gallery reads from. New downloads always land in the first
-      one. A folder on an unplugged drive is simply not listed until it is back —
-      nothing is moved or copied.
+    <div class="sgroup" style="margin-top:0">Where files are stored</div>
+    <div class="hint" style="margin:0 0 10px">
+      Downloads are saved into the <b>downloads folder</b>. The gallery shows
+      everything in every folder listed below, so old archives can stay on other
+      drives and still appear. Nothing is ever moved without you asking.
     </div>
-    <div id="rootsBox"></div>
-    <div class="row" style="margin:8px 0 0">
-      <button class="small" id="changeFolderBtn">Change downloads folder…</button>
+
+    <!-- Downloads folder: the one place new files are written. -->
+    <div class="foldcard">
+      <div class="foldcard-head">
+        <b>Downloads folder</b>
+        <span class="hint">new files go here</span>
+        <button class="small" id="changeFolderBtn" style="margin-left:auto">Change…</button>
+      </div>
+      <div class="foldpath" id="downloadsPath">…</div>
+      <div class="hint" id="downloadsNote"></div>
     </div>
-    <div class="row" style="gap:8px;margin:8px 0 16px">
-      <input type="text" id="rootNew" class="txtin" style="flex:1;min-width:200px"
-             placeholder="/run/media/you/DRIVE/instagram">
-      <button class="small" id="rootAdd">Add folder…</button>
+
+    <!-- Archive folders: everything the gallery reads. -->
+    <div class="foldcard">
+      <div class="foldcard-head">
+        <b>Archive folders</b>
+        <span class="hint">everything the gallery shows</span>
+      </div>
+      <div class="hint" style="margin:4px 0 8px">
+        The downloads folder is always one of them. A folder on an unplugged
+        drive simply disappears from the gallery until it is plugged back in.
+      </div>
+      <div id="rootsBox"></div>
+      <div class="row" style="gap:8px;margin:8px 0 0">
+        <input type="text" id="rootNew" class="txtin" style="flex:1;min-width:200px"
+               placeholder="/run/media/you/DRIVE/instagram">
+        <button class="small" id="rootAdd">Add archive folder…</button>
+      </div>
     </div>
     <div class="sgrid" id="sgrid"></div>
     <div class="hint" id="noMatch" style="display:none;padding-bottom:14px">
@@ -932,6 +969,31 @@ function filterSettings(){
 function renderRoots(roots){
   const box = $("rootsBox");
   if(!box) return;
+
+  // The downloads folder is shown on its own above, so this list is about what
+  // the gallery READS. It is still the first entry in the list, so it is shown
+  // here too but marked as the one new files go to -- without the marker, the
+  // two concepts were impossible to tell apart.
+  const dl = roots && roots.length ? roots[0] : null;
+  const pathEl = $("downloadsPath");
+  const noteEl = $("downloadsNote");
+  if(pathEl){
+    pathEl.textContent = dl ? dl.path : "(not set)";
+    pathEl.title = dl ? dl.path : "";
+  }
+  if(noteEl){
+    if(!dl){
+      noteEl.textContent = "";
+    } else if(!dl.present){
+      noteEl.innerHTML = `<b style="color:#e8a49c">This folder is not there right now.</b> ` +
+        `Downloads are refused until the drive is mounted — nothing will be ` +
+        `written into a missing folder.`;
+    } else {
+      noteEl.textContent = "Changing this only affects NEW downloads. " +
+        "Existing archives stay where they are unless you tick the move box.";
+    }
+  }
+
   if(!roots || !roots.length){ box.innerHTML = ""; return; }
   // Rebuilding this on every 1.2s poll would blow away a half-typed path or an
   // open confirm, so only touch the DOM when the list actually changed.
@@ -945,7 +1007,9 @@ function renderRoots(roots){
     row.style.cssText = "align-items:center;gap:10px";
     const label = document.createElement("span");
     label.style.minWidth = "0";
-    label.innerHTML = (i === 0 ? "<b>Downloads</b> " : "") +
+    label.innerHTML = (i === 0
+        ? `<span class="tagtag">also the downloads folder</span> `
+        : "") +
       `<small class="hint" style="display:block;word-break:break-all">${esc(r.path)}</small>`;
     row.appendChild(label);
     const state_ = document.createElement("span");
@@ -960,8 +1024,12 @@ function renderRoots(roots){
       del.textContent = "Stop reading";
       del.title = "Stop reading this folder. No files are deleted or moved.";
       del.onclick = async () => {
+        del.disabled = true;
+        del.textContent = "…";
         const res = await post("/api/roots/remove", {path: r.path});
         toast(res.message || res.error || "done");
+        // Re-enable on failure only: on success the row disappears.
+        if(!res || res.ok === false){ del.disabled = false; del.textContent = "Stop reading"; }
         tick();
       };
       row.appendChild(del);
@@ -1736,19 +1804,57 @@ function wireCards(container){
   container.querySelectorAll("[data-menu]").forEach(m=>{
     if(openMenus.has(m.dataset.menu)) m.style.display = "flex";
   });
-  on("[data-pass]", b=>b.onclick=async()=>{
+  // Several of these requests had no visible effect at all until the next poll,
+  // which read as the click not registering. `busy()` disables the button, keeps
+  // its label for the duration, and always re-enables it -- including on a
+  // thrown request, so a dead server cannot leave a button stuck.
+  const busy = async (b, fn) => {
+    if(b.dataset.busy === "1") return;
+    b.dataset.busy = "1";
+    const label = b.textContent;
+    b.disabled = true;
+    b.textContent = "…";
+    try { return await fn(); }
+    catch(e){ showErr("That did not go through — is the service still running?"); }
+    finally {
+      b.dataset.busy = "";
+      b.disabled = false;
+      // The card may have been replaced by a poll; writing to a detached node
+      // is harmless, so no guard needed.
+      b.textContent = label;
+    }
+  };
+
+  on("[data-pass]", b=>b.onclick=()=>busy(b, async()=>{
     const r = await post("/api/extra-pass",{username:b.dataset.user, kind:b.dataset.pass});
     if(r.ok) toast(`Queued ${r.kind} pass for ${r.username}`);
     else showErr(r.error || "Could not queue that");
     tick();
-  });
+  }));
   on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile));
-  on("[data-open]", b=>b.onclick=()=>post("/api/open-folder",{profile:b.dataset.open}));
-  on("[data-requeue]", b=>b.onclick=async()=>{ await post("/api/requeue",{id:b.dataset.requeue});
-    toast("Re-queued"); tick(); });
-  on("[data-remove]", b=>b.onclick=async()=>{ await post("/api/remove",{id:b.dataset.remove});
-    toast("Removed"); tick(); });
-  on("[data-forget]", b=>b.onclick=async()=>{ await post("/api/forget",{id:b.dataset.forget}); tick(); });
+  // Opening a folder used to be silent: the file manager window is the only
+  // feedback and it can open behind the browser.
+  on("[data-open]", b=>b.onclick=()=>busy(b, async()=>{
+    const r = await post("/api/open-folder",{profile:b.dataset.open});
+    if(!r || r.ok === false) showErr(r?.error || "Could not open that folder");
+  }));
+  on("[data-requeue]", b=>b.onclick=()=>busy(b, async()=>{
+    const r = await post("/api/requeue",{id:b.dataset.requeue});
+    if(r.ok === false) showErr("Could not re-queue that");
+    else toast("Re-queued");
+    tick();
+  }));
+  on("[data-remove]", b=>b.onclick=()=>busy(b, async()=>{
+    const r = await post("/api/remove",{id:b.dataset.remove});
+    if(r.ok === false) showErr("Could not remove that");
+    else toast("Removed");
+    tick();
+  }));
+  on("[data-forget]", b=>b.onclick=()=>busy(b, async()=>{
+    const r = await post("/api/forget",{id:b.dataset.forget});
+    if(r.ok === false) showErr("Could not forget that");
+    tick();
+  }));
   on("[data-top]", b=>b.onclick=async()=>{
     // Optimistic: move to front immediately, then sync to server.
     if(optimisticReorder(b.dataset.top, "to", 0)){
@@ -1781,15 +1887,50 @@ function wireCards(container){
   });
 }
 
+// Consecutive failed polls. A single blip is normal; a run of them means the
+// service is down or the response is bad, and the page silently freezing is
+// what forced a manual reload with no explanation of why.
+let pollFails = 0;
+
 async function tick(){
   // A reorder is still being saved: rendering the server's pre-move order
   // would make the card visibly jump back and forth. Skip one or two polls.
   if(Date.now() < optimisticUntil) return;
   try{
     const r = await fetch("/api/state");
+    if(!r.ok) throw new Error("HTTP " + r.status);
     const st = await r.json();
+    pollFails = 0;
+    setOffline(false);
     render(st);
-  }catch(e){}
+  }catch(e){
+    pollFails++;
+    // One miss is not worth alarming anyone about; three in a row (about four
+    // seconds with no usable state) means the page is stale, so say so and
+    // offer a reload instead of leaving a dead-looking screen.
+    if(pollFails >= 3) setOffline(true);
+  }
+}
+
+// A small, honest banner: the UI is showing stale data, here is the fix.
+function setOffline(on){
+  let b = $("offlineBar");
+  if(!on){
+    if(b) b.remove();
+    return;
+  }
+  if(b) return;
+  b = document.createElement("div");
+  b.id = "offlineBar";
+  b.className = "offline";
+  b.innerHTML = `<b>Not getting updates from the downloader.</b> ` +
+    `What you see may be out of date. `;
+  const btn = document.createElement("button");
+  btn.className = "small";
+  btn.textContent = "Reload";
+  btn.onclick = () => location.reload();
+  b.appendChild(btn);
+  document.body.appendChild(b);
 }
 
 /* ---------- actions ---------- */
@@ -2106,9 +2247,13 @@ function changeFolderDialog(current){
   wrap.className = "confirm";
   const box = document.createElement("div");
   box.className = "box";
-  box.innerHTML = `<p>Where should downloads go?</p>
-    <div class="why">One folder per profile is created inside this one.
-    Changing it does not move what you already have unless you tick the box.</div>`;
+  box.innerHTML = `<p>Change the downloads folder</p>
+    <div class="why">
+      New downloads will be saved here, one subfolder per profile.<br><br>
+      <b>Nothing already downloaded is moved</b> unless you tick the box below.
+      Either way, the gallery keeps showing your old files, because the previous
+      folder stays in the archive list.
+    </div>`;
   const inp = document.createElement("input");
   inp.type = "text";
   inp.value = current || "";
@@ -2120,7 +2265,8 @@ function changeFolderDialog(current){
   const cb = document.createElement("input");
   cb.type = "checkbox";
   moveRow.appendChild(cb);
-  moveRow.appendChild(document.createTextNode(" Move my existing archives across too"));
+  moveRow.appendChild(document.createTextNode(
+    " Also move my existing archives into the new folder"));
   box.appendChild(moveRow);
   const row = document.createElement("div");
   row.className = "row";
@@ -2129,21 +2275,39 @@ function changeFolderDialog(current){
   cancel.textContent = "Cancel";
   cancel.onclick = () => wrap.remove();
   const go = document.createElement("button");
-  go.className = "small";
+  go.className = "small primary";
   go.textContent = "Save";
+  const status = document.createElement("span");
+  status.className = "hint";
+  status.style.marginLeft = "auto";
+
+  // A move copies gigabytes, so the button has to say it is working. Without
+  // this the dialog sat there looking frozen until the request returned.
   go.onclick = async () => {
     go.disabled = true;
-    const r = await post("/api/set-output-root", {path: inp.value, migrate: cb.checked});
-    if(r.ok){
-      wrap.remove();
-      toast(r.message || "Folder updated");
-      load();
-    } else {
-      go.disabled = false;
-      toast(r.message || r.error || "Could not change folder");
+    cancel.disabled = true;
+    go.textContent = cb.checked ? "Moving…" : "Saving…";
+    status.textContent = cb.checked
+      ? "Copying existing archives — this can take a while. Leave this window open."
+      : "";
+    try {
+      const r = await post("/api/set-output-root", {path: inp.value, migrate: cb.checked});
+      if(r.ok){
+        wrap.remove();
+        toast(r.message || "Downloads folder updated");
+        tick();
+      } else {
+        go.disabled = false; cancel.disabled = false; go.textContent = "Save";
+        status.textContent = "";
+        toast(r.message || r.error || "Could not change folder");
+      }
+    } catch(e){
+      go.disabled = false; cancel.disabled = false; go.textContent = "Save";
+      status.textContent = "";
+      toast("Could not change folder — is the drive connected?");
     }
   };
-  row.appendChild(cancel); row.appendChild(go);
+  row.appendChild(cancel); row.appendChild(go); row.appendChild(status);
   box.appendChild(row);
   wrap.appendChild(box);
   wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
