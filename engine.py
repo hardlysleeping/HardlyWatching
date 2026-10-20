@@ -973,7 +973,8 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
     return posts
 
 
-def timeline(self, months: int | None = None) -> dict:
+def timeline(self, months: int | None = None,
+             only_favorites: bool = False) -> dict:
     """Every profile's posts in one chronological list, month-grouped.
 
     Returns the months present with their counts, and the posts, so the UI
@@ -986,29 +987,65 @@ def timeline(self, months: int | None = None) -> dict:
     double-count posts that are also in main.
     """
     out: list[dict] = []
-    for prof in self.gallery_profiles():
-        username = prof.get("username")
-        if not username:
-            continue
-        try:
-            posts = self.gallery_posts(username, "main")
-        except Exception:
-            continue
-        for p in posts:
-            # Only what a timeline tile needs; the viewer fetches the rest
-            # when a post is actually opened.
-            out.append({
-                "username": username,
-                "post": p["post"],
-                "ts": p["ts"],
-                "ts_src": p.get("ts_src", ""),
-                "date": p["date"],
-                "caption": p["caption"][:160],
-                "kind": "video" if any(i["kind"] == "video"
-                                       for i in p["items"]) else "image",
-                "file": p["items"][0]["file"] if p["items"] else "",
-                "count": p["count"],
-            })
+    if only_favorites:
+        # Favourites-only timeline. These live in each profile's favorites/
+        # subfolder rather than main/, so they are read from there; the same
+        # post is never listed twice because only one folder is walked.
+        for prof in self.gallery_profiles():
+            username = prof.get("username")
+            if not username:
+                continue
+            try:
+                favs = self.gallery_posts(username, "favorites")
+            except Exception:
+                continue
+            for p in favs:
+                out.append({
+                    "username": username,
+                    "post": p["post"],
+                    "ts": p["ts"],
+                    "ts_src": p.get("ts_src", ""),
+                    "date": p["date"],
+                    "caption": p["caption"][:160],
+                    "kind": "video" if any(i["kind"] == "video"
+                                           for i in p["items"]) else "image",
+                    "file": p["items"][0]["file"] if p["items"] else "",
+                    "count": p["count"],
+                    "favorite": True,
+                    "section": "favorites",
+                })
+    else:
+        for prof in self.gallery_profiles():
+            username = prof.get("username")
+            if not username:
+                continue
+            try:
+                posts = self.gallery_posts(username, "main")
+            except Exception:
+                continue
+            # Which posts are ALSO favourited, so a timeline tile can show the
+            # heart already filled and toggle it without a second request.
+            try:
+                fav_ids = {p["post"] for p in self.gallery_posts(username, "favorites")}
+            except Exception:
+                fav_ids = set()
+            for p in posts:
+                # Only what a timeline tile needs; the viewer fetches the rest
+                # when a post is actually opened.
+                out.append({
+                    "username": username,
+                    "post": p["post"],
+                    "ts": p["ts"],
+                    "ts_src": p.get("ts_src", ""),
+                    "date": p["date"],
+                    "caption": p["caption"][:160],
+                    "kind": "video" if any(i["kind"] == "video"
+                                           for i in p["items"]) else "image",
+                    "file": p["items"][0]["file"] if p["items"] else "",
+                    "count": p["count"],
+                    "favorite": p["post"] in fav_ids,
+                    "section": "main",
+                })
     out.sort(key=lambda p: p["ts"])
     groups: dict[str, int] = {}
     for p in out:
@@ -1023,19 +1060,25 @@ def timeline(self, months: int | None = None) -> dict:
     # it costs one list reference rather than 7.6MB of JSON per request.
     self._timeline_all = out
     self._timeline_groups = groups
+    self._timeline_favs = bool(only_favorites)
     return {"months": groups, "total": len(out)}
 
 def timeline_month(self, month: str, offset: int = 0,
-                   limit: int = 200) -> dict:
+                   limit: int = 200, only_favorites: bool = False) -> dict:
     """One month's posts from the timeline, and how many there are in all.
 
     The UI drives a slider over the months and asks for just the one it is
     showing. Returning all 30,000 posts to draw one month was 7.6MB and 1.5s
     per request; a month is a few hundred posts.
+
+    `only_favorites` must be passed through: the built list is cached, and the
+    favourites view is a DIFFERENT list, so reusing the cached all-posts list
+    here would quietly serve every post while the UI said "favourites only".
     """
     allp = getattr(self, "_timeline_all", None)
-    if allp is None or not getattr(self, "_timeline_groups", None):
-        self.timeline()
+    stale = getattr(self, "_timeline_favs", None) != bool(only_favorites)
+    if allp is None or not getattr(self, "_timeline_groups", None) or stale:
+        self.timeline(only_favorites=only_favorites)
         allp = getattr(self, "_timeline_all", []) or []
     if month == "all":
         chosen = allp
@@ -1670,14 +1713,17 @@ def make_preview(src: Path) -> Path | None:
 def resolve_media(self, username: str, rel: str, section: str = "") -> Path | None:
     """Map a requested gallery filename to a real file, or None.
 
-    Only completed profiles are served. The file may live in the profile's own
-    folder or in favorites/ or trash/, and must stay inside that profile.
+    The file may live in the profile's own folder or in favorites/ or trash/,
+    and must stay inside that profile.
+
+    This used to require a job in `done` status before serving anything. That
+    meant a profile still queued (or re-queued, or paused) had its files on disk
+    but every tile 404'd, so whole galleries came up grey -- 32 profiles were in
+    that state, an archived profile among them with 2,386 posts already downloaded. The
+    gallery now lists any profile with files on disk, so the gate has to follow
+    suit: what is actually servable is decided by the file existing, which the
+    path checks below already enforce.
     """
-    with self.lock:
-        done = any(j.username == username and j.status == "done"
-                   for j in self.jobs.values())
-    if not done:
-        return None
     folder = self.root_for(username)
     if folder is None:
         return None
