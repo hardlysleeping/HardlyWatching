@@ -19,10 +19,13 @@ or an installolder-style paste works too.
 
 import re
 
-AVATAR_RE = re.compile(r'^\s*Avatar for ([A-Za-z0-9._]{1,30})\s*$')
-HANDLE_RE = re.compile(r'^[A-Za-z0-9._]{1,30}$')
+# TikTok handles may contain letters, digits, dot, underscore and hyphen.
+# Hyphens were missing at first, so any 'first-last' handle was dropped from
+# the dump without a word.
+AVATAR_RE = re.compile(r'^\s*Avatar for ([A-Za-z0-9._-]{1,30})\s*$')
+HANDLE_RE = re.compile(r'^[A-Za-z0-9._-]{1,30}$')
 URL_RE = re.compile(
-    r'^(?:https?://)?(?:www\.|m\.)?(?:tiktok|instagram)\.com/@?([A-Za-z0-9._]{1,30})/?',
+    r'^(?:https?://)?(?:www\.|m\.)?(?:tiktok|instagram)\.com/@?([A-Za-z0-9._-]{1,30})/?',
     re.I,
 )
 
@@ -50,7 +53,12 @@ def _clean(h: str) -> str:
 
 
 def parse(text: str):
-    """Return (handles, source) where source says which path found them."""
+    """Return (handles, source, dropped).
+
+    `source` says which path found the handles; `dropped` counts rows that
+    looked like an account but could not be read, so a malformed paste is
+    reported rather than quietly producing a shorter list.
+    """
     handles = []
     seen = set()
 
@@ -83,7 +91,11 @@ def parse(text: str):
             add(m.group(1))
             avatar_hits += 1
     if avatar_hits:
-        return handles, 'avatar'
+        # Count rows that announced an avatar but whose handle did not fit the
+        # expected shape. A silent drop here would look like a smaller list
+        # rather than an error, so the number is carried back for reporting.
+        declared = sum(1 for ln in lines[start:] if ln.strip().lower().startswith('avatar for'))
+        return handles, 'avatar', max(0, declared - avatar_hits)
 
     # Path 2: profile URLs AND bare handles mixed together.
     url_hits = 0
@@ -102,14 +114,14 @@ def parse(text: str):
             add(tok)
             url_hits += 1
     if url_hits:
-        return handles, 'url'
+        return handles, 'url', 0
 
     # Path 3: comma / space separated on one line.
     for ln in lines:
         for tok in re.split(r'[\s,]+', ln):
             if tok:
                 add(tok)
-    return handles, 'plain'
+    return handles, 'plain', 0
 
 
 def to_urls(handles, platform='tiktok'):

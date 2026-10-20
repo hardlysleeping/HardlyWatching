@@ -2362,6 +2362,9 @@ $("ttCheckBtn").onclick = async () => {
     if(r.sample && r.sample.length) msg += ` First: ${r.sample.slice(0,5).join(", ")}`;
     // The page prints the real Following count, so a short paste is detectable.
     // Say it plainly rather than letting a partial list look complete.
+    if(r.dropped){
+      msg += ` ⚠ ${r.dropped} entr${r.dropped === 1 ? "y" : "ies"} in the paste could not be read as a username and were skipped.`;
+    }
     if(r.short){
       msg += ` ⚠ Your page says ${r.stated_total} followed, but only ${r.parsed} were in this paste.`;
       msg += ` Scroll the Following list all the way to the bottom, wait for it to load, then Ctrl+A again.`;

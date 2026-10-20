@@ -522,7 +522,7 @@ class Handler(BaseHTTPRequestHandler):
             # without touching the queue. Lets the user see the count first.
             import tiktok_handles
             text = str(body.get("text") or "")
-            handles, source = tiktok_handles.parse(text)
+            handles, source, dropped = tiktok_handles.parse(text)
             db = _profile_db()
             known = db.known("tiktok")
             excluded = db.excluded("tiktok")
@@ -544,6 +544,7 @@ class Handler(BaseHTTPRequestHandler):
                 "excluded": n_excl,
                 "stated_total": total,
                 "short": bool(short),
+                "dropped": dropped,
                 "sample": handles[:10],
             })
 
@@ -593,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
             import tiktok_handles
             text = str(body.get("text") or "")
             count = int(body.get("count") or 5)
-            handles, source = tiktok_handles.parse(text)
+            handles, source, dropped = tiktok_handles.parse(text)
             if not handles:
                 return self._json({"ok": False, "error": "No usernames found in that text."})
             db = _profile_db()
