@@ -175,15 +175,19 @@ class Handler(BaseHTTPRequestHandler):
             # The UI polls this every ~1.2s, so it doubles as a worker watchdog:
             # if the worker died with work still queued, revive it.
             get_engine().watchdog()
-            return self._json(get_engine().snapshot())
+            snap = get_engine().snapshot()
+            snap["roots"] = get_engine().roots_status()
+            return self._json(snap)
         if p == "/api/profile-pic":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
             name = clean_profile_name((q.get("profile") or [""])[0])
             if not name:
                 return self.send_error(400)
-            d = get_engine().output_root / name
-            if not d.is_dir():
+            # Resolve across every root: this used to read output_root only, so
+            # changing the downloads folder made every older profile 404 here.
+            d = get_engine().root_for(name)
+            if d is None:
                 return self.send_error(404)
             # instaloader names these <user>_<date>_UTC_profile_pic.<ext>
             hits = sorted(d.glob("*_profile_pic.*"),
@@ -344,6 +348,14 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("profile") or ""), str(body.get("file") or ""))
             return self._json({"ok": ok, "message": msg})
 
+        if p == "/api/roots/add":
+            ok, msg = get_engine().add_root(str(body.get("path") or ""))
+            return self._json({"ok": ok, "message": msg})
+
+        if p == "/api/roots/remove":
+            ok, msg = get_engine().remove_root(str(body.get("path") or ""))
+            return self._json({"ok": ok, "message": msg})
+
         if p == "/api/set-output-root":
             # Point downloads at a different folder. Body: {path, migrate}
             # migrate=true moves the existing archives across; false just
@@ -430,8 +442,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/open-folder":
             name = clean_profile_name(body.get("profile", ""))
-            root = get_engine().output_root
-            target = (root / name) if name else root
+            # Open the folder the profile is actually in, not just the
+            # downloads folder -- it may live on another drive.
+            target = (get_engine().root_for(name) if name
+                      else get_engine().output_root) or get_engine().output_root
             threading.Thread(target=_open_folder, args=(target,), daemon=True).start()
             return self._json({"ok": True, "path": str(target)})
 

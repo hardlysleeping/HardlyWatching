@@ -488,6 +488,47 @@ def _post_key(name: str) -> tuple[str, int]:
     return (m.group("stamp"), int(m.group("part") or 1))
 
 
+def _resolve(p: Path) -> Path | None:
+    """Resolved path, or None when it cannot be resolved (unmounted drive)."""
+    try:
+        return p.resolve()
+    except OSError:
+        return None
+
+
+def _same(a: Path, b: Path) -> bool:
+    """True when two paths name the same place.
+
+    Compared RESOLVED, because /home and /home (and any symlinked home)
+    are the same directory under different strings -- a textual compare would
+    let the same folder into the list twice and then refuse to remove it.
+    Falls back to a textual compare when either path cannot be resolved.
+    """
+    ra, rb = _resolve(a), _resolve(b)
+    if ra is None or rb is None:
+        return a == b
+    return ra == rb
+
+
+def root_for(self, username: str) -> Path | None:
+    """The folder an archive for `username` actually lives in, or None.
+
+    Scans the roots in order and returns the first one holding a `username/`
+    directory. An unmounted root simply does not match, so a profile on a
+    drive that is unplugged disappears from the gallery and comes back on its
+    own once the drive is mounted again -- no rescan, no stored state.
+
+    Deterministic on purpose: if the same profile exists in two roots the
+    first-listed root wins, so a stray copy can never make the archive
+    silently change under you.
+    """
+    for root in self.roots:
+        folder = root / username
+        if folder.is_dir():
+            return folder
+    return None
+
+
 def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
     """Group one section's media into posts, carousel parts in order.
 
@@ -495,7 +536,10 @@ def gallery_posts(self, username: str, section: str = "main") -> list[dict]:
     up to 20. Parts are ordered by their numeric suffix, not by string --
     otherwise `_10` would sort before `_2`.
     """
-    folder = self.output_root / username
+    base = self.root_for(username)
+    if base is None:
+        return []
+    folder = base
     if section in SUBDIRS:
         folder = folder / section
     if not folder.is_dir():
@@ -613,8 +657,8 @@ def reconcile_deletions(self, username: str) -> list[str]:
     Returns the list of names newly tombstoned. Cheap: one small JSON read and
     one directory listing per call.
     """
-    root = self.output_root / username
-    if not root.is_dir():
+    root = self.root_for(username)
+    if root is None:
         return []
     index = _read_index(root)
     current = set(_gallery_media(root))
@@ -674,8 +718,11 @@ def gallery_profiles(self) -> list[dict]:
     for job in jobs:
         if job.status != "done" or job.kind != "main":
             continue
-        folder = self.output_root / job.username
-        if not folder.is_dir():
+        # A root that is not mounted resolves to None here, so profiles on an
+        # unplugged drive are simply absent from the list -- they reappear on
+        # the next request once the drive is back.
+        folder = self.root_for(job.username)
+        if folder is None:
             continue
         media = _gallery_media(folder)
         if not media:
@@ -685,6 +732,7 @@ def gallery_profiles(self) -> list[dict]:
             "id": job.id,
             "count": len(media),
             "posts": job.posts,
+            "root": str(folder.parent),
         })
     out.sort(key=lambda p: p["username"].lower())
     return out
@@ -729,7 +777,9 @@ def clear_trash(self) -> tuple[int, list[str]]:
     with self.lock:
         usernames = [j.username for j in self.jobs.values()]
     for username in usernames:
-        root = self.output_root / username
+        root = self.root_for(username)
+        if root is None:
+            continue
         trash = root / TRASH_DIR
         if not trash.is_dir():
             continue
@@ -807,10 +857,12 @@ def remove_tombstone(self, username: str, name: str) -> tuple[bool, str]:
         found = len(self.tombstones) != before
     if not found:
         return False, "no such tombstone"
-    root = self.output_root / username
+    root = self.root_for(username)
     try:
-        root_real = root.resolve(strict=True)
+        root_real = root.resolve(strict=True) if root is not None else None
     except OSError:
+        root_real = None
+    if root_real is None:
         self.save_state()
         return True, "tombstone cleared (profile folder missing)"
     placeholder = root_real / name
@@ -822,6 +874,73 @@ def remove_tombstone(self, username: str, name: str) -> tuple[bool, str]:
         return False, f"could not remove placeholder: {e}"
     self.save_state()
     return True, "tombstone cleared; post will re-download"
+
+
+def roots_status(self) -> list[dict]:
+    """Every configured archive folder, and whether it is there right now.
+
+    Drives get unplugged. Reporting `present` is all the UI needs: an absent
+    root contributes no profiles and is not an error.
+    """
+    out = []
+    for i, p in enumerate(self.roots):
+        try:
+            present = p.is_dir()
+        except OSError:
+            present = False
+        out.append({
+            "path": str(p),
+            "present": present,
+            "receives": _same(p, self.output_root),
+            "index": i,
+        })
+    return out
+
+
+def add_root(self, path: str) -> tuple[bool, str]:
+    """Add an archive folder to read from (does not change new downloads).
+
+    The folder must already exist: adding a path that is not there would be a
+    typo trap, and an unplugged drive is something you re-add when it is back,
+    not something to guess at. Nothing is ever moved or copied -- a profile is
+    found in whichever root actually holds it.
+    """
+    p = (path or "").strip()
+    if not p:
+        return False, "no folder given"
+    target = Path(p).expanduser()
+    if not target.is_absolute():
+        return False, "please give a full path (starting with /)"
+    try:
+        real = target.resolve(strict=True)
+    except OSError:
+        return False, f"{target} is not there right now (is the drive mounted?)"
+    if not real.is_dir():
+        return False, "that is a file, not a folder"
+    if any(_same(r, real) for r in self.roots):
+        return False, "that folder is already in the list"
+    with self.lock:
+        self.roots.append(real)
+    self.save_state()
+    return True, f"added {real}"
+
+
+def remove_root(self, path: str) -> tuple[bool, str]:
+    """Stop reading from an archive folder. Files are never touched."""
+    p = (path or "").strip()
+    if not p:
+        return False, "no folder given"
+    target = Path(p).expanduser()
+    if _same(target, self.output_root):
+        return False, ("that is where new downloads go -- change the downloads "
+                       "folder first, then remove this one")
+    before = len(self.roots)
+    with self.lock:
+        self.roots = [r for r in self.roots if not _same(r, target)]
+    if len(self.roots) == before:
+        return False, "that folder is not in the list"
+    self.save_state()
+    return True, f"stopped reading {target}"
 
 
 def set_output_root(self, path: str, migrate: bool = False) -> tuple[bool, str]:
@@ -884,6 +1003,11 @@ def set_output_root(self, path: str, migrate: bool = False) -> tuple[bool, str]:
 
     with self.lock:
         self.output_root = target
+        # A downloads folder is always a root, and always first.
+        self.roots = [r for r in self.roots if not _same(r, target)]
+        # Store the resolved path when we can, so state.json holds one stable
+        # spelling of each root instead of a symlinked alias.
+        self.roots.insert(0, _resolve(target) or target)
     self.save_state()
     if migrate and moved:
         return True, f"moved {moved} profile folder(s); downloads now go to {target}"
@@ -895,8 +1019,8 @@ def gallery_photos(self, username: str, limit: int = 60) -> list[str]:
 
     Reshuffled on every call, so re-opening a profile shows different photos.
     """
-    folder = self.output_root / username
-    if not folder.is_dir():
+    folder = self.root_for(username)
+    if folder is None:
         return []
     try:
         self.reconcile_deletions(username)
@@ -1027,7 +1151,9 @@ def resolve_media(self, username: str, rel: str, section: str = "") -> Path | No
                    for j in self.jobs.values())
     if not done:
         return None
-    folder = self.output_root / username
+    folder = self.root_for(username)
+    if folder is None:
+        return None
     # `rel` is a bare filename, not a path.
     if rel != Path(rel).name or Path(rel).suffix.lower() not in GALLERY_EXTS:
         return None
@@ -1062,7 +1188,9 @@ def move_media(self, username: str, name: str, section: str) -> tuple[bool, str]
     if name != Path(name).name or Path(name).suffix.lower() not in GALLERY_EXTS:
         return False, "bad filename"
 
-    root = self.output_root / username
+    root = self.root_for(username)
+    if root is None:
+        return False, "profile folder missing"
     try:
         root_real = root.resolve(strict=True)
     except OSError:
@@ -1215,6 +1343,11 @@ class Engine:
 
     def __init__(self, output_root: Path = OUTPUT_ROOT):
         self.output_root = output_root
+        # Every folder an archive may live in, in priority order. output_root is
+        # always in here and is where NEW downloads go; the rest are read-only
+        # extra places (another disk, an external drive). Roots that are not
+        # mounted right now simply contribute nothing until they come back.
+        self.roots: list[Path] = [output_root]
         self.q: "queue.Queue[Job]" = queue.Queue()
         # Ordered list of job ids waiting to run (source of truth for order/priority).
         self.pending: list[str] = []
@@ -1264,6 +1397,10 @@ class Engine:
     resolve_media = resolve_media
     move_media = move_media
     set_output_root = set_output_root
+    root_for = root_for
+    roots_status = roots_status
+    add_root = add_root
+    remove_root = remove_root
 
     def job_log(self, job_id: str) -> dict:
         """One job's full log tail, for the UI to fetch when a log is opened.
@@ -1296,9 +1433,19 @@ class Engine:
                 self.tombstones = list(d.get("tombstones") or [])
                 # Where downloads go. A user-chosen folder persists across
                 # restarts; falls back to the default when unset.
+                # Extra archive folders (other disks / external drives), in
+                # priority order. Absent roots are normal: they come back on
+                # their own when mounted.
+                saved_roots = [Path(p) for p in (d.get("roots") or []) if p]
+                if saved_roots:
+                    self.roots = saved_roots
                 saved_root = d.get("output_root")
                 if saved_root:
                     self.output_root = Path(saved_root)
+                # output_root must always be a root, and first. Deduped by
+                # resolved identity so a symlinked home cannot list it twice.
+                self.roots = [r for r in self.roots if not _same(r, self.output_root)]
+                self.roots.insert(0, self.output_root)
                 # Restore a rate-limit pause so the worker waits it out after a
                 # restart instead of hammering Instagram immediately.
                 if d.get("limit_paused"):
@@ -1343,6 +1490,7 @@ class Engine:
                     "removed": self.removed,
                     "tombstones": self.tombstones,
                     "output_root": str(self.output_root),
+                    "roots": [str(p) for p in self.roots],
                     "jobs": jobs,
                 }
             tmp = STATE_FILE.with_suffix(".tmp")

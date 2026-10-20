@@ -170,6 +170,11 @@
   .pill.cancelled{color:var(--muted)}
   .pill.reels{color:#f472b6;border-color:#5a2b4a;background:#24162100}
   .pill.tagged{color:#67e8f9;border-color:#1e4d5a;background:#0f232800}
+  /* Per-pass markers on a grouped Finished entry (main / reels / tagged). */
+  .pill.pass{font-size:11px;padding:2px 8px}
+  .pill.pass.ok{color:var(--ok);border-color:#1f5138}
+  .pill.pass.warn{color:var(--warn);border-color:#5a4a1e}
+  .pill.pass.off{color:var(--muted);opacity:.65}
   .prog{height:3px;background:#0e1117;border-radius:3px;overflow:hidden;margin-top:8px}
   .prog i{display:block;height:100%;width:30%;background:linear-gradient(90deg,var(--accent),var(--accent-2));
     animation:sweep 1.1s linear infinite}
@@ -229,9 +234,14 @@
   .fchip:hover{border-color:var(--line-2);color:var(--text)}
   .fchip.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
   .fchip .n{opacity:.7;margin-left:5px}
+  /* Tiles sit above the hover-preview video (z-index 1), otherwise the clip
+     covers the buttons on exactly the tiles you most want to act on. */
   .ptile .acts{position:absolute;top:7px;left:7px;display:flex;gap:4px;
-    opacity:0;transition:.15s}
-  .ptile:hover .acts{opacity:1}
+    opacity:0;transition:.15s;z-index:3}
+  .ptile:hover .acts,.ptile:focus-within .acts{opacity:1}
+  /* A tile whose hover clip is loading shows the buttons anyway: the clip is
+     decoration, and losing the controls to it is worse than a missing preview. */
+  .ptile.showacts .acts{opacity:1}
   .ptile .acts button{background:rgba(0,0,0,.7);border:none;color:#fff;
     border-radius:6px;width:26px;height:26px;font-size:13px;line-height:1;
     cursor:pointer;padding:0}
@@ -242,8 +252,9 @@
      far from the favourite button in the top-left, so a fat-finger on a phone
      cannot land on it by mistake. */
   .ptile .acts-right{position:absolute;bottom:7px;right:7px;display:flex;gap:4px;
-    opacity:0;transition:.15s}
-  .ptile:hover .acts-right{opacity:1}
+    opacity:0;transition:.15s;z-index:3}
+  .ptile:hover .acts-right,.ptile:focus-within .acts-right{opacity:1}
+  .ptile.showacts .acts-right{opacity:1}
   @media (hover:none){.ptile .acts-right{opacity:1}}
   .ptile .acts-right button{background:rgba(0,0,0,.7);border:none;color:#fff;
     border-radius:6px;width:30px;height:30px;font-size:14px;line-height:1;
@@ -302,6 +313,13 @@
   .vnav:hover{background:rgba(0,0,0,.82)}
   .vnav.prev{left:8px}
   .vnav.next{right:8px}
+  /* Viewer actions: same weight as the header buttons, but round and dark so
+     they do not compete with Close. */
+  .vact{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.18);
+    color:#fff;border-radius:7px;width:32px;height:32px;font-size:15px;line-height:1;
+    cursor:pointer;padding:0;font-family:inherit;transition:.15s}
+  .vact:hover{background:rgba(255,255,255,.20)}
+  .vact.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .vcap{padding:11px 15px;font-size:13px;color:var(--muted);
     max-height:110px;overflow-y:auto;border-top:1px solid var(--line)}
   .vcap:empty{display:none}
@@ -410,6 +428,21 @@ https://www.instagram.com/a.third.profile/"></textarea>
       <button class="small" id="showAdv">Show advanced</button>
       <button class="small" id="resetSettings">Reset to defaults</button>
     </div>
+    <div class="sgroup" style="margin-top:0">Archive folders</div>
+    <div class="hint" style="margin:0 0 8px">
+      Every folder the gallery reads from. New downloads always land in the first
+      one. A folder on an unplugged drive is simply not listed until it is back —
+      nothing is moved or copied.
+    </div>
+    <div id="rootsBox"></div>
+    <div class="row" style="margin:8px 0 0">
+      <button class="small" id="changeFolderBtn">Change downloads folder…</button>
+    </div>
+    <div class="row" style="gap:8px;margin:8px 0 16px">
+      <input type="text" id="rootNew" class="txtin" style="flex:1;min-width:200px"
+             placeholder="/run/media/you/DRIVE/instagram">
+      <button class="small" id="rootAdd">Add folder…</button>
+    </div>
     <div class="sgrid" id="sgrid"></div>
     <div class="hint" id="noMatch" style="display:none;padding-bottom:14px">
       No settings match that filter.
@@ -457,9 +490,6 @@ https://www.instagram.com/a.third.profile/"></textarea>
           Paste Instagram profiles above and hit <b>Add to queue</b> —
           then press <b>Start</b> in the top bar to begin.<br>
           <span class="hint">Downloads land in <span id="emptyPath"></span>, one folder per profile.</span>
-          <div style="margin-top:10px">
-            <button class="small" id="changeFolderBtn">Change folder…</button>
-          </div>
         </div>
       </div>
 
@@ -799,6 +829,60 @@ function filterSettings(){
   $("noMatch").style.display = shown ? "none" : "";
 }
 
+/* ---------- archive folders (roots) ---------- */
+
+// Rendered from the state poll, which carries roots_status(). The first entry is
+// where new downloads go; the rest are read-only extras (another disk, a drive).
+function renderRoots(roots){
+  const box = $("rootsBox");
+  if(!box) return;
+  if(!roots || !roots.length){ box.innerHTML = ""; return; }
+  // Rebuilding this on every 1.2s poll would blow away a half-typed path or an
+  // open confirm, so only touch the DOM when the list actually changed.
+  const sig = JSON.stringify(roots);
+  if(box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = "";
+  roots.forEach((r, i)=>{
+    const row = document.createElement("div");
+    row.className = "num";
+    row.style.cssText = "align-items:center;gap:10px";
+    const label = document.createElement("span");
+    label.style.minWidth = "0";
+    label.innerHTML = (i === 0 ? "<b>Downloads</b> " : "") +
+      `<small class="hint" style="display:block;word-break:break-all">${esc(r.path)}</small>`;
+    row.appendChild(label);
+    const state_ = document.createElement("span");
+    state_.className = "hint";
+    state_.style.cssText = "margin-left:auto;white-space:nowrap";
+    state_.textContent = r.present ? "available" : "not mounted";
+    if(!r.present) state_.style.color = "var(--muted)";
+    row.appendChild(state_);
+    if(i !== 0){
+      const del = document.createElement("button");
+      del.className = "small";
+      del.textContent = "Stop reading";
+      del.title = "Stop reading this folder. No files are deleted or moved.";
+      del.onclick = async () => {
+        const res = await post("/api/roots/remove", {path: r.path});
+        toast(res.message || res.error || "done");
+        tick();
+      };
+      row.appendChild(del);
+    }
+    box.appendChild(row);
+  });
+}
+
+async function addRoot(){
+  const inp = $("rootNew");
+  const path = (inp.value || "").trim();
+  if(!path){ toast("Type the folder path first"); inp.focus(); return; }
+  const r = await post("/api/roots/add", {path});
+  toast(r.message || r.error || "done");
+  if(r.ok){ inp.value = ""; tick(); }
+}
+
 function fillSettings(s){
   settings = s;
   // only fill fields when they differ, so typing is not interrupted by a poll
@@ -899,6 +983,7 @@ function render(st){
   $("retryAllBtn").style.display = (c.failed>0) ? "" : "none";
   $("clearBtn").style.display = ((c.done||0)+(c.failed||0)+(c.cancelled||0)) ? "" : "none";
   const ep = $("emptyPath"); if(ep) ep.textContent = st.output_root;
+  renderRoots(st.roots || []);
   renderRemoved(st.removed || []);
 
   // One button whose label always matches what clicking it does.
@@ -945,8 +1030,9 @@ function render(st){
   const current = jobs.filter(j => j.status === "running" || j.status === "retrying");
   const failed  = jobs.filter(j => j.status === "failed");
   const queued  = jobs.filter(j => j.status === "queued");
-  const finished = jobs.filter(j => j.status === "done" || j.status === "cancelled"
-                                    || j.status === "skipped");
+  const finished = groupFinished(jobs.filter(j => j.status === "done"
+                                               || j.status === "cancelled"
+                                               || j.status === "skipped"));
 
   // "Downloading now" section. When nothing is running the worker may be
   // waiting; the engine says which kind and until when, so the countdown is
@@ -1017,6 +1103,53 @@ function render(st){
 
 /* Build one job card. `pos` is the queue position label ("" for pinned rows);
    `qpos` is the numeric position, used to decide where reorder buttons show. */
+// One entry per person in Finished. A profile normally produces up to three
+// jobs (main, then a reels pass, then tagged), so listing jobs showed the same
+// name two or three times. They are folded into one entry that says which of
+// the three passes are done, while keeping the log reachable.
+function groupFinished(jobs){
+  const byUser = new Map();
+  for(const j of jobs){
+    const key = j.username || j.id;
+    let g = byUser.get(key);
+    if(!g){ g = {username: j.username, id: j.id, kind: "main", status: "done",
+                 passes: {}, jobs: [], posts: 0, total_bytes: 0,
+                 last_run_seconds: 0, message: "", error: ""};
+             byUser.set(key, g); }
+    g.jobs.push(j);
+    g.passes[j.kind || "main"] = j.status;
+    g.posts += j.posts || 0;
+    g.total_bytes += j.total_bytes || 0;
+    g.last_run_seconds += j.last_run_seconds || 0;
+    // The card shows the main pass's id so its log panel still works, and the
+    // worst status wins: if any pass was cancelled the entry says so.
+    if((j.kind || "main") === "main"){
+      g.id = j.id;
+      g.message = j.message || g.message;
+      g.error = j.error || g.error;
+      g.status = j.status;
+    } else if(j.status === "cancelled" && g.status === "done"){
+      g.status = "cancelled";
+    }
+  }
+  return [...byUser.values()];
+}
+
+// Which passes of a grouped Finished entry are done: main / reels / tagged.
+// "main" is always shown, so a profile with no extra passes reads as a plain
+// "main done"; a cancelled pass is shown as such rather than silently dropped.
+function passPills(passes){
+  const order = [["main","main"],["reels","reels"],["tagged","tagged"]];
+  return order.map(([k,label])=>{
+    const st = passes[k];
+    if(!st && k !== "main") return "";
+    const state = st || "not run";
+    const cls = state === "done" ? "ok" : (state === "cancelled" ? "warn" : "off");
+    return `<span class="pill pass ${cls}" title="${esc(label)} pass: ${esc(state)}">`
+         + `${esc(label)}${state === "done" ? " ✓" : state === "cancelled" ? " ✕" : ""}</span>`;
+  }).join("");
+}
+
 function cardHtml(j, pos, qpos){
     const isQ = (j.status==="queued");
     const bits=[];
@@ -1106,6 +1239,7 @@ function cardHtml(j, pos, qpos){
         <div class="top">
           <span class="name clickable" data-profile="${esc(j.username)}"
                 title="Show ${esc(j.username)} on Instagram">${esc(j.username)}</span>
+          ${j.passes ? passPills(j.passes) : ""}
           ${j.kind==="reels"?'<span class="pill reels" title="Reels-only pass">reels</span>':""}
           ${j.kind==="tagged"?'<span class="pill tagged" title="Tagged-posts-only pass">tagged</span>':""}
           <span class="pill ${esc(j.status)}">${esc(j.status)}</span>
@@ -1307,6 +1441,8 @@ $("pasteBtn").onclick = async () => {
   }catch(e){ showErr("Clipboard blocked by the browser — paste manually with Ctrl+V."); }
 };
 $("setSearch").addEventListener("input", filterSettings);
+$("rootAdd").addEventListener("click", addRoot);
+$("rootNew").addEventListener("keydown", (e)=>{ if(e.key === "Enter") addRoot(); });
 
 $("loginBtn").onclick = async () => {
   const u = ($("loginUser").value||"").trim().replace(/^@/,"");
@@ -1669,7 +1805,14 @@ function tileFor(username, post, section){
       + `&file=${encodeURIComponent(first.file)}`
       + (srcSection === "main" ? "" : `&section=${srcSection}`);
     let vid = null;
+    // The hover clip is decoration. The buttons must never depend on it
+    // starting: the preview has to be generated by ffmpeg on first request,
+    // and a clip that is still transcoding used to leave the tile with no
+    // visible controls at all. So the actions are pinned on while the cursor
+    // is here, and only a clip that is actually playing is allowed to take
+    // the tile over.
     tile.addEventListener("mouseenter", () => {
+      tile.classList.add("showacts");
       if(vid) { vid.play().catch(()=>{}); return; }
       vid = document.createElement("video");
       vid.src = src; vid.muted = true; vid.loop = true;
@@ -1680,10 +1823,13 @@ function tileFor(username, post, section){
         img.style.visibility = "hidden";
         vid.play().catch(()=>{});
       };
+      // A failed clip must never hide the tile's controls, so on error the
+      // element is dropped and the poster frame is restored.
       vid.onerror = () => { vid.remove(); vid = null; img.style.visibility = ""; };
       tile.appendChild(vid);
     });
     tile.addEventListener("mouseleave", () => {
+      tile.classList.remove("showacts");
       if(vid){ vid.pause(); vid.currentTime = 0; }
       img.style.visibility = "";
     });
@@ -1992,6 +2138,9 @@ function openViewer(username, post, section, idx){
         <span class="vcount"></span>
         <span class="vdate"></span>
         <span style="flex:1"></span>
+        <button class="vact" data-vfav title="Add to favourites">♡</button>
+        <button class="vact" data-vdl title="Download this file" hidden>⤓</button>
+        <button class="vact" data-vtrash title="Move to trash">🗑</button>
         <button class="small" data-vclose>Close ✕</button>
       </div>
       <div class="vstage">
@@ -2005,7 +2154,14 @@ function openViewer(username, post, section, idx){
     host.querySelector("[data-vclose]").onclick = closeViewer;
     host.querySelector("[data-vprev]").onclick = (e) => { e.stopPropagation(); stepViewer(-1); };
     host.querySelector("[data-vnext]").onclick = (e) => { e.stopPropagation(); stepViewer(1); };
+    host.querySelector("[data-vfav]").onclick = (e) => { e.stopPropagation(); viewerToggleFav(); };
+    host.querySelector("[data-vtrash]").onclick = (e) => { e.stopPropagation(); viewerTrash(); };
+    host.querySelector("[data-vdl]").onclick = (e) => { e.stopPropagation(); viewerDownload(); };
     host.onclick = (e) => { if(e.target === host) closeViewer(); };
+    // Cache the three action buttons once; paintViewer repaints their state.
+    VIEWER_BTN.fav = host.querySelector("[data-vfav]");
+    VIEWER_BTN.dl = host.querySelector("[data-vdl]");
+    VIEWER_BTN.trash = host.querySelector("[data-vtrash]");
   }
   host.style.display = "flex";
   paintViewer();
@@ -2036,11 +2192,101 @@ function paintViewer(){
   host.querySelector(".vcap").textContent = post.caption || post.title || "";
   host.querySelector(".vnav.prev").style.visibility = many ? "visible" : "hidden";
   host.querySelector(".vnav.next").style.visibility = many ? "visible" : "hidden";
+
+  // The action buttons describe the CURRENT item, so they are repainted on
+  // every step (carousel parts can be a mix of images and videos).
+  paintViewerActions();
   // preload neighbours so arrows feel instant
   for(const d of [-1, 1]){
     const n = srcs[idx+d];
     if(n && n.item.kind === "image"){ const i = new Image(); i.src = n.src; }
   }
+}
+
+// The viewer's like / trash / download state, for the item on screen.
+// A carousel can mix images and videos, so the download button appears only
+// for a video part and the favourite state is re-read per part.
+const VIEWER_BTN = {fav:null, dl:null, trash:null};
+
+function viewerCurrentFile(){
+  if(!vState) return null;
+  const cur = vState.srcs[vState.idx];
+  return cur ? cur.item.file : null;
+}
+
+function paintViewerActions(){
+  if(!vState || !VIEWER_BTN.fav) return;
+  const srcSection = vState.section;
+  const file = viewerCurrentFile();
+  const trashView = srcSection === "trash";
+
+  // Trash view: the only sensible actions are restore and download.
+  VIEWER_BTN.fav.style.display = trashView ? "none" : "";
+  VIEWER_BTN.trash.textContent = trashView ? "↩" : "🗑";
+  VIEWER_BTN.trash.title = trashView ? "Restore to main folder" : "Move to trash";
+
+  if(!trashView){
+    // post.section is where the files physically live; favourites are marked.
+    const faved = srcSection === "favorites";
+    VIEWER_BTN.fav.textContent = faved ? "♥" : "♡";
+    VIEWER_BTN.fav.title = faved ? "Remove from favourites" : "Add to favourites";
+    VIEWER_BTN.fav.classList.toggle("on", faved);
+  }
+
+  // Download is for videos (the ones that are annoying to save from the page).
+  // A plain anchor to the raw file lets the browser save it.
+  const cur = vState.srcs[vState.idx];
+  const isVideo = !!(cur && cur.item.kind === "video");
+  VIEWER_BTN.dl.hidden = !isVideo;
+  if(isVideo && file){
+    VIEWER_BTN.dl.dataset.href = mediaSrc(cur.item, vState.username, srcSection);
+  }
+}
+
+function viewerDownload(){
+  if(!vState) return;
+  const cur = vState.srcs[vState.idx];
+  if(!cur || cur.item.kind !== "video") return;
+  const a = document.createElement("a");
+  a.href = mediaSrc(cur.item, vState.username, vState.section);
+  a.download = cur.item.file;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast("Saving " + cur.item.file);
+}
+
+async function viewerToggleFav(){
+  if(!vState) return;
+  const srcSection = vState.section;
+  if(srcSection === "trash") return;
+  const target = srcSection === "favorites" ? "main" : "favorites";
+  vState.post.items.forEach(i => movePhoto(vState.username, i.file, target, true));
+  // Reflect it immediately: the viewer keeps showing the post, so just flip
+  // the section it is reading from and repaint.
+  vState.section = target;
+  vState.post.section = target;
+  paintViewerActions();
+  toast(target === "favorites" ? "Favourited" : "Removed from favourites");
+  // The grid is still behind the overlay and holds its own copy of the state.
+  refreshAfterMove(vState.username);
+}
+
+async function viewerTrash(){
+  if(!vState) return;
+  const srcSection = vState.section;
+  const file = viewerCurrentFile();
+  if(!file) return;
+  if(srcSection === "trash"){
+    // Restore the whole post, same as the tile's ↩.
+    await Promise.all(vState.post.items.map(i => movePhoto(vState.username, i.file, "main", true)));
+    toast("Restored");
+    closeViewer();
+    refreshAfterMove(vState.username);
+    return;
+  }
+  const names = vState.post.items.map(i => i.file);
+  confirmTrash(vState.username, names, () => { closeViewer(); });
 }
 
 function stepViewer(delta){
@@ -2068,7 +2314,7 @@ document.addEventListener("keydown", (e) => {
   else if(e.key === "ArrowLeft") stepViewer(-1);
 });
 
-function confirmTrash(username, names){
+function confirmTrash(username, names, onDone){
   const list = Array.isArray(names) ? names : [names];
   const many = list.length > 1;
   const wrap = document.createElement("div");
@@ -2092,6 +2338,9 @@ function confirmTrash(username, names){
     for(const n of list) await movePhoto(username, n, "trash", true);
     toast(many ? `Moved ${list.length} to trash` : "Moved to trash");
     refreshAfterMove(username);
+    // The viewer passes a callback so it can close itself once the post it is
+    // showing has moved out from under it.
+    if(typeof onDone === "function") onDone();
   };
   row.appendChild(cancel); row.appendChild(go);
   box.appendChild(row);
