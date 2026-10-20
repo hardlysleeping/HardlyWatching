@@ -869,9 +869,9 @@ def _resolve(p: Path) -> Path | None:
 def _same(a: Path, b: Path) -> bool:
     """True when two paths name the same place.
 
-    Compared RESOLVED, because /home and /home (and any symlinked home)
-    are the same directory under different strings -- a textual compare would
-    let the same folder into the list twice and then refuse to remove it.
+    Compared RESOLVED, because one directory can be reached under more than one
+    spelling (a symlinked home, for instance), and a textual compare would let
+    the same folder into the list twice and then refuse to remove it.
     Falls back to a textual compare when either path cannot be resolved.
     """
     ra, rb = _resolve(a), _resolve(b)
@@ -1719,7 +1719,7 @@ def resolve_media(self, username: str, rel: str, section: str = "") -> Path | No
     This used to require a job in `done` status before serving anything. That
     meant a profile still queued (or re-queued, or paused) had its files on disk
     but every tile 404'd, so whole galleries came up grey -- 32 profiles were in
-    that state, an archived profile among them with 2,386 posts already downloaded. The
+    that state, with thousands of posts already on disk. The
     gallery now lists any profile with files on disk, so the gate has to follow
     suit: what is actually servable is decided by the file existing, which the
     path checks below already enforce.
@@ -3472,8 +3472,8 @@ class Engine:
         def _tally(folder: Path) -> int:
             if not folder.is_dir():
                 return 0
-            # Two roots can be the same place spelled differently (/home and
-            # /home), so count each real directory once.
+            # Two roots can be the same place spelled two ways, so count each
+            # real directory once.
             real = _resolve(folder)
             key = str(real) if real is not None else str(folder)
             if key in seen:
