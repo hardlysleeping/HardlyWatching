@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the Instagram Downloader queue UI as a systemd user service so it
+# Install the HardlyWatching queue UI as a systemd user service so it
 # starts automatically at login.
 #
 #   ./install-service.sh          install + start
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-UNIT="$UNIT_DIR/insta-downloader.service"
+UNIT="$UNIT_DIR/hardlywatching.service"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Pick a real interpreter, not a venv that might vanish. The app is stdlib-only.
@@ -28,10 +28,10 @@ if ! command -v instaloader >/dev/null 2>&1; then
 fi
 
 if [ "${1:-install}" = "remove" ]; then
-  systemctl --user disable --now insta-downloader.service 2>/dev/null || true
+  systemctl --user disable --now hardlywatching.service 2>/dev/null || true
   rm -f "$UNIT"
   systemctl --user daemon-reload
-  echo "Removed. Your queue state in ~/.config/insta-desktop/ is untouched."
+  echo "Removed. Your queue state in ~/.config/hardlywatching/ is untouched."
   exit 0
 fi
 
@@ -39,7 +39,7 @@ mkdir -p "$UNIT_DIR"
 
 cat > "$UNIT" <<EOF
 [Unit]
-Description=Instagram Downloader (instaloader queue UI)
+Description=HardlyWatching (instaloader queue UI)
 After=network-online.target
 Wants=network-online.target
 
@@ -59,12 +59,12 @@ WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable --now insta-downloader.service
+systemctl --user enable --now hardlywatching.service
 
 echo
 echo "Installed and started."
 echo "  URL:    http://127.0.0.1:${INSTA_PORT:-8765}"
-echo "  Status: systemctl --user status insta-downloader"
-echo "  Logs:   journalctl --user -u insta-downloader -f"
+echo "  Status: systemctl --user status hardlywatching"
+echo "  Logs:   journalctl --user -u hardlywatching -f"
 echo
 echo "It will start automatically at login from now on."

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Instagram Downloader -- fully self-contained launcher.
+"""HardlyWatching -- fully self-contained launcher.
 
 Run it with any Python 3.8+:
 

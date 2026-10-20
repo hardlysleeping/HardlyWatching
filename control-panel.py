@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Instagram Downloader -- control panel window.
+"""HardlyWatching -- control panel window.
 
 A small window that shows whether the app is running, the address to open it
 at, and buttons to open / copy the link and to start, stop or restart the
@@ -64,7 +64,7 @@ def running() -> bool:
 def _service_active() -> bool:
     if not shutil.which("systemctl"):
         return False
-    r = subprocess.run(["systemctl", "--user", "is-active", "insta-downloader"],
+    r = subprocess.run(["systemctl", "--user", "is-active", "hardlywatching"],
                        capture_output=True, text=True)
     return r.stdout.strip() == "active"
 
@@ -91,7 +91,7 @@ def start_server() -> tuple[bool, str]:
 
 def stop_server() -> tuple[bool, str]:
     if _service_active():
-        subprocess.run(["systemctl", "--user", "stop", "insta-downloader"],
+        subprocess.run(["systemctl", "--user", "stop", "hardlywatching"],
                        capture_output=True, text=True)
         return True, "Service stopped."
     pid = read_pid()
@@ -114,7 +114,7 @@ def stop_server() -> tuple[bool, str]:
 
 def restart_server() -> tuple[bool, str]:
     if _service_active():
-        subprocess.run(["systemctl", "--user", "restart", "insta-downloader"],
+        subprocess.run(["systemctl", "--user", "restart", "hardlywatching"],
                        capture_output=True, text=True)
         return True, "Service restarted."
     stop_server()
@@ -150,7 +150,7 @@ class Panel:
     def build(self, app):
         Gtk = self.Gtk
         win = Gtk.ApplicationWindow(application=app)
-        win.set_title("Instagram Downloader")
+        win.set_title("HardlyWatching")
         win.set_default_size(380, 240)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -241,7 +241,7 @@ def run_gui() -> int:
     except Exception:
         return run_terminal_fallback()
 
-    app = Gtk.Application(application_id="ing.hardlysleep.insta-downloader")
+    app = Gtk.Application(application_id="ing.hardlysleep.hardlywatching")
     panel = Panel(Gtk, GLib)
 
     def on_activate(a):
@@ -252,7 +252,7 @@ def run_gui() -> int:
 
 
 def run_terminal_fallback() -> int:
-    print("Instagram Downloader")
+    print("HardlyWatching")
     print("  status:", "running" if running() else "stopped")
     print("  address:", URL)
     print()

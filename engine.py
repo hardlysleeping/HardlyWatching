@@ -51,9 +51,9 @@ def cache_dir() -> Path:
     """Standard per-user cache folder for this OS."""
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "insta-desktop" / "cache"
+        return Path(base) / "hardlywatching" / "cache"
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "insta-desktop"
+    return Path(base) / "hardlywatching"
 
 
 def instaloader_config_dir() -> Path:
@@ -70,7 +70,7 @@ def instaloader_config_dir() -> Path:
 
 OUTPUT_ROOT = Path(os.environ.get("INSTA_OUTPUT", Path.home() / "instagram"))
 STATE_FILE = Path(os.environ.get(
-    "INSTA_STATE", config_dir() / "insta-desktop" / "state.json"))
+    "INSTA_STATE", config_dir() / "hardlywatching" / "state.json"))
 INSTALOADER = shutil.which("instaloader") or str(Path.home() / ".local/bin/instaloader")
 
 
@@ -453,7 +453,7 @@ _MEDIA_CACHE: dict[str, tuple[tuple, list[str]]] = {}
 _MEDIA_CACHE_MAX = 512
 
 CACHE_DB = Path(os.environ.get(
-    "INSTA_CACHE_DB", config_dir() / "insta-desktop" / "gallery-cache.db"))
+    "INSTA_CACHE_DB", config_dir() / "hardlywatching" / "gallery-cache.db"))
 
 
 class _Cache:

@@ -72,8 +72,8 @@ You need **Python 3.10+** and an **Instagram account**. You do **not** need to
 install instaloader yourself — `run.py` does it for you (see below).
 
 ```bash
-git clone https://github.com/hardlysleeping/insta-desktop.git
-cd insta-desktop
+git clone https://github.com/hardlysleeping/hardlywatching.git
+cd hardlywatching
 python3 run.py
 ```
 
@@ -98,7 +98,7 @@ instaloader itself can still read the folder.
 ### Other ways to start it
 
 ```bash
-cd insta-desktop             # enter folder location
+cd hardlywatching            # enter folder location
 python3 run.py --service     # also set it up to start at login (Linux)
 python3 run.py --no-install  # don't install instaloader, just run
 python3 run.py --port 9000   # different port
@@ -134,7 +134,7 @@ INSTA_HOST=0.0.0.0 python3 run.py
 Then open `http://<machine-ip>:8765` — e.g. `http://100.x.y.z:8765` over
 Tailscale, or `http://192.168.1.50:8765` on the same wifi. On Windows, `set
 INSTA_HOST=0.0.0.0` first. For the systemd service, `systemctl --user edit
-insta-downloader` and add `Environment=INSTA_HOST=0.0.0.0` under `[Service]`.
+hardlywatching` and add `Environment=INSTA_HOST=0.0.0.0` under `[Service]`.
 
 **There is no authentication** — the UI can start logins and delete files. Only
 do this on a network you trust, never port-forwarded to the internet. The
@@ -146,8 +146,8 @@ makes sense from the machine it runs on.
 ```bash
 ./install-service.sh          # install + start, enabled at login
 ./install-service.sh remove   # stop + uninstall
-systemctl --user status insta-downloader
-journalctl --user -u insta-downloader -f
+systemctl --user status hardlywatching
+journalctl --user -u hardlywatching -f
 ```
 
 ---
@@ -163,7 +163,7 @@ Two pieces:
   gallery from the files on disk.
 
 A job is one profile. Jobs run **one at a time**. State lives in
-`~/.config/insta-desktop/state.json`, so closing the browser, restarting the app
+`~/.config/hardlywatching/state.json`, so closing the browser, restarting the app
 or rebooting all keep the queue, its order and any cooldown. Only a profile that
 was mid-download restarts from the beginning.
 
@@ -445,7 +445,7 @@ again. The panel shows it as incomplete instead of silently burning requests.
 | `~/instagram/tiktok/<handle>/` | Downloaded TikTok videos, kept apart so the two platforms cannot collide |
 | `~/instagram/tiktok/<handle>/.yt-dlp-archive.txt` | Which TikTok videos are already downloaded, so raising the count only fetches new ones |
 | `~/instagram/<username>/.insta-index.json` | Hidden record of what was there, used to spot file-manager deletions |
-| `~/.config/insta-desktop/state.json` | Queue, order, settings, cooldowns, deleted-post markers |
+| `~/.config/hardlywatching/state.json` | Queue, order, settings, cooldowns, deleted-post markers |
 | `~/.config/instaloader/session-<user>` | Instagram session, created by instaloader |
 | `~/.config/instaloader/latest-stamps.ini` | What has already been archived |
 | `.venv/` (next to `run.py`) | The private environment `run.py` creates |

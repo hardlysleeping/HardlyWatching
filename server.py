@@ -7,7 +7,7 @@ Environment:
   INSTA_PORT    port to bind (default 8765)
   INSTA_HOST    address to bind (default 127.0.0.1; use 0.0.0.0 for LAN/tailnet)
   INSTA_OUTPUT  where downloads go (default ~/instagram)
-  INSTA_STATE   where app state is kept (default ~/.config/insta-desktop/state.json)
+  INSTA_STATE   where app state is kept (default ~/.config/hardlywatching/state.json)
 """
 
 from __future__ import annotations
@@ -1015,7 +1015,7 @@ def main() -> None:
     url = f"http://{'127.0.0.1' if HOST in ('0.0.0.0', '::') else HOST}:{PORT}"
     print()
     print("=" * 56)
-    print(f"  Instagram Downloader is running at {url}")
+    print(f"  HardlyWatching is running at {url}")
     if PORT != want:
         print(f"  (port {want} was busy, so it used {PORT})")
     print("  It should have opened in your browser.")

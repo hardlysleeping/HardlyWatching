@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instagram Downloader -- one-command launcher.
+# HardlyWatching -- one-command launcher.
 #
 #   ./start.sh
 #
@@ -14,7 +14,7 @@ cd "$HERE"
 say() { printf '%s\n' "$*"; }
 
 say ""
-say "Instagram Downloader"
+say "HardlyWatching"
 say "--------------------"
 
 # 1. Python present?

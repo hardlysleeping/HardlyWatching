@@ -382,5 +382,5 @@ def _shared_db() -> "ProfileDB":
     global _shared
     if _shared is None:
         from engine import config_dir
-        _shared = ProfileDB(config_dir() / "insta-desktop" / "profiles.db")
+        _shared = ProfileDB(config_dir() / "hardlywatching" / "profiles.db")
     return _shared
