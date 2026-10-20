@@ -988,14 +988,25 @@ function render(st){
 
   // While anything is downloading, keep the profiles grid moving: a profile
   // mid-run is listed live, and its item count and badge should climb instead
-  // of waiting for a manual refresh. Only the profiles view is repainted --
-  // once a profile is open, its tiles are refreshed by its own path.
+  // of waiting for a manual refresh.
+  //
+  // The refresh must only repaint the profiles LIST. Anything else on screen
+  // belongs to the user -- a profile they opened, or the cross-profile
+  // Favourites/Trash view -- and repainting over it would throw away where
+  // they were. That was a real bug: the timer called renderGallery()
+  // unconditionally and snapped the All Favourites view back to the profiles
+  // list every 4 seconds. So the timer is only armed while that plain list is
+  // the thing on screen, and it is disarmed on any other view.
   const anyLive = !!(st.current)
     || (st.jobs||[]).some(j => j.status === "running" || j.status === "retrying");
-  if(!gProfile && $("galleryPane") && $("galleryPane").style.display !== "none"){
-    if(anyLive && !gTickLive){ gTickLive = setInterval(renderGallery, 4000); }
-    else if(!anyLive && gTickLive){ clearInterval(gTickLive); gTickLive = null; }
-  } else if(gTickLive && !anyLive){
+  const onPlainProfileList = !gProfile && gAll === null
+    && $("galleryPane") && $("galleryPane").style.display !== "none";
+  if(anyLive && onPlainProfileList && !gTickLive){
+    gTickLive = setInterval(() => {
+      // Re-check at fire time: the user may have navigated since it was armed.
+      if(!gProfile && gAll === null) renderGallery();
+    }, 4000);
+  } else if((!anyLive || !onPlainProfileList) && gTickLive){
     clearInterval(gTickLive); gTickLive = null;
   }
 
@@ -1628,6 +1639,24 @@ async function renderAllSection(section){
     sg.appendChild(b);
   }
   bar.appendChild(sg);
+
+  // Swipe mode. The point of this view is to sit and flip through everything
+  // liked on a phone, so the one thing it needs is a way in that starts at
+  // item 1 and keeps the whole list behind it -- the viewer's own arrows and
+  // swipe then move through the lot without ever going back to the grid.
+  if(posts.length){
+    const play = document.createElement("button");
+    play.className = "small";
+    play.style.marginLeft = "9px";
+    play.textContent = section === "favorites" ? "▶ Swipe favourites" : "▶ Swipe all";
+    play.title = "Open full screen and swipe through every item";
+    play.onclick = () => {
+      allViewList = sortPosts(posts);
+      allViewIndex = 0;
+      openAllItem();
+    };
+    bar.appendChild(play);
+  }
   host.innerHTML = "";
   host.appendChild(bar);
 
@@ -2375,11 +2404,52 @@ async function viewerTrash(){
   confirmTrash(vState.username, names, () => { closeViewer(); });
 }
 
+/* ---------- viewer: flat swipe list across profiles ---------- */
+
+// Set while the viewer was opened from the All Favourites / All Trash views.
+// null in every other case, so the normal per-profile stepping is unaffected.
+// Declared before stepViewer, which reads them.
+let allViewList = null;
+let allViewIndex = 0;
+
 function stepViewer(delta){
   if(!vState) return;
   const n = vState.srcs.length;
+  const atEnd = vState.idx >= n - 1;
+  const atStart = vState.idx <= 0;
+  // A post can be a carousel, so stepping moves within the post first and only
+  // then crosses into the next one. In the All Favourites / All Trash swipe
+  // mode the "next post" is the next entry of that flat list, which may belong
+  // to a different profile, so the whole set can be flipped through without
+  // ever returning to the grid.
+  if(allViewList){
+    if(delta > 0 && atEnd){
+      allViewIndex = (allViewIndex + 1) % allViewList.length;
+      openAllItem();
+      return;
+    }
+    if(delta < 0 && atStart){
+      allViewIndex = (allViewIndex - 1 + allViewList.length) % allViewList.length;
+      openAllItem();
+      return;
+    }
+  }
+  // NOTE: the early "nothing to step to" return must come *after* the flat-list
+  // handling. A single-image favourite has n === 1, so returning early on
+  // n < 2 made the swipe mode unable to advance past any ordinary photo --
+  // only carousels moved. Per-profile stepping still needs the guard, since
+  // with one item there is genuinely nowhere to go inside the post.
   if(n < 2) return;
   vState.idx = (vState.idx + delta + n) % n;
+  paintViewer();
+}
+
+function openAllItem(){
+  const post = allViewList && allViewList[allViewIndex];
+  if(!post) return;
+  // Each entry carries its own username, so the actions act on the right
+  // profile's files even though the list spans many.
+  openViewer(post.username, post, post.section || "favorites", 0);
   paintViewer();
 }
 
@@ -2391,6 +2461,10 @@ function closeViewer(){
     host.style.display = "none";
   }
   vState = null;
+  // Leaving the viewer ends swipe mode: the flat list belongs to the screen
+  // that started it, so it must not leak into a later per-profile view.
+  allViewList = null;
+  allViewIndex = 0;
 }
 
 document.addEventListener("keydown", (e) => {
@@ -2398,7 +2472,66 @@ document.addEventListener("keydown", (e) => {
   if(e.key === "Escape") closeViewer();
   else if(e.key === "ArrowRight") stepViewer(1);
   else if(e.key === "ArrowLeft") stepViewer(-1);
+  // Keyboard equivalents of the touch gestures, so the viewer is usable
+  // without a mouse: f favourites, t trashes (or restores), d downloads.
+  else if(e.key === "f" || e.key === "F"){ e.preventDefault(); viewerToggleFav(); }
+  else if(e.key === "t" || e.key === "T"){ e.preventDefault(); viewerTrash(); }
+  else if(e.key === "d" || e.key === "D"){ e.preventDefault(); viewerDownload(); }
 });
+
+/* ---------- viewer: swipe on touch ---------- */
+
+// On a phone there is no hover and no arrow keys, so the viewer takes a swipe.
+// Horizontal drag moves between items (the threshold is generous enough to
+// survive a thumb), vertical drag down closes it, which is the gesture people
+// already expect from a photo app. A short drag is treated as a tap and left
+// alone so the buttons and the video controls still work.
+(function viewerTouch(){
+  let x0 = 0, y0 = 0, t0 = 0, active = false;
+  const SWIPE_X = 45;   // px before a horizontal swipe counts
+  const SWIPE_Y = 70;   // px before a downward swipe counts
+  const MAX_MS = 700;   // a slow drag is a scroll, not a swipe
+
+  document.addEventListener("touchstart", (e) => {
+    if(!vState || e.touches.length !== 1) return;
+    // Only start on the media area, never on the bar's buttons.
+    const bar = document.querySelector(".vbar");
+    if(bar && bar.contains(e.target)) return;
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY;
+    t0 = Date.now(); active = true;
+  }, {passive: true});
+
+  document.addEventListener("touchend", (e) => {
+    if(!active || !vState) return;
+    active = false;
+    const t = e.changedTouches[0];
+    if(!t) return;
+    const dx = t.clientX - x0, dy = t.clientY - y0;
+    if(Date.now() - t0 > MAX_MS) return;
+    if(Math.abs(dx) > SWIPE_X && Math.abs(dx) > Math.abs(dy)){
+      stepViewer(dx < 0 ? 1 : -1);
+    } else if(dy > SWIPE_Y && Math.abs(dy) > Math.abs(dx)){
+      closeViewer();
+    }
+  }, {passive: true});
+})();
+
+// Double-tap the media to favourite, and to remove it again. This is the
+// gesture people already have from every photo app, so it needs no label.
+(function viewerDoubleTap(){
+  let last = 0;
+  document.addEventListener("touchend", (e) => {
+    if(!vState) return;
+    const bar = document.querySelector(".vbar");
+    if(bar && bar.contains(e.target)) return;
+    // Only fire on the media itself, never on empty space or the nav arrows.
+    const media = e.target && e.target.closest && e.target.closest(".vmedia");
+    if(!media) return;
+    const now = Date.now();
+    if(now - last < 300){ viewerToggleFav(); last = 0; }
+    else last = now;
+  }, {passive: true});
+})();
 
 function confirmTrash(username, names, onDone){
   const list = Array.isArray(names) ? names : [names];
