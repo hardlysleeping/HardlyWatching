@@ -2996,6 +2996,10 @@ class Engine:
                     # Ran clean but grabbed no posts at all: not a success. Most
                     # often Instagram served a degraded response. Retry rather
                     # than record an empty archive as done.
+                    #
+                    # Counted across every archive root, not just the one this
+                    # run wrote to: a profile archived on another drive used to
+                    # read as zero here and be marked failed while complete.
                     self._set(job, status="failed", finished_at=time.time(),
                               message="no posts downloaded",
                               error="instaloader reported success but no posts were saved")
@@ -3339,15 +3343,44 @@ class Engine:
         return "retryable"
 
     def _count_media(self, target_dir: Path) -> int:
-        """Number of media files saved for a profile (excludes metadata/json)."""
+        """Number of media files saved for a profile (excludes metadata/json).
+
+        Counts the given folder first, then the same profile in EVERY other
+        archive root. Without that, a profile whose files live on a different
+        drive than the current downloads folder counted as zero -- and the
+        caller treats zero as "nothing was downloaded", so a perfectly complete
+        archive was marked failed instead of done.
+        """
         exts = (".jpg", ".jpeg", ".png", ".mp4", ".webp", ".heic")
+        seen: set[str] = set()
         n = 0
-        try:
-            for p in target_dir.rglob("*"):
-                if p.is_file() and p.suffix.lower() in exts and "_profile_pic" not in p.name:
-                    n += 1
-        except OSError:
-            pass
+
+        def _tally(folder: Path) -> int:
+            if not folder.is_dir():
+                return 0
+            # Two roots can be the same place spelled differently (/home and
+            # /home), so count each real directory once.
+            real = _resolve(folder)
+            key = str(real) if real is not None else str(folder)
+            if key in seen:
+                return 0
+            seen.add(key)
+            found = 0
+            try:
+                for p in folder.rglob("*"):
+                    if p.is_file() and p.suffix.lower() in exts \
+                            and "_profile_pic" not in p.name:
+                        found += 1
+            except OSError:
+                pass
+            return found
+
+        n += _tally(target_dir)
+        name = target_dir.name
+        for root in self.roots:
+            if _same(root, target_dir.parent):
+                continue          # already counted above
+            n += _tally(root / name)
         return n
 
     def _is_partial(self, job: Job, target_dir: Path) -> tuple[bool, str]:
