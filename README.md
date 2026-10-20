@@ -1,9 +1,21 @@
 # Instagram Downloader
 
-A small local web UI for bulk-archiving Instagram profiles with
-[instaloader](https://instaloader.github.io/). Paste a list of profiles, press
-start, and watch progress in the browser. One profile downloads at a time, with
-pacing and automatic back-off so you don't get rate-limited.
+**A local web interface for [instaloader](https://instaloader.github.io/).**
+This project is a frontend only: all downloading is done by
+[instaloader](https://github.com/instaloader/instaloader), the established
+command-line tool (GPL-3.0, also on
+[PyPI](https://pypi.org/project/instaloader/)). Nothing in this repo reimplements
+it or talks to Instagram directly — it builds instaloader's command line, runs it,
+and shows you the queue and the files.
+
+If you only want to download something once, use
+[instaloader on its own](https://instaloader.github.io/) — it needs no UI. This
+is for keeping a large archive over time: a persistent queue, pacing, resumable
+runs, and a gallery to browse what you have.
+
+Paste a list of profiles, press start, and watch progress in the browser. One
+profile downloads at a time, with pacing and automatic back-off so you don't get
+rate-limited.
 
 Everything runs on your own machine. Nothing is sent anywhere except to
 Instagram, by instaloader, using your own logged-in session.
