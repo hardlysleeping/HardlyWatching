@@ -21,6 +21,7 @@ import queue
 import random
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -412,8 +413,104 @@ GALLERY_VIDEO_EXTS = {".mp4", ".mov"}
 # mtime changes on exactly those events, so the result is cached against it.
 # Keyed by (folder, dir mtime, dir size) so a rename that preserves mtime still
 # misses. Entries are dropped when a folder disappears.
+#
+# The same rows also live in a SQLite file (see _Cache), because an in-memory
+# cache is empty after every restart and the first load of each profile then
+# pays the full scan again. The SQLite copy makes a cold start as fast as a
+# warm one. The filesystem is always the source of truth: a row is only ever
+# used when its stamp still matches the directory on disk, so a stale or
+# corrupt cache degrades to a rescan and can never show a wrong list.
 _MEDIA_CACHE: dict[str, tuple[tuple, list[str]]] = {}
 _MEDIA_CACHE_MAX = 512
+
+CACHE_DB = Path(os.environ.get(
+    "INSTA_CACHE_DB", config_dir() / "insta-desktop" / "gallery-cache.db"))
+
+
+class _Cache:
+    """SQLite-backed mirror of the folder listing cache.
+
+    One row per folder: the stamp it was computed from and the resulting list
+    of names, as newline-joined text (the names are instaloader's filenames and
+    a line-separated blob is far cheaper to store and read than JSON per key).
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.conn = None
+        self._lock = threading.Lock()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(str(path), check_same_thread=False)
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS media ("
+                " folder TEXT PRIMARY KEY,"
+                " mtime_ns INTEGER, size INTEGER, inode INTEGER,"
+                " names TEXT,"
+                " posts TEXT,"
+                " updated REAL)")
+            self.conn.commit()
+        except Exception:
+            # A cache that cannot be opened is not an error: the app simply
+            # scans the disk as it did before.
+            self.conn = None
+
+    def get(self, folder: str, stamp: tuple) -> list[str] | None:
+        if self.conn is None:
+            return None
+        try:
+            with self._lock:
+                row = self.conn.execute(
+                    "SELECT mtime_ns, size, inode, names FROM media WHERE folder=?",
+                    (folder,)).fetchone()
+        except Exception:
+            return None
+        if not row:
+            return None
+        if (row[0], row[1], row[2]) != stamp:
+            return None                    # directory changed -> rescan
+        return row[3].split("\n") if row[3] else []
+
+    def put(self, folder: str, stamp: tuple, names: list[str]) -> None:
+        if self.conn is None:
+            return
+        try:
+            with self._lock:
+                self.conn.execute(
+                    "INSERT INTO media (folder, mtime_ns, size, inode, names, updated)"
+                    " VALUES (?,?,?,?,?,?)"
+                    " ON CONFLICT(folder) DO UPDATE SET"
+                    " mtime_ns=excluded.mtime_ns, size=excluded.size,"
+                    " inode=excluded.inode, names=excluded.names,"
+                    " updated=excluded.updated",
+                    (folder, stamp[0], stamp[1], stamp[2], "\n".join(names), time.time()))
+                self.conn.commit()
+        except Exception:
+            pass
+
+    def drop(self, folder: str) -> None:
+        if self.conn is None:
+            return
+        try:
+            with self._lock:
+                self.conn.execute("DELETE FROM media WHERE folder=?", (folder,))
+                self.conn.commit()
+        except Exception:
+            pass
+
+    def stats(self) -> dict:
+        if self.conn is None:
+            return {"enabled": False}
+        try:
+            with self._lock:
+                n = self.conn.execute("SELECT COUNT(*) FROM media").fetchone()[0]
+            return {"enabled": True, "folders": n, "path": str(self.path)}
+        except Exception:
+            return {"enabled": False}
+
+
+_cache = _Cache(CACHE_DB)
 
 
 def _dir_stamp(folder: Path) -> tuple | None:
@@ -430,11 +527,22 @@ def _gallery_media(folder: Path) -> list[str]:
     stamp = _dir_stamp(folder)
     if stamp is None:
         _MEDIA_CACHE.pop(key, None)
+        _cache.drop(key)
         return []
 
     hit = _MEDIA_CACHE.get(key)
     if hit is not None and hit[0] == stamp:
         return hit[1]
+
+    # Memory is empty on the first request after a restart, so ask the SQLite
+    # mirror before rescanning the folder. A row is only honoured when its
+    # stamp matches the directory right now.
+    disk = _cache.get(key, stamp)
+    if disk is not None:
+        if len(_MEDIA_CACHE) >= _MEDIA_CACHE_MAX:
+            _MEDIA_CACHE.clear()
+        _MEDIA_CACHE[key] = (stamp, disk)
+        return disk
 
     names = []
     try:
@@ -460,6 +568,7 @@ def _gallery_media(folder: Path) -> list[str]:
     if len(_MEDIA_CACHE) >= _MEDIA_CACHE_MAX:
         _MEDIA_CACHE.clear()
     _MEDIA_CACHE[key] = (stamp, names)
+    _cache.put(key, stamp, names)
     return names
 
 

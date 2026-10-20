@@ -25,7 +25,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from engine import (Engine, OUTPUT_ROOT, clean_profile_name, make_preview,
-                    make_thumb)
+                    make_thumb, _cache)
 
 HERE = Path(__file__).resolve().parent
 
@@ -177,6 +177,9 @@ class Handler(BaseHTTPRequestHandler):
             get_engine().watchdog()
             snap = get_engine().snapshot()
             snap["roots"] = get_engine().roots_status()
+            # Surface the on-disk listing cache so its state is inspectable
+            # rather than a silent performance mystery.
+            snap["cache"] = _cache.stats()
             return self._json(snap)
         if p == "/api/profile-pic":
             from urllib.parse import parse_qs
