@@ -169,11 +169,26 @@
   .pill.queued{color:var(--muted)}
   /* Per-profile video count for TikTok. Sits under the name, wraps on narrow
      windows rather than pushing the card layout around. */
-  .ttcount{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px}
-  .ttcount button{padding:2px 7px;font-size:11px;line-height:1.5;min-width:0}
-  .ttcount .ttwhat{font-size:11px;color:var(--muted);margin-right:2px}
-  .ttcount .ttnout{font-size:12px;font-variant-numeric:tabular-nums;color:var(--muted);
-                   padding:0 6px;min-width:56px;text-align:center;white-space:nowrap}
+  /* Per-profile video count. Given its own row so it never competes with the
+     action buttons for the card's right-hand column -- when the two shared a
+     line the buttons jumped between rows and every card had a different
+     height. */
+  .ttcount{display:flex;align-items:center;gap:3px;flex-wrap:nowrap;
+           margin-top:7px;overflow-x:auto;scrollbar-width:none}
+  .ttcount::-webkit-scrollbar{display:none}
+  .ttcount .ttwhat{font-size:10.5px;color:var(--muted);text-transform:uppercase;
+                   letter-spacing:.03em;margin-right:5px;white-space:nowrap;flex:none}
+  /* Steppers are deliberately quiet: the number is the thing to read, and seven
+     button-shaped boxes at full weight made a single card shout. */
+  .ttcount button{padding:1px 0;font-size:11px;line-height:1.5;min-width:26px;flex:none;
+                  background:transparent;border:1px solid var(--line-2);
+                  color:var(--muted);border-radius:6px}
+  .ttcount button:hover:not(:disabled){background:var(--panel-2);color:var(--text);
+                  border-color:var(--accent-2)}
+  .ttcount button:disabled{opacity:.35}
+  .ttcount .ttnout{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;
+                   color:var(--text);padding:0 7px;white-space:nowrap;flex:none}
+  .ttcount .ttsep{width:1px;height:14px;background:var(--line-2);margin:0 4px;flex:none}
   .pill.running{color:var(--run);border-color:#2d4a7a}
   .pill.retrying{color:var(--warn);border-color:#5a4a1e}
   .pill.done{color:var(--ok);border-color:#1f5138}
@@ -1891,11 +1906,11 @@ function cardHtml(j, pos, qpos){
 
     return `<div class="card ${esc(j.status)}">
       <div class="num-badge" style="gap:6px;display:flex;flex-direction:column;align-items:center">
-        ${pos?`<span style="font-size:11px">${pos}</span>`:""}${thumbHtml(j.username)}</div>
+        ${pos?`<span style="font-size:11px">${pos}</span>`:""}${j.platform==="tiktok"?"":thumbHtml(j.username)}</div>
       <div>
         <div class="top">
-          <span class="name clickable" data-profile="${esc(j.username)}"
-                title="Show ${esc(j.username)} on Instagram">${esc(j.username)}</span>
+          <span class="name clickable" data-profile="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}"
+                title="Open ${esc(j.username)}">${esc(j.username)}</span>
           ${j.passes ? passPills(j.passes) : ""}
           ${j.platform==="tiktok"?'<span class="pill tiktok" title="Downloaded with yt-dlp">tiktok</span>':'<span class="pill ig" title="Downloaded with instaloader">instagram</span>'}
           ${j.kind==="reels"?'<span class="pill reels" title="Reels-only pass">reels</span>':""}
@@ -1932,15 +1947,19 @@ function ttCountBar(j){
   // own is ambiguous -- it could as easily mean 5 downloaded out of 379.
   const tip = "How many videos to grab, starting from the most recent";
   const label = cur ? `newest ${shown} of ${tot || "?"}` : `all ${tot || ""}`.trim();
+  // Number first and largest, steppers quieter either side. Reading left to
+  // right: how many, then the ways to change it.
   return `<div class="ttcount" data-ttid="${esc(j.id)}" title="${tip}">
       <span class="ttwhat">grab newest</span>
-      <button class="small" data-ttminus="-5" title="Grab 5 fewer videos" ${cur<=1?"disabled":""}>−5</button>
-      <button class="small" data-ttminus="-15" title="Grab 15 fewer videos" ${cur<=1?"disabled":""}>−15</button>
       <span class="ttnout" title="${tip} — ${label}">${out}</span>
-      <button class="small" data-ttadd="5" title="Grab 5 more videos">+5</button>
-      <button class="small" data-ttadd="15" title="Grab 15 more videos">+15</button>
-      <button class="small" data-ttadd="25" title="Grab 25 more videos">+25</button>
-      <button class="small" data-ttall="1" title="Grab every video on the profile">all</button>
+      <span class="ttsep"></span>
+      <button class="small" data-ttminus="-15" title="15 fewer" ${cur<=1?"disabled":""}>−15</button>
+      <button class="small" data-ttminus="-5" title="5 fewer" ${cur<=1?"disabled":""}>−5</button>
+      <button class="small" data-ttadd="5" title="5 more">+5</button>
+      <button class="small" data-ttadd="15" title="15 more">+15</button>
+      <button class="small" data-ttadd="25" title="25 more">+25</button>
+      <span class="ttsep"></span>
+      <button class="small" data-ttall="1" title="Every video on the profile">all</button>
     </div>`;
 }
 
