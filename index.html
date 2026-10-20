@@ -3253,6 +3253,13 @@ function drawPhotos(username, sec){
   }
 
   host.appendChild(grid);
+  // The ordered posts on screen, for arrow-key walking in the viewer. While a
+  // tile is enlarged, ← and → move through this list, crossing into the next
+  // photo when the current one has no more parts. Headings are not posts, so
+  // they are stripped here.
+  gridWalk = jobs.filter(j => !j.heading).map(j => ({post: j.post,
+                                                     section: j.section,
+                                                     username}));
   pageGrid(grid, username, jobs);
 }
 
@@ -3540,6 +3547,12 @@ function openViewer(username, post, section, idx){
   const srcSection = post.section || section;
   const srcs = post.items.map(i => ({item:i, src:mediaSrc(i, username, srcSection)}));
   vState = {username, post, section: srcSection, idx: idx||0, srcs};
+  // Remember where this post sits in the grid, so ← and → continue from here
+  // rather than jumping back to the top of the list every time.
+  if(gridWalk){
+    const at = gridWalk.findIndex(w => w.post === post);
+    if(at >= 0) gridWalkAt = at;
+  }
   let host = document.getElementById("vwrap");
   if(!host){
     host = document.createElement("div");
@@ -3720,6 +3733,11 @@ async function viewerTrash(){
 let allViewList = null;
 let allViewIndex = 0;
 
+// The grid behind the viewer, so ← and → can cross into the next photo instead
+// of dead-ending on a single-image post. Built by drawPhotos via gridWalk.
+let gridWalk = null;
+let gridWalkAt = -1;
+
 function stepViewer(delta){
   if(!vState) return;
   const n = vState.srcs.length;
@@ -3747,6 +3765,26 @@ function stepViewer(delta){
   // n < 2 made the swipe mode unable to advance past any ordinary photo --
   // only carousels moved. Per-profile stepping still needs the guard, since
   // with one item there is genuinely nowhere to go inside the post.
+
+  // The grid behind the viewer is a third kind of "next": most posts are a
+  // single photo, so without this the arrows dead-ended and the only way to
+  // see the next picture was to close the viewer and click it. Move through the
+  // post's own parts first, then cross into the neighbouring post, wrapping at
+  // the ends of the grid the same way the parts of a carousel do.
+  if(gridWalk && gridWalk.length > 1){
+    const crossing = (delta > 0 && atEnd) || (delta < 0 && atStart);
+    if(crossing){
+      const len = gridWalk.length;
+      gridWalkAt = (gridWalkAt + delta + len) % len;
+      const w = gridWalk[gridWalkAt];
+      // The grid knows its profile; the flat favourites/trash lists carry the
+      // owner on each post instead, so prefer whichever is present.
+      openViewer(w.username || w.post.username || vState.username,
+                 w.post, w.section, 0);
+      return;
+    }
+  }
+
   if(n < 2) return;
   vState.idx = (vState.idx + delta + n) % n;
   paintViewer();
@@ -3777,6 +3815,10 @@ function closeViewer(){
 
 document.addEventListener("keydown", (e) => {
   if(!vState) return;
+  // The viewer is an overlay, but focus can sit in a settings field behind it.
+  // Arrow keys there must edit the text, not flip photos.
+  const t = e.target;
+  if(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
   if(e.key === "Escape") closeViewer();
   else if(e.key === "ArrowRight") stepViewer(1);
   else if(e.key === "ArrowLeft") stepViewer(-1);
