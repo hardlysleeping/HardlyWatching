@@ -2776,23 +2776,33 @@ class Engine:
                 msg = "complete" if outcome == "ok" else "complete (with warnings)"
 
                 # Self-heal a fragment: if instaloader said there were more posts
-                # than it fetched, re-queue once with fast_update disabled so the
-                # gap actually gets filled instead of being frozen forever.
+                # than it fetched, re-queue once so the gap actually gets filled
+                # instead of being frozen forever.
+                #
+                # This used to switch fast_update OFF for the heal, which was
+                # both destructive and permanent: --fast-update stops at the
+                # first file already on disk, so the heal walked and rewrote the
+                # entire profile -- thousands of files that were already there --
+                # and the job kept that setting forever, so every later run did
+                # the same. The gap is usually near the top of the profile, where
+                # fast-update still reaches it, and files already present are
+                # skipped either way, so healing with fast-update ON fills the
+                # hole without touching what is already archived.
                 partial, why = self._is_partial(job, target_dir)
                 if partial and job.heal_attempts < 2:
                     with self.lock:
                         self.consecutive_limits = 0
                     job.heal_attempts += 1
                     self._set(job,
-                              settings={**(job.settings or {}), "fast_update": False},
                               status="queued",
                               started_at=None,
                               finished_at=None,
                               done_count=0,
                               total_count=0,
-                              message=f"partial ({why}) — refetching in full")
+                              message=f"partial ({why}) — checking for the missing posts")
                     self._log(job, f"! only {job.done_count}/{job.total_count} posts; "
-                                   f"re-queueing a full pass")
+                                   f"re-queueing a check for the gap (keeping "
+                                   f"--fast-update so nothing is re-downloaded)")
                     with self.lock:
                         self.pending[:] = [x for x in self.pending if x != job.id]
                         self.pending.append(job.id)
