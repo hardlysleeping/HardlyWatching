@@ -669,6 +669,7 @@ the rows that happened to be on screen.
       Nothing is deleted — <b>Restore</b> returns them to the queue.
     </p>
     <div id="ttExcluded" class="hint">—</div>
+    <div class="hint" id="ttExcludedMsg" style="margin-top:6px;color:var(--ok)"></div>
     <div class="row" id="ttExcludedActions" style="display:none">
       <button class="small" id="ttRestoreAllBtn">Restore all</button>
     </div>
@@ -2422,6 +2423,16 @@ $("changeFolderBtn").addEventListener("click", () => {
 buildSettings();
 applySettingsPlatform("ig");
 loadAutostart();
+// One header painter for the whole page. Leaving the Download tab's line to the
+// static HTML meant it read "Instagram and TikTok -> one queue, one gallery" on
+// a fresh load and the platform-specific line every time after, so the same tab
+// said two different things.
+paintHeader("queue");
+loadExcluded();
+// Excluded only changes when something is removed, so it does not need the
+// 1.2s poll. A slow refresh means whoever was just removed appears without a
+// page reload; loadExcluded skips the rebuild when the list is unchanged.
+setInterval(loadExcluded, 10000);
 $("autostartBtn").onclick = async () => {
   const btn = $("autostartBtn");
   const want = btn.dataset.want === "1";
@@ -2590,18 +2601,26 @@ $("subTt").onclick = () => showPlatform("tt");
 // Excluded is its own list so it never sits in the way of the queue or the
 // import box. Restoring is one click and puts the person back in the queue;
 // TikTok's archive file means already-downloaded videos are not fetched again.
+let excludedSig = null;
+
 async function loadExcluded(){
   const box = $("ttExcluded");
   try{
     // No platform filter: one list for both tools, because the question is
     // "who did I remove", not "who did I remove from TikTok".
     const r = await post("/api/excluded", {});
+    const rows = r.profiles || [];
     const n = r.count || 0;
     $("ttExcludedCount").textContent = n ? `(${n})` : "";
     $("ttExcludedActions").style.display = n ? "" : "none";
+    // Rebuilding identical rows would wipe a per-row "Failed — retry" label and
+    // re-render underneath the cursor, so a refresh only paints on a real change.
+    const sig = rows.map(p => `${p.platform}:${p.handle}:${p.reason}`).join("|");
+    if(sig === excludedSig) return;
+    excludedSig = sig;
     if(!n){ box.textContent = "Nobody excluded."; return; }
     const why = {removed_from_queue:"removed", deleted_from_gallery:"deleted"};
-    box.innerHTML = r.profiles.map(p => `
+    box.innerHTML = rows.map(p => `
       <div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #222">
         <span>${esc(p.handle)}
           <span class="pill ${p.platform === "tiktok" ? "tiktok" : "ig"}">${esc(p.platform)}</span>
@@ -2614,10 +2633,20 @@ async function loadExcluded(){
         try{
           const res = await post("/api/restore", {handles:[b.dataset.restore],
                                                   platform:b.dataset.platform});
-          if(res.ok) b.textContent = "Restored";
-          else b.textContent = "Failed";
-          loadExcluded();
-        }catch(e){ b.textContent = "Failed"; b.disabled = false; }
+          if(res.ok){
+            $("ttExcludedMsg").textContent = `Restored ${b.dataset.restore} to the queue.`;
+            excludedSig = null;          // the row is gone now, so repaint
+            loadExcluded();
+          }else{
+            // Say it on the button and leave it there. Repainting after a failure
+            // used to erase the only sign that it had not worked.
+            b.textContent = "Failed — retry";
+            b.disabled = false;
+          }
+        }catch(e){
+          b.textContent = "Failed — retry";
+          b.disabled = false;
+        }
       };
     });
   }catch(e){ box.textContent = "Could not load the excluded list."; }
@@ -2625,10 +2654,13 @@ async function loadExcluded(){
 
 $("ttRestoreAllBtn").onclick = async () => {
   if(!confirm("Restore everyone on the excluded list back into the queue?")) return;
+  const btn = $("ttRestoreAllBtn"), msg = $("ttExcludedMsg");
+  btn.disabled = true;
+  msg.textContent = "Restoring…";
   try{
     const r = await post("/api/excluded", {});
     const rows = r.profiles || [];
-    if(!rows.length) return;
+    if(!rows.length){ msg.textContent = "Nobody is excluded."; return; }
     // Restored by platform, because a handle can exist on both and they are
     // different accounts.
     let restored = 0, queued = 0;
@@ -2639,9 +2671,14 @@ $("ttRestoreAllBtn").onclick = async () => {
       restored += res.restored || 0;
       queued += res.queued || 0;
     }
-    $("ttResult").textContent = `Restored ${restored}, queued ${queued}.`;
+    // The card's own message, not #ttResult: that box lives inside the TikTok
+    // pane, so pressing Restore on the Instagram sub-tab said nothing at all.
+    msg.textContent = `Restored ${restored} back to the queue.`;
+    toast(`Restored ${restored}`);
+    excludedSig = null;
     loadExcluded();
-  }catch(e){ $("ttResult").textContent = "Restore failed."; }
+  }catch(e){ msg.textContent = "Restore failed — nothing changed."; }
+  finally{ btn.disabled = false; }
 };
 
 $("ttCheckBtn").onclick = async () => {

@@ -3020,6 +3020,17 @@ class Engine:
         """
         now = time.time()
         if self.paused:
+            # A 429 sets paused *and* cooldown_until. If this pause came from a
+            # rate limit, report that with its real deadline -- otherwise this
+            # branch shadows the cooldown check below and the UI shows a bare
+            # "paused", which is indistinguishable from the user pausing it and
+            # gives no countdown.
+            if self._limit_paused:
+                cd = max(0, int(self.cooldown_until - now))
+                if cd > 0:
+                    return {"kind": "rate_limit", "remaining": cd,
+                            "total": cd, "until": self.cooldown_until,
+                            "label": "rate limited"}
             return {"kind": "paused", "remaining": 0, "total": 0,
                     "until": 0, "label": "paused"}
         cd = int(self.cooldown_until - now)

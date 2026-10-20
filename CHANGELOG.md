@@ -40,6 +40,19 @@ versioning is [SemVer](https://semver.org/).
   a unique temp file, fsynced, validated, then swapped in, with the previous
   state kept as a backup; loading recovers the first valid object from trailing
   garbage and falls back through the backups.
+- **The excluded list never appeared until you pressed Restore all.** It is read
+  once when the page loads and refreshed on a slow timer, so someone you remove
+  mid-session shows up without a reload.
+- **Restore reported into the wrong pane.** Its message went to the TikTok import
+  box, which is hidden on the Instagram sub-tab — so pressing Restore could do
+  its job and say nothing. It now reports on the Excluded card itself, and a
+  restore that fails leaves its "Failed — retry" on the button instead of
+  repainting over it.
+- **A rate-limit pause looked identical to pausing it yourself.** The queue
+  reported a bare "paused" with no countdown; it now says it is rate limited and
+  counts down to when it resumes by itself.
+- **The Download tab's header said two different things** — one line in the
+  static HTML on a fresh load, another after any tab switch.
 
 ## [0.1.0] — 2026-10-20
 
