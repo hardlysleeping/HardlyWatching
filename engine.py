@@ -405,22 +405,62 @@ GALLERY_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov"}
 GALLERY_VIDEO_EXTS = {".mp4", ".mov"}
 
 
+# Listing a profile folder means touching every file in it: the biggest
+# archives here hold ~6,700 posts, and /api/gallery lists all of them on every
+# request, which measured at ~0.7s of pure syscall overhead to produce 5KB of
+# JSON. The list only changes when a file is added or removed, and a directory's
+# mtime changes on exactly those events, so the result is cached against it.
+# Keyed by (folder, dir mtime, dir size) so a rename that preserves mtime still
+# misses. Entries are dropped when a folder disappears.
+_MEDIA_CACHE: dict[str, tuple[tuple, list[str]]] = {}
+_MEDIA_CACHE_MAX = 512
+
+
+def _dir_stamp(folder: Path) -> tuple | None:
+    try:
+        st = folder.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
 def _gallery_media(folder: Path) -> list[str]:
     """Names of displayable media directly inside `folder` (sorted)."""
+    key = str(folder)
+    stamp = _dir_stamp(folder)
+    if stamp is None:
+        _MEDIA_CACHE.pop(key, None)
+        return []
+
+    hit = _MEDIA_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+
+    names = []
     try:
-        entries = list(folder.iterdir())
+        # scandir() hands back the file type from the directory read itself, so
+        # the per-entry is_file() syscall mostly disappears. st_size still costs
+        # a stat, but only for entries that are already known to be media.
+        with os.scandir(folder) as it:
+            for entry in it:
+                try:
+                    if not entry.is_file():
+                        continue
+                    if os.path.splitext(entry.name)[1].lower() not in GALLERY_EXTS:
+                        continue
+                    if entry.stat().st_size == 0:  # truncated by an interrupted download
+                        continue
+                except OSError:
+                    continue
+                names.append(entry.name)
     except OSError:
         return []
-    names = []
-    for entry in entries:
-        if not entry.is_file():
-            continue
-        if entry.suffix.lower() not in GALLERY_EXTS:
-            continue
-        if entry.stat().st_size == 0:  # truncated by an interrupted download
-            continue
-        names.append(entry.name)
-    return sorted(names)
+
+    names.sort()
+    if len(_MEDIA_CACHE) >= _MEDIA_CACHE_MAX:
+        _MEDIA_CACHE.clear()
+    _MEDIA_CACHE[key] = (stamp, names)
+    return names
 
 
 def _parse_filename_date(name: str) -> float:
@@ -710,29 +750,65 @@ def gallery_sections(self, username: str) -> dict:
     return out
 
 
+# A profile is listed in the gallery once it has files on disk, even while it
+# is still downloading. Previously only status=="done" was listed, which was
+# fine when a queued profile had nothing to show -- but downloads now land
+# immediately, so a profile mid-run had hundreds of files and was invisible
+# until it finished. Its folder is scanned live, so the tiles fill in as it
+# goes; the badge tells the UI which ones are still moving.
+GALLERY_LIVE_STATUSES = {"running", "retrying", "queued", "paused"}
+
+
 def gallery_profiles(self) -> list[dict]:
-    """Profiles whose archive is done and still present on disk."""
+    """Profiles with files on disk, including ones still downloading."""
     out = []
     with self.lock:
         jobs = list(self.jobs.values())
+    # One entry per person: a profile has up to three jobs (main, reels,
+    # tagged) and the main one decides the folder and the status, so the
+    # others never produce a second entry.
+    mains = {}
     for job in jobs:
-        if job.status != "done" or job.kind != "main":
+        if job.kind != "main":
             continue
+        mains[job.username] = job
+    # A profile can also exist on disk with no job at all (an archive copied
+    # in by hand), which the roots still know about.
+    on_disk = []
+    for root in self.roots:
+        try:
+            with os.scandir(root) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir():
+                            on_disk.append(entry.name)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    for username in sorted(set(mains) | set(on_disk)):
+        job = mains.get(username)
         # A root that is not mounted resolves to None here, so profiles on an
         # unplugged drive are simply absent from the list -- they reappear on
         # the next request once the drive is back.
-        folder = self.root_for(job.username)
+        folder = self.root_for(username)
         if folder is None:
             continue
         media = _gallery_media(folder)
         if not media:
             continue
+        status = job.status if job else "done"
         out.append({
-            "username": job.username,
-            "id": job.id,
+            "username": username,
+            "id": job.id if job else username,
             "count": len(media),
-            "posts": job.posts,
+            "posts": job.posts if job else len(media),
             "root": str(folder.parent),
+            "status": status,
+            "downloading": status in GALLERY_LIVE_STATUSES,
+            # Progress within the current run, for the tile's progress hint.
+            "done_count": job.done_count if job else 0,
+            "total_count": job.total_count if job else 0,
         })
     out.sort(key=lambda p: p["username"].lower())
     return out

@@ -212,6 +212,13 @@
   .pcard:hover{border-color:var(--accent);transform:translateY(-2px)}
   .pcard .av{width:64px;height:64px;border-radius:50%;object-fit:cover;
     background:var(--panel-3);display:block;margin:0 auto 8px;border:1px solid var(--line-2)}
+  /* A profile still downloading is listed live, marked so the count climbing
+     underneath reads as progress rather than as a bug. */
+  .pcard.live{border-color:#5a4a1e}
+  .pcard .livebadge{position:absolute;top:7px;right:7px;font-size:10px;
+    padding:2px 7px;border-radius:999px;background:rgba(0,0,0,.75);
+    color:var(--warn);border:1px solid #5a4a1e;white-space:nowrap}
+  .pcard{position:relative}
   .pcard .nm{font-size:12px;color:var(--text);word-break:break-all;line-height:1.3}
   .pcard .ct{font-size:11px;color:var(--muted);margin-top:3px}
   .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:9px}
@@ -979,6 +986,19 @@ function render(st){
     (c.failed?` · <b style="color:var(--err)">${c.failed} failed</b>`:"");
   $("queueHint").textContent = st.current ? "downloading: "+st.current : "";
 
+  // While anything is downloading, keep the profiles grid moving: a profile
+  // mid-run is listed live, and its item count and badge should climb instead
+  // of waiting for a manual refresh. Only the profiles view is repainted --
+  // once a profile is open, its tiles are refreshed by its own path.
+  const anyLive = !!(st.current)
+    || (st.jobs||[]).some(j => j.status === "running" || j.status === "retrying");
+  if(!gProfile && $("galleryPane") && $("galleryPane").style.display !== "none"){
+    if(anyLive && !gTickLive){ gTickLive = setInterval(renderGallery, 4000); }
+    else if(!anyLive && gTickLive){ clearInterval(gTickLive); gTickLive = null; }
+  } else if(gTickLive && !anyLive){
+    clearInterval(gTickLive); gTickLive = null;
+  }
+
   // Only show cleanup actions when there is something to clean up.
   $("retryAllBtn").style.display = (c.failed>0) ? "" : "none";
   $("clearBtn").style.display = ((c.done||0)+(c.failed||0)+(c.cancelled||0)) ? "" : "none";
@@ -1719,33 +1739,99 @@ function changeFolderDialog(current){
   inp.focus();
 }
 
+// One button cycling A-Z -> Z-A -> most items -> fewest items. The choice
+// lives in localStorage so it survives a reload, and the button label always
+// says what the CURRENT order is (not what clicking will do), because that is
+// the question you actually ask when you look at the grid.
+const PROFILE_SORTS = [
+  {key:"az",    label:"A→Z",   title:"Sorted A to Z"},
+  {key:"za",    label:"Z→A",   title:"Sorted Z to A"},
+  {key:"most",  label:"most",  title:"Most items first"},
+  {key:"few",   label:"fewest",title:"Fewest items first"},
+];
+// Interval that repaints the grid while downloads are live; null when idle.
+let gTickLive = null;
+// Note: gSort above is the *photo* grid's shuffle order (random/newest/oldest).
+// This is the profiles list order, so it gets its own name.
+let gProfileSort = localStorage.getItem("gProfileSort") || "az";
+if(!PROFILE_SORTS.some(s => s.key === gProfileSort)) gProfileSort = "az";
+
+function profileSortIndex(){ return PROFILE_SORTS.findIndex(s => s.key === gProfileSort); }
+
+function cycleProfileSort(){
+  gProfileSort = PROFILE_SORTS[(profileSortIndex() + 1) % PROFILE_SORTS.length].key;
+  localStorage.setItem("gProfileSort", gProfileSort);
+  renderGallery();
+}
+
+function sortProfiles(list){
+  const byName = (a,b) => a.username.toLowerCase().localeCompare(b.username.toLowerCase());
+  const out = [...list];
+  if(gProfileSort === "za")   out.sort((a,b) => byName(b,a));
+  else if(gProfileSort === "most") out.sort((a,b) => (b.count - a.count) || byName(a,b));
+  else if(gProfileSort === "few")  out.sort((a,b) => (a.count - b.count) || byName(a,b));
+  else out.sort(byName);
+  return out;
+}
+
+// The sort button lives next to the gallery hint, so it is created once and
+// only its label changes.
+function buildSortBtn(){
+  const hint = $("galleryHint");
+  if(!hint || $("sortBtn")) return;
+  const b = document.createElement("button");
+  b.id = "sortBtn";
+  b.className = "small";
+  b.style.marginLeft = "9px";
+  b.onclick = cycleProfileSort;
+  hint.parentNode.insertBefore(b, hint.nextSibling);
+}
+
+function paintSortBtn(){
+  const b = $("sortBtn");
+  if(!b) return;
+  const s = PROFILE_SORTS[profileSortIndex()];
+  b.textContent = "sort: " + s.label;
+  b.title = s.title + " — click to change";
+}
+
 async function renderGallery(){
   const host = $("profileGrid");
   if(gProfile) return renderPhotos(gProfile);
   const mine = ++gReq;
-  host.innerHTML = `<div class="gempty">Loading…</div>`;
+  buildSortBtn();
+  paintSortBtn();
+  // A repaint while profiles are downloading must not flash the grid away,
+  // so only show the loader when there is nothing on screen yet.
+  if(!host.querySelector(".pcard")) host.innerHTML = `<div class="gempty">Loading…</div>`;
   let data;
   try {
     data = await (await fetch("/api/gallery")).json();
   } catch(e){
-    host.innerHTML = `<div class="gempty">Could not load gallery.</div>`;
+    if(!host.querySelector(".pcard"))
+      host.innerHTML = `<div class="gempty">Could not load gallery.</div>`;
     return;
   }
   if(mine !== gReq) return;
-  const profiles = data.profiles || [];
+  const profiles = sortProfiles(data.profiles || []);
   buildAllBar(profiles.length);
+  const live = profiles.filter(p => p.downloading).length;
   $("galleryHint").textContent = profiles.length
-    ? `${profiles.length} finished ${profiles.length===1?"profile":"profiles"}`
-    : "done archives only";
+    ? `${profiles.length} ${profiles.length===1?"profile":"profiles"}`
+      + (live ? ` · ${live} downloading` : "")
+    : "nothing archived yet";
   if(!profiles.length){
-    host.innerHTML = `<div class="gempty">No finished downloads yet. Profiles appear here once a download completes.</div>`;
+    host.innerHTML = `<div class="gempty">Nothing archived yet. Profiles appear here as soon as files start landing.</div>`;
     return;
   }
   host.innerHTML = profiles.map(p => `
-    <div class="pcard" data-profile="${esc(p.username)}">
+    <div class="pcard${p.downloading?" live":""}" data-profile="${esc(p.username)}">
       <img class="av" loading="lazy" alt=""
            src="/api/profile-pic?profile=${encodeURIComponent(p.username)}"
            onerror="this.style.visibility='hidden'">
+      ${p.downloading
+        ? `<span class="livebadge" title="${esc(p.status)}${p.total_count?` — ${p.done_count}/${p.total_count} posts`:""}">● downloading</span>`
+        : ""}
       <div class="nm">${esc(p.username)}</div>
       <div class="ct">${p.count} ${p.count===1?"item":"items"}</div>
     </div>`).join("");
