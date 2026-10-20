@@ -2655,9 +2655,12 @@ class Engine:
                     "label": "rate limited"}
         if self.wait_until > now:
             total = int(self.settings.between_profiles) or 0
+            # Named for what it actually is: the voluntary gap between profiles
+            # that keeps Instagram from rate-limiting us. Instaloader has no
+            # inter-profile delay of its own, so this gap is ours.
             return {"kind": "pacing", "remaining": int(self.wait_until - now),
                     "total": total, "until": self.wait_until,
-                    "label": "pacing"}
+                    "label": "pacing between profiles"}
         return {}
 
     def check_ip_block(self) -> bool:
@@ -2877,7 +2880,12 @@ class Engine:
             "current": self.current,
             "paused": self.paused,
             "limit_paused": self._limit_paused,
-            "busy": bool(self.worker and self.worker.is_alive() and (self.current or pending_count)),
+            # `busy` must mean "a profile is being downloaded right now". It used
+            # to be true whenever the worker thread was alive with anything
+            # pending, so the 4-minute pacing gap, a pause and a rate-limit wait
+            # all reported busy=True with current=None -- which looks like a
+            # wedged worker. The wait block below says which of those it is.
+            "busy": bool(self.current),
             "queued": pending_count,
             "output_root": str(self.output_root),
             "instaloader": INSTALOADER,
