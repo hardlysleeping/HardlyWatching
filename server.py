@@ -200,6 +200,25 @@ def _find_terminal() -> list[str] | None:
     return None
 
 
+class QuietServer(ThreadingHTTPServer):
+    """A threaded server that does not shout when a browser walks away.
+
+    Closing a tab, navigating mid-poll, or a tool cancelling a request closes the
+    socket while a response is still being written. socketserver reports that as
+    a full traceback ending in BrokenPipeError/ConnectionResetError, which reads
+    in the journal exactly like a crash. It is not one, so drop it.
+    """
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError,
+                            ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "InstaQueue/2.0"
 
@@ -1171,7 +1190,7 @@ def main() -> None:
     global PORT
     want = PORT
     PORT = find_free_port(want, "127.0.0.1" if HOST in ("0.0.0.0", "::") else HOST)
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    srv = QuietServer((HOST, PORT), Handler)
     url = f"http://{'127.0.0.1' if HOST in ('0.0.0.0', '::') else HOST}:{PORT}"
     print()
     print("=" * 56)
