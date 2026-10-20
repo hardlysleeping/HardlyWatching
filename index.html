@@ -171,6 +171,7 @@
      windows rather than pushing the card layout around. */
   .ttcount{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px}
   .ttcount button{padding:2px 7px;font-size:11px;line-height:1.5;min-width:0}
+  .ttcount .ttwhat{font-size:11px;color:var(--muted);margin-right:2px}
   .ttcount .ttnout{font-size:12px;font-variant-numeric:tabular-nums;color:var(--muted);
                    padding:0 6px;min-width:56px;text-align:center;white-space:nowrap}
   .pill.running{color:var(--run);border-color:#2d4a7a}
@@ -1400,7 +1401,10 @@ function render(st){
   $("clearBtn").style.display = ((c.done||0)+(c.failed||0)+(c.cancelled||0)) ? "" : "none";
   const ep = $("emptyPath"); if(ep) ep.textContent = st.output_root;
   renderRoots(st.roots || []);
-  renderRemoved(st.removed || []);
+  // The removed list belongs to the Instagram queue. Showing it on the TikTok
+  // sub-tab put removed Instagram profiles under a TikTok heading, which made
+  // it look as though they had been removed from the wrong place.
+  renderRemoved(activePlatform === "instagram" ? (st.removed || []) : []);
 
   // One button whose label always matches what clicking it does.
   paused = st.paused;
@@ -1514,7 +1518,9 @@ function render(st){
       ? 'Paste TikTok profiles on the TikTok tab and hit <b>Add to queue</b> — then press <b>Start</b> in the top bar.'
       : 'Paste Instagram profiles above and hit <b>Add to queue</b> — then press <b>Start</b> in the top bar to begin.';
   }
-  $("removedBtn").style.display = (st.removed && st.removed.length) ? "" : "none";
+  // Same rule as renderRemoved: the removed queue is Instagram's.
+  const showRemoved = activePlatform === "instagram" && st.removed && st.removed.length;
+  $("removedBtn").style.display = showRemoved ? "" : "none";
 
   // Waiting list. Paged and searchable: with hundreds queued, rendering every
   // card was both slow and a lot of scrolling to find one name.
@@ -1911,14 +1917,20 @@ function ttCountBar(j){
   const tot = Number(j.tiktok_total||0);
   const shown = cur ? cur : (tot ? tot : "all");
   const out = tot ? `${shown} / ${tot}` : `${shown}`;
-  return `<div class="ttcount" data-ttid="${esc(j.id)}">
-      <button class="small" data-ttminus="-5" title="5 fewer" ${cur<=1?"disabled":""}>−5</button>
-      <button class="small" data-ttminus="-15" title="15 fewer" ${cur<=1?"disabled":""}>−15</button>
-      <span class="ttnout" title="videos to keep / videos the profile has">${out}</span>
-      <button class="small" data-ttadd="5">+5</button>
-      <button class="small" data-ttadd="15">+15</button>
-      <button class="small" data-ttadd="25">+25</button>
-      <button class="small" data-ttall="1" title="Every video on the profile">all</button>
+  // Say what the controls do, not just that they are a number: these set how
+  // many videos to grab, counted from the newest backwards. "5 / 379" on its
+  // own is ambiguous -- it could as easily mean 5 downloaded out of 379.
+  const tip = "How many videos to grab, starting from the most recent";
+  const label = cur ? `newest ${shown} of ${tot || "?"}` : `all ${tot || ""}`.trim();
+  return `<div class="ttcount" data-ttid="${esc(j.id)}" title="${tip}">
+      <span class="ttwhat">grab newest</span>
+      <button class="small" data-ttminus="-5" title="Grab 5 fewer videos" ${cur<=1?"disabled":""}>−5</button>
+      <button class="small" data-ttminus="-15" title="Grab 15 fewer videos" ${cur<=1?"disabled":""}>−15</button>
+      <span class="ttnout" title="${tip} — ${label}">${out}</span>
+      <button class="small" data-ttadd="5" title="Grab 5 more videos">+5</button>
+      <button class="small" data-ttadd="15" title="Grab 15 more videos">+15</button>
+      <button class="small" data-ttadd="25" title="Grab 25 more videos">+25</button>
+      <button class="small" data-ttall="1" title="Grab every video on the profile">all</button>
     </div>`;
 }
 

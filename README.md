@@ -297,6 +297,27 @@ On a tile: **♥** favourite, **⤢** open bigger, **🗑** trash. In the enlarg
 desktop the arrow keys do the same, `f` favourites, `t` trashes, `d` downloads,
 `Esc` closes. On a phone, swipe left/right to move and swipe down to close.
 
+### Profile pictures and thumbnails
+
+Tile images **fill in as you download**, not all at once:
+
+- The first time a profile's picture is requested it is not shown. The app asks
+  for it quietly, and if it exists it appears a moment later — you will see
+  avatars popping in during a long queue rather than a wall of grey boxes.
+- A profile that has not been downloaded yet has nothing to show, so it stays
+  blank until its first run finishes. That is the normal state for a fresh
+  queue, not an error.
+- The verdict is cached per profile for the session, so a missing picture is
+  asked for once and not retried on every repaint.
+
+Instagram profile pictures are saved by instaloader as part of the profile
+(`--no-profile-pic` turns that off). TikTok has no equivalent picture file, so
+its cards show the platform label instead of an avatar.
+
+Video thumbnails inside the gallery are generated from the video itself by the
+browser, so they also appear as the file is available — a tile with no preview
+is one whose file has not landed yet.
+
 ### Deleting for good
 
 "Delete all trash" does two things, both deliberately recoverable:
