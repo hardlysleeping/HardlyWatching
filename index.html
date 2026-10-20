@@ -840,6 +840,9 @@ const SPEC = [
   {k:"storyitem_filter", l:"Story filter", d:"python expr", t:"str", flag:"--storyitem-filter"},
   {group:"How"},
   {k:"between_profiles", l:"Seconds between profiles", d:"600 = 10 min. Longer is much safer", t:"num", flag:"(app)"},
+  {group:"When the queue is empty"},
+  {k:"autocheck", l:"Check for new posts automatically", d:"when nothing is queued, look for new posts on every archived profile", t:"bool", flag:"(app)"},
+  {k:"autocheck_hours", l:"Only if idle for (hours)", d:"won't check more often than this. 0 = off", t:"num", flag:"(app)"},
   {k:"max_connection_attempts", l:"Connection attempts", d:"retries per request", t:"num", flag:"--max-connection-attempts"},
   {k:"request_timeout", l:"Request timeout (s)", d:"per connection", t:"num", flag:"--request-timeout"},
   {k:"sanitize_paths", l:"Sanitize filenames", d:"safe on all systems", t:"bool", flag:"--sanitize-paths"},
@@ -1600,7 +1603,7 @@ $("resetSettings").onclick = async () => {
     metadata_json:true,compress_json:false,comments:false,geotags:false,fast_update:true,
     latest_stamps:true,
     count:0,post_filter:"",storyitem_filter:"",sanitize_paths:true,resume:true,
-    max_connection_attempts:3,request_timeout:300,iphone:true,slide:"",between_profiles:240};
+    max_connection_attempts:3,request_timeout:300,iphone:true,slide:"",between_profiles:240,autocheck:false,autocheck_hours:6};
   const r = await post("/api/settings",{settings:def});
   fillSettings(r.settings);
   toast("Defaults restored");

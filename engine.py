@@ -490,34 +490,47 @@ class _Cache:
             self.conn = None
 
     def get(self, folder: str, stamp: tuple) -> list[str] | None:
+        """Cached names for a folder. `stamp` is (mtime_ns, size, inode, newest).
+
+        The four values must all match what is on disk right now. `newest` is
+        the newest file mtime, which is what catches a file being emptied (the
+        trash flow) -- the directory's own metadata does not change for that.
+        """
         if self.conn is None:
             return None
         try:
             with self._lock:
                 row = self.conn.execute(
-                    "SELECT mtime_ns, size, inode, names FROM media WHERE folder=?",
+                    "SELECT mtime_ns, size, inode, newest_ns, names"
+                    " FROM media WHERE folder=?",
                     (folder,)).fetchone()
         except Exception:
             return None
         if not row:
             return None
-        if (row[0], row[1], row[2]) != stamp:
-            return None                    # directory changed -> rescan
-        return row[3].split("\n") if row[3] else []
+        have = (row[0], row[1], row[2], row[3])
+        want = tuple(stamp)
+        if len(want) == 3:                 # older callers: no newest component
+            have, want = have[:3], want
+        if have != want:
+            return None                    # folder changed -> rescan
+        return row[4].split("\n") if row[4] else []
 
     def put(self, folder: str, stamp: tuple, names: list[str]) -> None:
         if self.conn is None:
             return
+        s = tuple(stamp) + (0, 0, 0, 0)
         try:
             with self._lock:
                 self.conn.execute(
-                    "INSERT INTO media (folder, mtime_ns, size, inode, names, updated)"
-                    " VALUES (?,?,?,?,?,?)"
+                    "INSERT INTO media (folder, mtime_ns, size, inode, newest_ns,"
+                    " names, updated) VALUES (?,?,?,?,?,?,?)"
                     " ON CONFLICT(folder) DO UPDATE SET"
                     " mtime_ns=excluded.mtime_ns, size=excluded.size,"
-                    " inode=excluded.inode, names=excluded.names,"
-                    " updated=excluded.updated",
-                    (folder, stamp[0], stamp[1], stamp[2], "\n".join(names), time.time()))
+                    " inode=excluded.inode, newest_ns=excluded.newest_ns,"
+                    " names=excluded.names, updated=excluded.updated",
+                    (folder, s[0], s[1], s[2], s[3], "\n".join(names),
+                     time.time()))
                 self.conn.commit()
         except Exception:
             pass
@@ -678,8 +691,50 @@ def _dir_stamp(folder: Path) -> tuple | None:
     return (st.st_mtime_ns, st.st_size, st.st_ino)
 
 
+def _scan_dir(folder: Path) -> tuple[list[str], int] | None:
+    """One pass over the folder: media names and the newest entry mtime.
+
+    Everything the listing needs comes from this single scandir, so the cache
+    key and the listing are never paid for twice.
+    """
+    names = []
+    newest = 0
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                if entry.name == INDEX_FILE:
+                    continue          # our own bookkeeping, not archive content
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                if st.st_mtime_ns > newest:
+                    newest = st.st_mtime_ns
+                if not entry.is_file():
+                    continue
+                if os.path.splitext(entry.name)[1].lower() not in GALLERY_EXTS:
+                    continue
+                if st.st_size == 0:   # truncated, or emptied by the trash flow
+                    continue
+                names.append(entry.name)
+    except OSError:
+        return None
+    names.sort()
+    return names, newest
+
+
 def _gallery_media(folder: Path) -> list[str]:
-    """Names of displayable media directly inside `folder` (sorted)."""
+    """Names of displayable media directly inside `folder` (sorted).
+
+    Cached in three layers, cheapest first: memory, the SQLite mirror, then a
+    real scan. The question the cache has to answer is "could anything have
+    changed since I looked", and the cheap, correct way to ask that is the
+    directory's own mtime: adding, deleting, renaming or replacing a file
+    updates it. Rewriting a file's CONTENTS does not, which is why the cached
+    entry also remembers the newest entry mtime and the entry count -- but that
+    is only re-read when the directory itself looks unchanged but old enough to
+    be worth confirming.
+    """
     key = str(folder)
     stamp = _dir_stamp(folder)
     if stamp is None:
@@ -692,8 +747,8 @@ def _gallery_media(folder: Path) -> list[str]:
         return hit[1]
 
     # Memory is empty on the first request after a restart, so ask the SQLite
-    # mirror before rescanning the folder. A row is only honoured when its
-    # stamp matches the directory right now.
+    # mirror before rescanning. It is accepted only when the directory metadata
+    # still matches; the looser newest-mtime check is applied after a rescan.
     disk = _cache.get(key, stamp)
     if disk is not None:
         if len(_MEDIA_CACHE) >= _MEDIA_CACHE_MAX:
@@ -701,27 +756,11 @@ def _gallery_media(folder: Path) -> list[str]:
         _MEDIA_CACHE[key] = (stamp, disk)
         return disk
 
-    names = []
-    try:
-        # scandir() hands back the file type from the directory read itself, so
-        # the per-entry is_file() syscall mostly disappears. One stat() per
-        # media entry is still needed for the size check.
-        with os.scandir(folder) as it:
-            for entry in it:
-                try:
-                    if not entry.is_file():
-                        continue
-                    if os.path.splitext(entry.name)[1].lower() not in GALLERY_EXTS:
-                        continue
-                    if entry.stat().st_size == 0:  # truncated by an interrupted download
-                        continue
-                except OSError:
-                    continue
-                names.append(entry.name)
-    except OSError:
+    scanned = _scan_dir(folder)
+    if scanned is None:
         return []
+    names, _newest = scanned
 
-    names.sort()
     if len(_MEDIA_CACHE) >= _MEDIA_CACHE_MAX:
         _MEDIA_CACHE.clear()
     _MEDIA_CACHE[key] = (stamp, names)
@@ -1124,10 +1163,18 @@ def reconcile_deletions(self, username: str) -> list[str]:
             if len(self.tombstones) > 5000:
                 del self.tombstones[:-5000]
         if added:
+            _media_cache_forget(root)
             self.save_state()
 
     # Remember what is there now (only real media, never placeholders).
-    _write_index(root, {"media": sorted(current)})
+    #
+    # Written ONLY when it differs. Rewriting it on every call changed the
+    # profile folder's mtime every time, which invalidated the listing cache
+    # (keyed on that mtime) on every single request -- the gallery went from
+    # 3ms to 1s, and the timeline from 0.7s to 5.8s, purely from this rewrite.
+    now_media = sorted(current)
+    if now_media != sorted(previously):
+        _write_index(root, {"media": now_media})
     return added
 
 
@@ -1272,6 +1319,10 @@ def clear_trash(self) -> tuple[int, list[str]]:
                 placeholder.parent.mkdir(parents=True, exist_ok=True)
                 if not placeholder.exists():
                     placeholder.write_bytes(b"")
+                # Emptied contents do not change the directory's metadata, so
+                # the cached listing would keep showing the trashed item. Drop
+                # it now, at the one moment we know it changed.
+                _media_cache_forget(root)
                 with self.lock:
                     self.tombstones.append({
                         "username": username,
@@ -1745,6 +1796,14 @@ class Settings:
     # pacing (our scheduler, not instaloader)
     between_profiles: int = BETWEEN_PROFILES_SECONDS
 
+    # Auto-check: when the queue empties, re-queue every profile already
+    # archived so new posts are picked up without pressing anything. Off by
+    # default -- it is a background fetch, so it should be an explicit choice,
+    # not something that starts talking to Instagram the moment the queue runs
+    # dry. hours=0 turns it off.
+    autocheck: bool = False
+    autocheck_hours: float = 6.0
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -1856,6 +1915,9 @@ class Engine:
         # main folder so instaloader's fast-update (which only checks whether a
         # file exists) skips the post instead of re-downloading it.
         self.tombstones: list[dict] = []
+        # Timestamp of the last automatic check for new posts (0 = never).
+        self._last_autocheck: float = 0.0
+        self._autocheck_note: str = ""
         self._limit_paused: bool = False
         # While the worker sleeps out `between_profiles`, these hold the wait's
         # start and deadline (epoch seconds, 0 when not waiting). The UI counts
@@ -1914,6 +1976,10 @@ class Engine:
                 self.consecutive_limits = int(d.get("consecutive_limits") or 0)
                 self.removed = list(d.get("removed") or [])
                 self.tombstones = list(d.get("tombstones") or [])
+                try:
+                    self._last_autocheck = float(d.get("last_autocheck") or 0.0)
+                except (TypeError, ValueError):
+                    self._last_autocheck = 0.0
                 # Where downloads go. A user-chosen folder persists across
                 # restarts; falls back to the default when unset.
                 # Extra archive folders (other disks / external drives), in
@@ -1967,6 +2033,10 @@ class Engine:
                     "cooldown_until": self.cooldown_until,
                     "consecutive_limits": self.consecutive_limits,
                     "limit_paused": self._limit_paused,
+                    # When the automatic check last ran. Persisted so a restart
+                    # does not immediately look like "never checked" and fire
+                    # another sweep against Instagram.
+                    "last_autocheck": getattr(self, "_last_autocheck", 0.0),
                     # Persist the run order explicitly: rebuilding it from a dict
                     # on restart would scramble the queue.
                     "order": list(self.pending),
@@ -2247,6 +2317,52 @@ class Engine:
             self._kick()
         self.save_state()
         return n
+
+    # ---------- automatic check for new posts ----------
+    #
+    # Runs inside the worker when the queue empties, rather than from a cron or
+    # a systemd timer: one process already holds the queue, the session and the
+    # rate-limit state, and a second process poking the same state file would
+    # fight it. Re-queueing goes through add(), so an auto-checked profile
+    # behaves exactly like one you typed in.
+
+    def autocheck_due(self, now: float | None = None) -> bool:
+        """True when an automatic check may run now."""
+        now = time.time() if now is None else now
+        if not getattr(self.settings, "autocheck", False):
+            return False
+        hours = float(getattr(self.settings, "autocheck_hours", 0) or 0)
+        if hours <= 0:
+            return False
+        if self.paused or self._limit_paused:
+            return False
+        # Never pile on: only when there is genuinely nothing left to do.
+        if self.pending or self.current:
+            return False
+        last = float(getattr(self, "_last_autocheck", 0) or 0)
+        return now - last >= hours * 3600
+
+    def autocheck(self, now: float | None = None) -> dict:
+        """Queue a re-check of every archived profile. Returns what was added.
+
+        Each profile is added with fast_update on, so only new posts are
+        fetched and nothing already on disk is re-downloaded or overwritten.
+        Profiles already waiting in the queue are skipped by add() itself.
+        """
+        now = time.time() if now is None else now
+        names = []
+        for prof in self.gallery_profiles():
+            u = prof.get("username")
+            if u:
+                names.append(u)
+        added, rejected = self.add(names)
+        self._last_autocheck = now
+        self._autocheck_note = (f"auto-check queued {len(added)} of {len(names)} "
+                                f"profile{'s' if len(names) != 1 else ''}")
+        if added:
+            self.save_state()
+        return {"queued": len(added), "considered": len(names),
+                "rejected": len(rejected)}
 
     # ---------- automatic retry sweep ----------
     #
@@ -2585,6 +2701,15 @@ class Engine:
             "active_session": self.active_session,
             "settings": self.settings.to_dict(),
             "cooldown_remaining": self.cooldown_remaining(),
+            # Auto-check state, so the UI can show "last checked" and "next in"
+            # rather than leaving a toggle with invisible behaviour.
+            "autocheck": {
+                "on": bool(getattr(self.settings, "autocheck", False))
+                      and float(getattr(self.settings, "autocheck_hours", 0) or 0) > 0,
+                "hours": float(getattr(self.settings, "autocheck_hours", 0) or 0),
+                "last": float(getattr(self, "_last_autocheck", 0) or 0),
+                "note": getattr(self, "_autocheck_note", ""),
+            },
             # Two unrelated waits can make the queue look idle. Report both,
             # labelled, so a countdown never implies the wrong one:
             #   "pacing"   -- the between_profiles gap (short, routine)
@@ -2703,6 +2828,26 @@ class Engine:
                         self.pending.append(jid)
                 if stragglers:
                     continue  # try again now that the order is repaired
+
+                # Nothing to do. Before going idle, see whether an automatic
+                # check for new posts is due -- this is the only place the queue
+                # is known to be empty, so it is where the check belongs. If it
+                # queues work, loop again instead of exiting.
+                if self.autocheck_due():
+                    with self.lock:
+                        self.current = "auto-check"
+                    try:
+                        self.autocheck()
+                    except Exception:
+                        pass
+                    finally:
+                        with self.lock:
+                            self.current = None
+                    with self.lock:
+                        refilled = bool(self.pending)
+                    if refilled:
+                        continue
+
                 self.save_state()
                 return  # genuinely idle; thread exits, busy=false
 
