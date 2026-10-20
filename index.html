@@ -2668,6 +2668,7 @@ function noteTimelineChanged(){
 }
 
 function paintHeart(btn, tile, on){
+  btn.dataset.heart = "1";
   btn.textContent = on ? "♥" : "♡";
   btn.title = on ? "Remove from favourites" : "Add to favourites";
   tile.classList.toggle("faved", on);
@@ -2938,6 +2939,10 @@ function tileFor(username, post, section){
   const first = post.items[0];
   const tile = document.createElement("div");
   tile.className = "ptile" + (faved ? " faved" : "");
+  // Identify the tile by its first file so the viewer can update THIS tile
+  // after a favourite instead of redrawing the whole grid behind the overlay.
+  tile.dataset.post = first.file;
+  tile.dataset.section = srcSection;
   const mkSrc = (item) => `/media?profile=${encodeURIComponent(username)}`
       + `&file=${encodeURIComponent(item.file)}`
       + (srcSection === "main" ? "" : `&section=${srcSection}`);
@@ -3075,7 +3080,9 @@ function tileFor(username, post, section){
   }
   if(srcSection === "trash"){
     actsRight.appendChild(mkBtn("↩","Restore to main folder",
-      () => { every("main"); toast("Restored"); refreshAfterMove(username); }));
+      // Restoring brings a post back into the grid, which no in-place update
+      // can express, so this one rebuilds on purpose.
+      () => { every("main"); toast("Restored"); refreshAfterMove(username, null); }));
   } else {
     actsRight.appendChild(mkBtn("🗑","Move to trash", () => confirmTrash(username, names)));
   }
@@ -3446,10 +3453,53 @@ async function movePhoto(username, name, section, quiet){
   return true;
 }
 
-async function refreshAfterMove(username){
+// Update the one tile under the overlay instead of redrawing the grid.
+//
+// drawPhotos() starts by emptying #profileGrid, so calling it while the viewer
+// was open tore down and rebuilt every tile: the grid visibly flashed, lost its
+// scroll position, and re-shuffled its order. Browsing the grid directly never
+// did this because those tiles flip themselves in place. This does the same
+// thing for the viewer's actions.
+//
+// The tile cannot always stay where it is, because favouriting moves a post
+// between the All and Favorites lists. Only the cases that genuinely change the
+// grid's membership fall back to a rebuild; everything else is one tile.
+async function refreshAfterMove(username, file, section){
   if(gProfile !== username) return;
-  const d = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}`)).json();
-  if(gProfile === username) drawPhotos(username, d.sections || {main:[],favorites:[],trash:[]});
+  const host = $("profileGrid");
+  if(!host || !file) return;
+  const tile = [...host.querySelectorAll(".ptile")]
+    .find(t => t.dataset.post === file);
+
+  // Favourites are shown inside All as well, so favouriting while on All leaves
+  // the tile exactly where it is. Only the Favorites chip can gain or lose a
+  // member, and only trash can be affected when a file leaves the grid.
+  const changesMembership =
+       (gFilter === "favorites" && section !== "favorites")
+    || section === "trash";
+
+  if(!tile || changesMembership){
+    // Genuinely different set of tiles on screen: a rebuild is the honest way.
+    const d = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}`)).json();
+    if(gProfile === username) drawPhotos(username, d.sections || {main:[],favorites:[],trash:[]});
+    return;
+  }
+
+  // Same tile, same place: just restyle it.
+  const faved = section === "favorites";
+  tile.classList.toggle("faved", faved);
+  tile.dataset.section = section;
+  const heart = tile.querySelector("[data-heart]");
+  if(heart){
+    heart.textContent = faved ? "♥" : "♡";
+    heart.title = faved ? "Remove from favourites" : "Add to favourites";
+  }
+  // The chip counts on the bar above the grid are now one out of date.
+  const chip = host.querySelector('.fchip[data-chip="favorites"] .n');
+  if(chip){
+    const cur = parseInt(chip.textContent, 10) || 0;
+    chip.textContent = String(Math.max(0, cur + (faved ? 1 : -1)));
+  }
 }
 
 // True when the grid on screen lists favourites ONLY — the per-profile
@@ -3638,7 +3688,10 @@ async function viewerToggleFav(){
   paintViewerActions();
   toast(target === "favorites" ? "Favourited" : "Removed from favourites");
   // The grid is still behind the overlay and holds its own copy of the state.
-  refreshAfterMove(vState.username);
+  // Pass the post and its new home so the matching tile is updated in place --
+  // redrawing the grid here is what made it flash and lose its scroll.
+  const firstFile = vState.post.items[0] ? vState.post.items[0].file : null;
+  refreshAfterMove(vState.username, firstFile, target);
 }
 
 async function viewerTrash(){
@@ -3651,7 +3704,8 @@ async function viewerTrash(){
     await Promise.all(vState.post.items.map(i => movePhoto(vState.username, i.file, "main", true)));
     toast("Restored");
     closeViewer();
-    refreshAfterMove(vState.username);
+    const firstFile = vState.post.items[0] ? vState.post.items[0].file : null;
+    refreshAfterMove(vState.username, firstFile, "main");
     return;
   }
   const names = vState.post.items.map(i => i.file);
@@ -3810,7 +3864,8 @@ function confirmTrash(username, names, onDone){
     wrap.remove();
     for(const n of list) await movePhoto(username, n, "trash", true);
     toast(many ? `Moved ${list.length} to trash` : "Moved to trash");
-    refreshAfterMove(username);
+    // Trashed posts leave the current view, so the tile count genuinely changes.
+    refreshAfterMove(username, null);
     // The viewer passes a callback so it can close itself once the post it is
     // showing has moved out from under it.
     if(typeof onDone === "function") onDone();
