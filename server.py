@@ -105,11 +105,6 @@ def _open_folder(path: Path) -> None:
             continue
 
 
-def _changed(job_id: str, old: dict) -> dict:
-    """Diff a job against the copy the browser last saw. Returns only changed keys."""
-    return old
-
-
 def _find_terminal() -> list[str] | None:
     """Return argv prefix for the available terminal, or None.
 
@@ -305,14 +300,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        data = path.read_bytes()
+        size = path.stat().st_size
         self.send_response(200)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(size))
         self.send_header("Cache-Control",
                          "private, max-age=86400" if cache else "no-store")
         self.end_headers()
-        self.wfile.write(data)
+        # Stream rather than read_bytes(): a clip can be hundreds of MB, and
+        # loading one whole per request is how a couple of concurrent videos
+        # exhaust RAM. Copying in blocks keeps memory flat regardless of size.
+        with open(path, "rb") as fh:
+            shutil.copyfileobj(fh, self.wfile, length=1024 * 1024)
 
     # ---------- routes ----------
 
