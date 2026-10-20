@@ -9,9 +9,15 @@ It sets up its own private environment next to itself (in .venv), installs
 instaloader into it if needed, then starts the app and opens your browser.
 Nothing is installed system-wide and nothing else needs to be set up first.
 
-    python3 run.py --service     install as a systemd user service (autostart)
+This app is only a frontend for instaloader, so instaloader is installed
+automatically when missing -- including when there is no terminal to answer a
+prompt, which is what happens when it is launched from a desktop icon. Pass
+--no-install to leave instaloader entirely to you.
+
+    python3 run.py --service      install as a systemd user service (autostart)
     python3 run.py --service remove
-    python3 run.py --port 9000   use a different port
+    python3 run.py --port 9000    use a different port
+    python3 run.py --no-install   do not install instaloader, just run
 """
 
 from __future__ import annotations
@@ -51,26 +57,43 @@ def have_instaloader(py: Path) -> bool:
     return r.returncode == 0
 
 
-def ensure_instaloader(py: Path) -> bool:
-    """Install instaloader into the venv, asking first. Returns availability."""
+def ensure_instaloader(py: Path, auto: bool = False) -> bool:
+    """Install instaloader into the venv. Returns availability.
+
+    This app is only a frontend: without instaloader nothing can download, so an
+    app that starts up looking fine but cannot fetch anything is worse than one
+    that installs what it needs. It is therefore installed automatically; pass
+    --no-install to skip that and manage it yourself.
+    """
     if have_instaloader(py):
         return True
     say("")
     say("instaloader is not installed yet.")
     say("This app is only a front end for it -- without instaloader,")
-    say("nothing will download. It cannot work without it.")
+    say("nothing will download.")
     say("")
-    if not sys.stdin.isatty():
-        say("Install it yourself with:  pip install instaloader")
-        return False
-    try:
-        ans = input("Install instaloader now? [Y/n] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
+
+    if not auto:
+        # --no-install: say what to run rather than doing it.
+        say("Skipped (--no-install). Install it yourself with:")
+        say("  %s -m pip install instaloader" % py)
         say("")
         return False
-    if ans not in ("", "y", "yes"):
-        say("Skipped. Install it yourself, then run this again.")
-        return False
+
+    # Ask when a person is there to answer, and just do it when there is not.
+    # Previously a missing TTY meant the install was silently skipped, which
+    # left the app running but unable to download anything.
+    if sys.stdin.isatty():
+        try:
+            ans = input("Install instaloader now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            say("")
+            ans = "n"
+        if ans not in ("", "y", "yes"):
+            say("Skipped. Install it yourself, then run this again:")
+            say("  %s -m pip install instaloader" % py)
+            return False
+
     say("Installing instaloader (one time)...")
     r = subprocess.run([str(py), "-m", "pip", "install", "--upgrade", "instaloader"])
     if r.returncode == 0 and have_instaloader(py):
@@ -83,17 +106,22 @@ def ensure_instaloader(py: Path) -> bool:
 def main() -> int:
     args = sys.argv[1:]
 
+    # instaloader is installed by default so a one-command start really does
+    # work end to end; --no-install leaves it to the user.
+    auto_install = "--no-install" not in args
+    args = [a for a in args if a != "--no-install"]
+
     if "--service" in args:
         # Hand off to the systemd installer, using this venv's python.
         py = ensure_venv()
-        if not ensure_instaloader(py):
+        if not ensure_instaloader(py, auto=auto_install):
             return 1
         return subprocess.call(["bash", str(HERE / "install-service.sh"),
                                 *[a for a in args if a != "--service"]],
                                cwd=str(HERE))
 
     py = ensure_venv()
-    if not ensure_instaloader(py):
+    if not ensure_instaloader(py, auto=auto_install):
         say("")
         say("Starting anyway -- the app will run, but downloads need instaloader.")
         say("")

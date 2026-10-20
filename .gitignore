@@ -1,5 +1,9 @@
 __pycache__/
 *.pyc
+
+# run.py's private environment -- hundreds of MB, never committed
+.venv/
+venv/
 *.bak
 *.bak2
 state.json

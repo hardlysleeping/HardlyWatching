@@ -1,298 +1,293 @@
 # Instagram Downloader
 
 **A local web interface for [instaloader](https://instaloader.github.io/).**
-This project is a frontend only: all downloading is done by
-[instaloader](https://github.com/instaloader/instaloader), the established
+
+This project is a frontend only. All downloading is done by
+[instaloader](https://github.com/instaloader/instaloader) — the established
 command-line tool (GPL-3.0, also on
-[PyPI](https://pypi.org/project/instaloader/)). Nothing in this repo reimplements
-it or talks to Instagram directly — it builds instaloader's command line, runs it,
-and shows you the queue and the files.
+[PyPI](https://pypi.org/project/instaloader/)). Nothing here reimplements it or
+talks to Instagram directly: it builds instaloader's command line, runs it, and
+gives you a queue and a gallery on top.
 
-If you only want to download something once, use
-[instaloader on its own](https://instaloader.github.io/) — it needs no UI. This
-is for keeping a large archive over time: a persistent queue, pacing, resumable
-runs, and a gallery to browse what you have.
+If you want to download one profile once, you do not need this — use
+[instaloader on its own](https://instaloader.github.io/). This is for keeping a
+larger archive over time, where you want a queue that survives reboots, sane
+pacing, and a way to actually browse what you collected.
 
-Paste a list of profiles, press start, and watch progress in the browser. One
-profile downloads at a time, with pacing and automatic back-off so you don't get
-rate-limited.
+---
 
-Everything runs on your own machine. Nothing is sent anywhere except to
-Instagram, by instaloader, using your own logged-in session.
+## Install and run
 
-## What it does
-
-- **Queue-based.** Paste many profiles; they download one at a time.
-- **Survives restarts.** The queue, its order, and any cooldown are saved to
-  disk. Reboot and it picks up where it left off.
-- **Rate-limit aware.** Any HTTP 429 stops the whole queue and waits, because
-  retrying harder is what gets you blocked. Instagram's own "retry in N seconds"
-  is respected when it tells us.
-- **Skips what you already have.** Re-running a profile only fetches new posts.
-- **Remembers independently of the files.** Move or delete an archive folder and
-  re-runs still know what was already archived (`--latest-stamps`).
-- **Deletions stick.** Trash a post, then delete it for good — it goes to your
-  desktop trash bin, and a hidden marker stops instaloader fetching it again.
-  Delete something straight from your file manager and the app notices on the
-  next look and marks it too. Un-delete any of them from the UI to get it back.
-- **Favourites and trash across every profile.** Star a post to keep it handy;
-  trash one to set it aside. Both have their own view over the whole archive,
-  not just one profile.
-- **Recoverable removals.** Removing a profile never loses it — restore it from
-  the Removed list.
-- **Reels as a separate pass.** Optionally queue reels as their own follow-up
-  job instead of mixing them into the main download.
-- **Browser session import.** Pick up the Instagram login already in Firefox or
-  Zen instead of typing your password.
-- **Autostart.** Optional systemd user service so it's always running.
-
-> **Platform:** the core runs anywhere Python 3.10+ does — **Linux, macOS,
-> Windows** — with `python3 server.py` (or `run.py`). The extra conveniences
-> are Linux-only for now: the launcher icon, the autostart service, and the
-> GTK control-panel window. On macOS/Windows, "send to trash" recovery still
-> works (Finder Trash / Recycle Bin) and folder-opening uses the native file
-> manager.
-
-## Running it on macOS or Windows
-
-The web UI and downloader are plain Python — they run on any OS. You just
-don't get the Linux desktop extras.
-
-```bash
-# any OS, from the cloned folder
-python3 run.py            # makes its own venv, installs instaloader, starts
-```
-
-Then open the address it prints in your browser. No launcher icon, no
-autostart service, no control-panel window — those are Linux-only. Everything
-in the web UI (queue, gallery, favourites, trash, folder choice) works the
-same.
-
-To reach it from another device, set `INSTA_HOST=0.0.0.0` (on Windows,
-`set INSTA_HOST=0.0.0.0` before the command).
-
-## Requirements
-
-- **Python 3.10+** (the app itself is standard-library only — no
-  `pip install` needed).
-- **[instaloader](https://instaloader.github.io/)** — the actual downloader.
-  The launcher offers to install it for you; or do it yourself:
-  ```
-  pipx install instaloader     # recommended
-  # or: pip install --user instaloader
-  ```
-- An **Instagram account** you can log into. Most profile content requires a
-  session; anonymous requests get blocked almost immediately.
-- Optional: Firefox, Zen or LibreWolf if you want the browser-cookie import.
-
-## Quick start
-
-The easiest way — one command, no setup:
+You need **Python 3.10+** and an **Instagram account**. Nothing else — no pip
+packages to install yourself, no compiling, no config files to write.
 
 ```bash
 git clone https://github.com/hardlysleeping/insta-desktop.git
 cd insta-desktop
-./start.sh
+python3 run.py
 ```
 
-That checks everything, starts the app, and opens it in your browser. If the
-default port (8765) is taken it picks a free one automatically and tells you
-which. If instaloader is missing it says so plainly and offers to install it
-for you.
+That is the whole install. `run.py` creates a private Python environment in
+`.venv/` next to itself, installs instaloader into it, starts the app and opens
+your browser. Nothing touches the rest of your system and nothing needs `sudo`.
+If instaloader is already installed it skips straight to starting.
 
-Prefer something you can click? Add a launcher icon:
+First run takes ~20 seconds, mostly pip. After that it starts instantly.
 
-```bash
-./install-desktop-icon.sh
-```
+Then:
 
-Then start it any time from your applications menu or desktop.
-
-Want a small window that shows whether it's running and lets you start, stop,
-restart, copy or open the link?
-
-```bash
-python3 control-panel.py
-```
-
-Closing that window does **not** stop the app — it keeps running in the
-background. Only **Stop** (or Ctrl-C) stops it.
-
-Other ways to start it:
-
-```bash
-python3 server.py         # plain, if you already have instaloader
-python3 run.py            # fully self-contained: makes its own venv + installs
-                          # instaloader into it, nothing else needed
-python3 run.py --service  # set it up to start automatically (see below)
-```
-
-`run.py` is the most foolproof: it sets up its own private environment next to
-itself (`.venv/`), installs instaloader into it if needed, then starts the app.
-Nothing is installed system-wide.
-
-Then, in the browser:
-
-1. **Log in.** Click **Sessions** → either
-   - **Auto-grab best session** (uses the Instagram login already in your
-     browser — no password needed), or
-   - type your username and click **Log in**, which opens a terminal to run
-     instaloader's login (so your password is never handled by this app).
-2. **Paste profiles** — one per line. Usernames, `@handles` and full
+1. **Log in** — click **Sessions** → **Auto-grab best session** picks up the
+   Instagram login already in Firefox/Zen/LibreWolf, so you never type a password
+   into this app. Or use username + password, which opens instaloader's own login
+   in a terminal.
+2. **Paste profiles** — one per line. `username`, `@username` and full
    `instagram.com` URLs all work.
-3. **Add to queue**, then **Start**.
-4. Watch the queue. Downloading goes to `~/instagram/<username>/` in
-   instaloader's normal layout.
+3. **Add to queue**, press **Start**, and leave it running.
 
-## Install as a service (autostart)
+Downloads land in `~/instagram/<username>/` in instaloader's normal layout, so
+instaloader itself can still read the folder.
+
+### Other ways to start it
+
+```bash
+python3 run.py --service     # also set it up to start at login (Linux)
+python3 run.py --no-install  # don't install instaloader, just run
+python3 run.py --port 9000   # different port
+./start.sh                   # if you already have instaloader on PATH
+python3 server.py            # plain, standard library only
+```
+
+**Platforms:** the app is standard-library Python and runs on Linux, macOS and
+Windows. Linux gets the extras (autostart service, desktop icon, GTK control
+panel). On macOS/Windows everything in the web UI works the same, and
+delete-for-good still goes to Trash / Recycle Bin.
+
+Optional Linux extras:
+
+```bash
+./install-desktop-icon.sh     # launcher icon in your applications menu
+python3 control-panel.py      # small window: start / stop / restart / copy link
+```
+
+The control panel needs PyGObject. Without it you get a plain terminal prompt
+with the same commands (`start`, `stop`, `restart`, `status`, `open`, `quit`).
+Closing the panel does **not** stop the app.
+
+### Reach it from your phone
+
+It listens on `127.0.0.1` by default. To use it from another device on your own
+network or over Tailscale:
+
+```bash
+INSTA_HOST=0.0.0.0 python3 run.py
+```
+
+Then open `http://<machine-ip>:8765` — e.g. `http://100.x.y.z:8765` over
+Tailscale, or `http://192.168.1.50:8765` on the same wifi. On Windows, `set
+INSTA_HOST=0.0.0.0` first. For the systemd service, `systemctl --user edit
+insta-downloader` and add `Environment=INSTA_HOST=0.0.0.0` under `[Service]`.
+
+**There is no authentication** — the UI can start logins and delete files. Only
+do this on a network you trust, never port-forwarded to the internet. The
+browser-login button opens a terminal on the *server* machine, so login only
+makes sense from the machine it runs on.
+
+### Autostart (Linux)
 
 ```bash
 ./install-service.sh          # install + start, enabled at login
 ./install-service.sh remove   # stop + uninstall
-```
-
-Manage it with:
-
-```bash
 systemctl --user status insta-downloader
 journalctl --user -u insta-downloader -f
 ```
 
+---
+
+## How it works
+
+Two pieces:
+
+- **instaloader** makes every request to Instagram and writes the files. It is
+  the only thing that talks to Instagram.
+- **This app** is a queue and a viewer. It decides which profile runs next, runs
+  instaloader for it, reads instaloader's output to show progress, and serves the
+  gallery from the files on disk.
+
+A job is one profile. Jobs run **one at a time**. State lives in
+`~/.config/insta-desktop/state.json`, so closing the browser, restarting the app
+or rebooting all keep the queue, its order and any cooldown. Only a profile that
+was mid-download restarts from the beginning.
+
+Re-running a profile does not re-download it. instaloader's `--fast-update` stops
+at the first file it already has, and `--latest-stamps` records what has been
+archived **outside** the media folder — so moving the archive to another drive
+never causes re-downloads.
+
+---
+
+## Why the limits are there
+
+This is the part people skip and then get blocked.
+
+**Instagram rate-limits by IP.** Push too fast and you get HTTP 429, or their
+anti-bot check (`feedback_required`), which in instaloader's output often appears
+as a misleading `Profile <name> does not exist`. The account is fine; you are
+being throttled. Retrying harder is what turns a temporary throttle into a real
+block.
+
+Three layers protect you:
+
+1. **instaloader's own limiter.** It counts its requests and waits before
+   exceeding roughly 275 GraphQL requests per 10 minutes, plus per-type windows.
+   This app does not disable it.
+2. **A gap between profiles** — 120 seconds by default. instaloader has no
+   inter-profile delay of its own, and this app restarts it per profile, which
+   resets that internal accounting. The gap stops a burst of logins back to back.
+   Raising it is safer; lowering it to 0 will get you throttled.
+3. **A whole-queue stop on 429.** If Instagram says stop, the entire queue waits
+   — 15 minutes, or whatever retry it asks for — instead of hammering. This
+   single behaviour matters more than any other for keeping an account usable.
+
+The practical consequence: a large archive takes days, not hours. That is the
+trade for not being blocked. If you need it faster, archive fewer profiles per
+day rather than turning the delays off.
+
+It also helps to not use an account you care about. A throwaway account for bulk
+archiving is wise.
+
+---
+
+## What it is actually good for
+
+- **Paste 200 profiles once and forget it.** They drain over days, and reboots or
+  crashes don't lose the queue.
+- **Know what happened.** Every job shows its status, how much it got, and the
+  raw instaloader output when something failed.
+- **Skip the re-downloads.** Re-run anything; only new posts come down.
+- **Browse the whole archive.** A grid per profile, plus All Favourites and All
+  Trash across every profile, and a merged timeline of every post you have,
+  grouped by month with a slider.
+- **Works on a phone.** Swipe through favourites full screen, tap to enlarge; on
+  desktop the arrow keys walk post to post.
+- **Multiple drives.** Keep old archives on one disk and send new downloads to
+  another. Unplug a drive and its profiles drop out of the gallery until it is
+  back; nothing is moved or copied without asking.
+- **Your own photos too.** Any folder in an archive location appears as a
+  profile, so non-Instagram pictures and phone uploads browse in the same grid.
+- **Delete safely.** Trashing moves files to your desktop Trash and leaves a
+  marker so instaloader doesn't fetch them again. Everything is recoverable.
+- **Recoverable removals.** Removing a profile never loses it — restore it from
+  the Removed list.
+- **Reels as a separate pass.** Optionally queue reels as their own follow-up job
+  instead of mixing them into the main download.
+
+---
+
 ## The gallery
 
-Every finished profile gets a browsable grid, plus two archive-wide views:
+- **Profiles** — pick a person, see their posts as tiles. Videos play on hover.
+- **♥ All Favourites** — everything you starred, across every profile, with a
+  full-screen swipe view.
+- **🗑 All Trash** — everything you set aside, with delete-for-good.
+- **🕒 Timeline** — every post from every profile in one chronological stream,
+  grouped by month, with a favourites-only filter.
 
-- **Profiles** — pick a profile, see its posts as tiles. Videos start muted;
-  unmute from the player controls.
-- **♥ All Favourites** — every post you starred, across every profile, in one
-  grid, each tile labelled with whose post it is.
-- **🗑 All Trash** — everything you set aside, with a button to delete it all.
-
-On each tile: **♥** favourites a post, **🗑** sends it to trash. The trash
-button sits in the bottom-right corner on its own, away from the favourite
-button, so it is hard to hit by accident on a phone.
+On a tile: **♥** favourite, **⤢** open bigger, **🗑** trash. In the enlarged view:
+**♡/♥**, **⤓** download (videos), **🗑**, and **‹ ›** to step through posts. On
+desktop the arrow keys do the same, `f` favourites, `t` trashes, `d` downloads,
+`Esc` closes. On a phone, swipe left/right to move and swipe down to close.
 
 ### Deleting for good
 
 "Delete all trash" does two things, both deliberately recoverable:
 
-1. It moves the files to your **desktop trash bin** (`~/.local/share/Trash`),
-   so you can still restore them from your file manager or empty the bin
-   yourself when you're sure.
+1. It moves the files to your **desktop trash bin** (`~/.local/share/Trash`), so
+   you can restore them from your file manager or empty the bin when you're sure.
 2. It leaves a **0-byte placeholder** with the same filename in the profile
    folder. instaloader decides a post is already downloaded purely by whether
    that file exists, so the placeholder stops it fetching the post again.
 
 Delete a file straight from your file manager instead, and the app notices the
-next time it lists that profile: it leaves the same kind of placeholder, so the
-post still won't come back. Any post you marked this way can be un-marked from
-the UI, which removes the placeholder so it downloads again on the next run.
+next time it lists that profile and leaves the same kind of placeholder. Any post
+marked this way can be un-marked in the UI, which removes the placeholder so it
+downloads again on the next run.
 
-## Settings
+---
 
-All of instaloader's useful options are exposed in the UI, grouped, with a
-filter box. Every field's tooltip shows the underlying instaloader flag.
+## Settings worth knowing
 
-The ones worth knowing:
+All of instaloader's useful options are exposed in the UI, grouped, with a filter
+box. Every field's tooltip shows the underlying instaloader flag.
 
 | Setting | Default | Why |
 | --- | --- | --- |
-| Seconds between profiles | 240 | Spacing between full-profile runs. Longer is safer. |
-| Only new posts | on | Re-runs skip what's already archived. |
-| Remember what's archived | on | Keeps tracking even if you move the folder to another drive. |
-| Stories / Highlights | on | Extra requests per profile; the most common source of errors. |
-| Reels | off | Queues a separate reels-only job after the main download. |
+| Seconds between profiles | 120 | Keeps a burst of logins from looking automated |
+| Only new posts | on | Re-runs skip what you already have |
+| Remember what's archived | on | Works even if you move the folder |
+| Stories / Highlights | on | Extra requests; the most common source of errors |
+| Reels | off | Adds a separate reels-only pass per profile |
 
-Rate-limit behaviour is deliberately conservative: a 429 pauses the whole queue
-for 15 minutes (or longer if Instagram says so) rather than retrying
-immediately. This is the single most important thing for keeping an account
-unblocked.
+---
 
 ## Where things live
 
 | Path | What |
 | --- | --- |
-| `~/instagram/<username>/` | Downloaded media (default — changeable, see below) |
+| `~/instagram/<username>/` | Downloaded media (changeable, see below) |
 | `~/instagram/<username>/.insta-index.json` | Hidden record of what was there, used to spot file-manager deletions |
 | `~/.config/insta-desktop/state.json` | Queue, order, settings, cooldowns, deleted-post markers |
-| `~/.config/instaloader/session-<user>` | Instagram session (created by instaloader) |
-| `~/.config/instaloader/latest-stamps.ini` | "What have I already archived" record |
+| `~/.config/instaloader/session-<user>` | Instagram session, created by instaloader |
+| `~/.config/instaloader/latest-stamps.ini` | What has already been archived |
+| `.venv/` (next to `run.py`) | The private environment `run.py` creates |
 
-Override the first two with `INSTA_OUTPUT` and `INSTA_STATE`. Also honours
-`INSTA_PORT` and `INSTA_HOST`.
+Override paths with `INSTA_OUTPUT` and `INSTA_STATE`; also honours `INSTA_PORT`
+and `INSTA_HOST`.
 
 ### Choosing the downloads folder
 
-In the app, click **Change folder…** (shown under "Nothing queued yet", or any
-time from the empty state). Give a full path, e.g. `/mnt/bigdrive/instagram`.
+In the app, click **Change…** on the Downloads folder card in Settings. Give a
+full path, e.g. `/mnt/bigdrive/instagram`.
 
-- Leave **Move my existing archives across too** unticked to just send *new*
-  downloads to the new location. Your old files stay where they are.
-- Tick it to **move every existing profile folder** into the new location in one
-  go, so everything lives together. It refuses if a folder with the same name
-  already exists there, and refuses while a download is running.
+- Leave **Also move my existing archives into the new folder** unticked to send
+  only *new* downloads to the new location. Your old files stay where they are
+  and still show in the gallery, because the old folder stays in the archive
+  list.
+- Tick it to move every existing profile folder across in one go. It refuses if a
+  folder with the same name already exists there, or while a download is running.
 
-Your choice is saved and survives restarts. And because instaloader's
-`--latest-stamps` record lives outside the media folder, moving or even
-deleting the whole tree never causes re-downloads — it still knows what you
-already have.
+Because instaloader's `--latest-stamps` record lives outside the media folder,
+moving or even deleting the whole tree never causes re-downloads — it still knows
+what you already have.
 
-## Reaching it from your phone or another device
-
-By default the server binds `127.0.0.1`, which means only this machine can
-reach it. Set `INSTA_HOST=0.0.0.0` to listen on every interface:
-
-```bash
-INSTA_HOST=0.0.0.0 python3 server.py
-```
-
-Then open `http://<this-machine's-ip>:8765` — e.g. `http://100.x.y.z:8765` over
-Tailscale, or `http://192.168.1.50:8765` on the same Wi-Fi. Local
-`http://127.0.0.1:8765` keeps working.
-
-For the systemd user service, add a drop-in:
-
-```bash
-systemctl --user edit insta-downloader
-```
-
-```ini
-[Service]
-Environment=INSTA_HOST=0.0.0.0
-```
-
-then `systemctl --user restart insta-downloader` and open the port in your
-firewall.
-
-**There is no authentication of any kind.** The UI can add, remove and requeue
-jobs and start Instagram logins. Bind it to `0.0.0.0` only on a network you
-trust (Tailscale, your own LAN), and don't port-forward it to the internet.
-
-Note the browser-login endpoint opens a terminal on the *server* machine, so
-session login only makes sense from the machine the service runs on.
+---
 
 ## Honest limitations
 
-- **Instagram fights this.** Even logged in, large profiles can hit rate limits
-  partway through. The queue resumes automatically, but "everything in one
-  sitting" isn't guaranteed — spread big jobs over days.
-- **Don't scrape with an account you care about.** IP-level rate limits are
-  temporary, but patterns that look automated can lead to an account
-  checkpoint. A throwaway account for bulk work is wise.
-- **Sessions expire eventually.** When that happens every job fails until you
-  log in again. The UI shows the problem rather than silently burning requests.
+- **Big archives are slow by design.** Days, not hours — the rate-limit trade
+  above, not a bug.
+- **Instagram fights this.** Even logged in, large profiles can hit limits
+  partway through. The queue pauses and resumes; "everything in one sitting" is
+  not guaranteed.
+- **Sessions expire eventually.** Then every job fails until you log in again.
+  The UI reports it rather than silently burning requests.
 - **Stories and highlights are the flakiest part.** Instagram sometimes returns
-  malformed responses for them, which crashes instaloader; the job is then
-  marked done with a note rather than re-downloading everything.
+  malformed data there and crashes instaloader; the job is marked done with a
+  note instead of re-downloading everything.
 - **Private profiles** only work if your account follows them.
-- **No proxy support.** Proxying through cloud/VPS IPs tends to make rate
-  limiting *worse* for anonymous access, per instaloader's own docs.
+- **No proxy support.** Per instaloader's own docs, cloud and VPN IPs tend to get
+  *stricter* limits, not looser.
+- **No authentication in the UI.** Treat it as a local tool.
+- **The GTK control panel** needs PyGObject; without it you get a terminal prompt
+  offering the same functions.
+
+---
 
 ## Legal
 
-Use this for content you have the right to download. Respect Instagram's Terms
-of Service and the rights of the people whose content you are archiving.
+Use this for content you have the right to download. Respect Instagram's Terms of
+Service and the rights of the people whose content you are archiving.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). This project bundles no instaloader code;
+instaloader is installed separately under its own licence (GPL-3.0).
