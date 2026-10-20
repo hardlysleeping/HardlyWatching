@@ -68,10 +68,6 @@ library; the honest gaps are listed at the end rather than left out.
 
 ### Known gaps
 
-- **The gallery viewer is Instagram-only.** TikTok profiles list in the gallery
-  but do not open as posts.
-- A queued job does not remember which drive it came from; with more than one
-  archive root, work could land on the wrong one.
 - The `/shorts` app has only been tested in a desktop browser, not on a real
   phone.
 - macOS and Windows install paths are written but have not been run.
