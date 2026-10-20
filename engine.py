@@ -2116,20 +2116,59 @@ class Engine:
         return cur
 
     def add(self, raw_names: list[str], overrides: dict | None = None) -> tuple[list[Job], list[str]]:
+        """Queue profiles. Refuses a second job of the same kind for one person.
+
+        The old check only looked at queued/running/retrying jobs, so once a
+        profile reached done (or failed, or was cancelled) it could be added
+        again and silently got a second job for the same person -- shown as two
+        duplicate rows. The archive folder is the same either way, so it was not
+        data loss, but it was confusing and wasted requests re-walking that
+        profile.
+
+        Duplicates are judged per KIND: a main + tagged + reels set for one
+        profile is correct and still allowed (they fetch different content),
+        while a second main job is refused. Extra passes are queued through
+        add_extra_pass(), which is untouched.
+        """
         added, rejected = [], []
         with self.lock:
             active = {
                 j.username for j in self.jobs.values()
                 if j.status in ("queued", "running", "retrying")
             }
+            # Every kind already present for a profile, in ANY status, so a
+            # finished job cannot be duplicated. Cancelled jobs are excluded:
+            # removing someone and adding them back is a deliberate re-add.
+            #
+            # Keyed by LOWERCASE name: Instagram usernames are case-insensitive,
+            # so "SomeUser" and "someuser" are the same person and used to
+            # become two separate jobs for one archive folder. The stored name
+            # keeps its original spelling -- only the comparison folds case.
+            seen_kinds: dict[str, set[str]] = {}
+            spelling: dict[str, str] = {}
+            for j in self.jobs.values():
+                if j.status == "cancelled":
+                    continue
+                key = j.username.lower()
+                seen_kinds.setdefault(key, set()).add(j.kind or "main")
+                spelling.setdefault(key, j.username)
             for raw in raw_names:
                 name = clean_profile_name(raw)
                 if not name:
                     if raw.strip():
                         rejected.append(raw.strip())
                     continue
+                lname = name.lower()
+                if lname in spelling:
+                    # Report the name as it is already listed, so the message
+                    # matches the row you can see.
+                    name = spelling[lname]
+                    lname = name.lower()
                 if name in active:
                     rejected.append(f"{name} (already queued)")
+                    continue
+                if "main" in seen_kinds.get(lname, set()):
+                    rejected.append(f"{name} (already in the list)")
                     continue
 
                 # A reels job is queued as its own separate pass, never mixed
@@ -2149,6 +2188,8 @@ class Engine:
                     added.append(reels_job)
 
                 active.add(name)
+                seen_kinds.setdefault(lname, set()).add("main")
+                spelling.setdefault(lname, name)
         self._kick()
         self.save_state()
         return added, rejected
