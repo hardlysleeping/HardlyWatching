@@ -1023,8 +1023,68 @@ function setListHtml(id, html){
   return true;
 }
 
+// The parts of the queue UI that are still meaningful while the gallery tab is
+// showing: the counts, the run/pause button, and the rate-limit banner. Cheap
+// enough to run on every poll, and it keeps the tab strip honest.
+let lastQueueRender = null;
+
+function renderLight(st){
+  const c = st.counts || {};
+  paused = st.paused;
+  const cd = st.cooldown_remaining || 0;
+  const run = $("runBtn");
+  if(run){
+    if(st.current){
+      run.textContent = "Pause"; run.className = "small";
+      run.title = "Pause after the current profile finishes";
+    } else if(paused){
+      run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
+      run.className = "small primary";
+      run.title = cd > 0
+        ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
+        : "Resume the queue";
+    } else if((c.queued || 0) > 0){
+      run.textContent = "Start"; run.className = "small primary";
+      run.title = "Start downloading the queue";
+    } else {
+      run.textContent = "Start"; run.className = "small primary";
+      run.disabled = true; run.title = "Nothing queued yet";
+    }
+    if((c.queued || 0) > 0 || st.current || paused) run.disabled = false;
+  }
+  const qh = $("queueHint");
+  if(qh){
+    const q = c.queued || 0;
+    qh.textContent = q ? `${q} waiting` : "";
+  }
+  const cb = $("coolBox");
+  if(cb){
+    if(cd > 0){
+      const mins = Math.ceil(cd / 60);
+      cb.style.display = "";
+      cb.innerHTML = `<b>Instagram rate-limited this IP.</b> Pausing ${mins} min ` +
+        `before trying again.`;
+    } else {
+      cb.style.display = "none";
+    }
+  }
+}
+
 function render(st){
   lastState = st;  // cache for optimistic updates (reorder, etc.)
+  // While the gallery tab is showing, the entire queue UI is display:none. The
+  // 1.2s poll used to rebuild all of it anyway -- hundreds of cards, invisible
+  // -- which showed up as the page stuttering whenever you were looking at a
+  // photo. Anything visible in the gallery is patched separately by
+  // patchGalleryCounts, so skipping the queue here loses nothing that is on
+  // screen. The tab switch calls render() again on return, so the queue is
+  // never stale when you actually look at it.
+  const gp = $("galleryPane");
+  if(gp && gp.style.display !== "none"){
+    renderLight(st);
+    return;
+  }
+  lastQueueRender = st;
   // Fold the automatic retry countdown into each job, so a failed card can say
   // how long until it tries again rather than looking permanently broken.
   const ar = st.auto_retry || {};
@@ -1665,6 +1725,9 @@ function showTab(which){
     el.style.display = gallery ? "none" : "";
   }
   if(gallery) renderGallery();
+  // The poll skips the queue while the gallery is showing, so coming back has
+  // to draw it from the last state we saw.
+  else if(lastQueueRender) render(lastQueueRender);
 }
 
 $("tabQueue").onclick = () => showTab("queue");

@@ -1749,6 +1749,25 @@ def move_media(self, username: str, name: str, section: str) -> tuple[bool, str]
         src.rename(target)
     except OSError as e:
         return False, f"move failed: {e}"
+
+    # Tell the deletion detector this file was MOVED, not deleted.
+    #
+    # reconcile_deletions compares main/ against .insta-index.json and writes a
+    # tombstone plus a 0-byte placeholder for anything it thinks vanished. A
+    # favourite is a rename OUT of main/, so without this it looked exactly like
+    # a delete: every favourited post left a stub behind in main/ and got
+    # recorded as a tombstone. Keeping the index in step is what tells the two
+    # apart, so it is updated here, at the moment of the move.
+    try:
+        idx = _read_index(root)
+        media = set(idx.get("media") or [])
+        if dest_dir == root:
+            media.add(name)          # back in main/
+        else:
+            media.discard(name)      # moved out of main/
+        _write_index(root, {**idx, "media": sorted(media)})
+    except Exception:
+        pass
     return True, f"moved to {dest_dir.name}/"
 
 
