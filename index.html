@@ -218,6 +218,13 @@
   .pcard .livebadge{position:absolute;top:7px;right:7px;font-size:10px;
     padding:2px 7px;border-radius:999px;background:rgba(0,0,0,.75);
     color:var(--warn);border:1px solid #5a4a1e;white-space:nowrap}
+  /* Paging sentinel: the grid renders a batch at a time, and this is what the
+     scroll observer watches for. */
+  /* The paging sentinel the scroll observer watches. It must span the grid and
+     have real height: as a plain grid item it collapsed to 0x0, so the
+     observer never saw it and paging stopped after the first batch. */
+  .gmore{grid-column:1/-1;text-align:center;color:var(--muted);font-size:12px;
+    padding:18px 0;min-height:44px;display:block}
   .pcard{position:relative}
   .pcard .nm{font-size:12px;color:var(--text);word-break:break-all;line-height:1.3}
   .pcard .ct{font-size:11px;color:var(--muted);margin-top:3px}
@@ -1002,10 +1009,7 @@ function render(st){
   const onPlainProfileList = !gProfile && gAll === null
     && $("galleryPane") && $("galleryPane").style.display !== "none";
   if(anyLive && onPlainProfileList && !gTickLive){
-    gTickLive = setInterval(() => {
-      // Re-check at fire time: the user may have navigated since it was armed.
-      if(!gProfile && gAll === null) renderGallery();
-    }, 4000);
+    gTickLive = setInterval(patchGalleryCounts, 4000);
   } else if((!anyLive || !onPlainProfileList) && gTickLive){
     clearInterval(gTickLive); gTickLive = null;
   }
@@ -2157,32 +2161,174 @@ function drawPhotos(username, sec){
     || (gType === "videos" && p.items.some(i => i.kind === "video"))
     || (gType === "photos" && !p.items.some(i => i.kind === "video"));
 
-  let any = false;
+  // Build the full ordered list of (section, post) first, then render it a
+  // page at a time. A profile can hold 2,700+ posts, and creating every tile
+  // up front means the browser builds 2,700 elements and requests 2,700
+  // thumbnails before the page settles -- that is the "takes forever" part,
+  // and it is much worse on a phone. Only the posts near the viewport are
+  // turned into tiles; the rest arrive as you scroll.
+  const jobs = [];
   for(const [section, list] of show){
     const kept = list.filter(passesType);
     if(!kept.length) continue;
-    any = true;
     if(gFilter === "all"){
-      const h = document.createElement("div");
-      h.className = "shead";
-      // When favourites are merged in, mark where that group starts rather
-      // than hiding them at the bottom.
-      h.textContent = section === "favorites"
+      // Mark where the favourites group starts rather than hiding it at the
+      // bottom, kept as a pseudo-entry so it stays correct while paging.
+      jobs.push({heading: section === "favorites"
         ? `♥ Favourites (${kept.length})`
-        : `All media (${kept.length})`;
-      grid.appendChild(h);
+        : `All media (${kept.length})`});
     }
-    for(const post of sortPosts(kept)) grid.appendChild(tileFor(username, post, section));
+    for(const post of sortPosts(kept)) jobs.push({section, post});
   }
-  if(!any){
+
+  if(!jobs.length){
     grid.innerHTML = `<div class="gempty">${
       gType === "videos" ? "No videos in this view."
       : gType === "photos" ? "No photo-only posts in this view."
       : gFilter === "favorites" ? "No favorites yet — tap ♡ on a photo to add one."
       : gFilter === "trash" ? "Trash is empty."
       : "No displayable media in this archive."}</div>`;
+    host.appendChild(grid);
+    return;
   }
+
   host.appendChild(grid);
+  pageGrid(grid, username, jobs);
+}
+
+// How many tiles to build per batch. Large enough that a fast scroll does not
+// stutter, small enough that opening a 2,700-post profile stays instant.
+const GRID_PAGE = 150;
+
+// One live observer for whichever grid is on screen. A new draw disconnects
+// the previous one, so a filter or sort change can never leave an observer
+// appending batches into a grid that is no longer displayed.
+let gridObserver = null;
+let gridScrollHandler = null;
+
+// Re-read the counts and update the existing cards in place. The old timer
+// called renderGallery(), which rebuilt every card and reset the scroll --
+// with 70+ profiles that reads as the page constantly refreshing itself. Only
+// the text of each card is touched here.
+async function patchGalleryCounts(){
+  if(gProfile || gAll !== null) return;
+  const host = $("profileGrid");
+  const cards = host ? host.querySelectorAll(".pcard") : [];
+  if(!cards.length) return;
+  let data;
+  try {
+    data = await (await fetch("/api/gallery")).json();
+  } catch(e){ return; }
+  if(gProfile || gAll !== null) return;   // navigated while the fetch was out
+  const byName = new Map((data.profiles || []).map(p => [p.username, p]));
+  for(const card of cards){
+    const p = byName.get(card.dataset.profile);
+    if(!p) continue;
+    const ct = card.querySelector(".ct");
+    const want = `${p.count} ${p.count===1?"item":"items"}`;
+    if(ct && ct.textContent !== want) ct.textContent = want;
+    const badge = card.querySelector(".livebadge");
+    if(p.downloading && !badge){
+      const b = document.createElement("span");
+      b.className = "livebadge";
+      b.textContent = "● downloading";
+      card.classList.add("live");
+      card.appendChild(b);
+    } else if(!p.downloading && badge){
+      badge.remove();
+      card.classList.remove("live");
+    }
+  }
+  const live = (data.profiles || []).filter(p => p.downloading).length;
+  const hint = $("galleryHint");
+  if(hint){
+    const n = (data.profiles || []).length;
+    hint.textContent = `${n} ${n===1?"profile":"profiles"}`
+      + (live ? ` · ${live} downloading` : "");
+  }
+}
+
+function pageGrid(grid, username, jobs){
+  let next = 0;
+  let sentinel = null;
+
+  const more = () => {
+    const end = Math.min(next + GRID_PAGE, jobs.length);
+    const frag = document.createDocumentFragment();
+    for(; next < end; next++){
+      const j = jobs[next];
+      if(j.heading){
+        const h = document.createElement("div");
+        h.className = "shead";
+        h.textContent = j.heading;
+        frag.appendChild(h);
+      } else {
+        frag.appendChild(tileFor(username, j.post, j.section));
+      }
+    }
+    // Insert before the sentinel so it stays last in the grid.
+    if(sentinel) grid.insertBefore(frag, sentinel);
+    else grid.appendChild(frag);
+    return next >= jobs.length;
+  };
+
+  // The sentinel is only created when there is more to come, so the "all on
+  // one page" case finishes here with nothing left in the DOM.
+  if(more()) return;
+
+  if(gridObserver) gridObserver.disconnect();
+  sentinel = document.createElement("div");
+  sentinel.className = "gmore";
+  sentinel.textContent = "Loading…";
+  grid.appendChild(sentinel);
+
+  // Everything the callbacks share. finish() must clear BOTH the local
+  // observer and the module-level handle: leaving gridObserver pointing at a
+  // disconnected observer stopped the scroll handler from ever being unbound
+  // and left a later draw thinking an observer was still live.
+  let observer = null;
+  const finish = () => {
+    if(sentinel){
+      sentinel.textContent = `${jobs.length} items`;
+      sentinel.classList.add("done");
+    }
+    if(observer){ observer.disconnect(); observer = null; }
+    if(gridScrollHandler){
+      window.removeEventListener("scroll", gridScrollHandler);
+      gridScrollHandler = null;
+    }
+    gridObserver = null;
+  };
+
+  const pull = () => {
+    if(next >= jobs.length){ finish(); return true; }
+    if(!sentinel || !sentinel.isConnected){ finish(); return true; }
+    // Only load more once the sentinel is near the viewport, so a scroll to
+    // the top does not pull the whole list in.
+    const r = sentinel.getBoundingClientRect();
+    if(r.top > window.innerHeight + 900) return false;
+    const done = more();
+    if(done) finish();
+    return done;
+  };
+
+  observer = new IntersectionObserver((entries) => {
+    if(entries.some(e => e.isIntersecting)) pull();
+  }, {rootMargin: "900px 0px"});
+  observer.observe(sentinel);
+  gridObserver = observer;
+
+  // IntersectionObserver alone proved fragile here (a collapsed sentinel never
+  // reports as intersecting, and paging then silently stops after one batch),
+  // so the scroll position is checked directly as well. pull() is a no-op
+  // unless the sentinel is actually near the viewport.
+  //
+  // NOTE: no bare pull() here. Calling it unconditionally loaded a second
+  // batch during the initial draw, because the sentinel was within 900px of
+  // the viewport at that moment.
+  if(gridScrollHandler) window.removeEventListener("scroll", gridScrollHandler);
+  gridScrollHandler = () => { pull(); };   // pull() unbinds via finish() when done
+  window.addEventListener("scroll", gridScrollHandler, {passive: true});
 }
 
 
