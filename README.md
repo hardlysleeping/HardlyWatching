@@ -90,6 +90,7 @@ instaloader itself can still read the folder.
 ### Other ways to start it
 
 ```bash
+cd insta-desktop             # enter folder location
 python3 run.py --service     # also set it up to start at login (Linux)
 python3 run.py --no-install  # don't install instaloader, just run
 python3 run.py --port 9000   # different port
