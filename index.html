@@ -617,11 +617,6 @@ https://www.instagram.com/a.third.profile/"></textarea>
         </p>
         <textarea id="ttInput" placeholder="Paste here — it finds the usernames for you.
 
-First: profile → view all under Following accounts → scroll that list all
-the way down until it stops loading. Copy before scrolling and you only get
-the rows that happened to be on screen.
-
-  …or just type them:
   someone
   @somebody
   https://www.tiktok.com/@another"></textarea>
@@ -638,14 +633,26 @@ the rows that happened to be on screen.
           <button class="primary" id="ttImportBtn">Add to queue</button>
           <button class="small" id="ttClearBtn">Clear</button>
         </div>
+        <!-- The long "how to copy your following list" text used to live in the
+             placeholder, where it filled the box and read as noise. It still
+             needs to be findable, so it is one collapsed line instead. -->
+        <details style="margin-top:8px">
+          <summary>Copying a whole following list</summary>
+          <p class="hint" style="margin:6px 0 0">
+            Profile → <b>view all</b> next to Following accounts → scroll that
+            list all the way to the bottom until it stops loading, then select
+            all and copy. Copying before it finishes scrolling only picks up the
+            rows that happened to be on screen.
+          </p>
+        </details>
         <div id="ttResult" class="hint" style="margin-top:10px"></div>
       </div>
       <div class="card" style="margin-top:12px">
         <h3 style="margin-top:0">TikTok login (private accounts)</h3>
         <p class="hint" style="margin-top:0">
-          Private TikTok profiles only download if you are logged in. Pull
-          cookies from a browser that is signed into TikTok, or type a browser
-          name in the settings below (tiktok.cookies_from_browser).
+          Private TikTok profiles only download if you are logged in. Pull the
+          login straight from a browser that is signed into TikTok. Public
+          profiles need none of this.
         </p>
         <div class="row" style="margin-top:10px;gap:8px">
           <button class="small" id="ttCookiesBtn">Pull cookies from browser</button>
@@ -659,11 +666,13 @@ the rows that happened to be on screen.
        tool fetched them. Kept below the paste boxes so it is never in the way
        of normal use, and each row says which platform it belongs to because
        the same handle can be two different people. -->
-  <div class="card" id="excludedCard">
-    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
-      <h3 style="margin:0">Excluded <span id="ttExcludedCount" class="hint"></span></h3>
-      <span class="hint">Removed from the queue, or deleted after downloading.</span>
-    </div>
+  <!-- One collapsed line, like Download settings. This is a recovery list you
+       touch rarely, so it should not occupy the tab: the count stays visible in
+       the summary and the rows appear only when opened. -->
+  <details class="settings" id="excludedCard">
+    <summary>Excluded <span class="hint" id="ttExcludedCount"></span>
+      <span class="hint" style="font-weight:400">— removed from the queue or
+      deleted; restorable</span></summary>
     <p class="hint">
       Pasting a profile or a following list again will <b>not</b> add these back.
       Nothing is deleted — <b>Restore</b> returns them to the queue.
@@ -673,7 +682,7 @@ the rows that happened to be on screen.
     <div class="row" id="ttExcludedActions" style="display:none">
       <button class="small" id="ttRestoreAllBtn">Restore all</button>
     </div>
-  </div>
+  </details>
 
   <details class="settings" id="settingsBox">
     <summary>Download settings <span class="hint" id="setSummary"></span></summary>
@@ -1067,7 +1076,7 @@ const SPEC = [
   {k:"tiktok.limit_rate", l:"Rate limit", d:"--limit-rate, e.g. 5M. blank = unlimited", t:"str", flag:"--limit-rate", dotted:true},
   {k:"tiktok.date_after", l:"Only videos on/after", d:"--dateafter YYYYMMDD. blank = no limit", t:"str", flag:"--dateafter", dotted:true},
   {k:"tiktok.date_before", l:"Only videos on/before", d:"--datebefore YYYYMMDD. blank = no limit", t:"str", flag:"--datebefore", dotted:true},
-  {k:"tiktok.cookies_from_browser", l:"Cookies from browser", d:"--cookies-from-browser, e.g. firefox. blank = none", t:"str", flag:"--cookies-from-browser", dotted:true},
+  {k:"tiktok.cookies_from_browser", l:"Cookies from browser", d:"--cookies-from-browser, e.g. firefox, or firefox:/path/to/profile for a Firefox fork. blank = none. The button above fills this in.", t:"str", flag:"--cookies-from-browser", dotted:true},
   {k:"tiktok.proxy", l:"Proxy", d:"--proxy. Blank = direct. A Cloudflare Worker URL works too, e.g. my-proxy.workers.dev", t:"str", flag:"--proxy", dotted:true},
   {group:"When the queue is empty"},
   {k:"autocheck", l:"Check for new posts automatically", d:"when nothing is queued, look for new posts on every archived profile", t:"bool", flag:"(app)"},
@@ -1615,6 +1624,16 @@ function render(st){
   } else cb.style.display = "none";
 
   if(!settings) fillSettings(st.settings||{});
+  // Show which browser the TikTok cookies come from without making the user
+  // press the button to find out. Blank is a real answer: public profiles work
+  // with no cookies at all.
+  {
+    const cs = $("ttCookiesStatus");
+    if(cs && cs.textContent === ""){
+      const spec = ((st.settings||{}).tiktok||{}).cookies_from_browser || "";
+      cs.textContent = spec ? `Using ${cookieLabel(spec)}` : "Not using browser cookies";
+    }
+  }
 
   // Split the jobs into four groups:
   //   1. what's downloading right now  (pinned, full width)
@@ -2752,14 +2771,27 @@ $("ttImportBtn").onclick = async () => {
 };
 
 $("ttClearBtn").onclick = () => { $("ttInput").value = ""; $("ttResult").textContent = ""; };
+// A cookie spec can be "firefox:/home/you/.zen/abc.Default (release)", which is
+// the value yt-dlp needs but an unreadable thing to show next to a button. Say
+// which browser it came from instead.
+function cookieLabel(spec){
+  if(!spec) return "none";
+  const [head, tail] = String(spec).split(/:(.*)/s);
+  if(head !== "firefox") return head.charAt(0).toUpperCase() + head.slice(1);
+  const p = (tail || "").toLowerCase();
+  if(p.includes(".zen")) return "Zen";
+  if(p.includes(".librewolf")) return "LibreWolf";
+  return "Firefox";
+}
+
 $("ttCookiesBtn").onclick = async () => {
   const st = $("ttCookiesStatus");
   if(st) st.textContent = "Checking browsers…";
   try{
     const r = await post("/api/tiktok/cookies-from-browser", {});
     if(!r.ok){ if(st) st.textContent = r.error || "No browser found"; toast(r.error || "No browser found"); return; }
-    if(st) st.textContent = `Using ${r.browser}`;
-    toast(`TikTok cookies: ${r.browser}`);
+    if(st) st.textContent = `Using ${cookieLabel(r.browser)}`;
+    toast(`TikTok cookies: ${cookieLabel(r.browser)}`);
     tick();
   }catch(e){ if(st) st.textContent = "Error"; toast("Could not pull cookies"); }
 };

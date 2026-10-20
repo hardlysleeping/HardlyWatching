@@ -67,6 +67,14 @@ versioning is [SemVer](https://semver.org/).
   counts down to when it resumes by itself.
 - **The Download tab's header said two different things** — one line in the
   static HTML on a fresh load, another after any tab switch.
+- **A bad cookie setting failed every TikTok download.** Firefox forks (Zen,
+  LibreWolf) were written as `zen` and `librewolf`, which yt-dlp rejects
+  outright — it accepts a fixed list of browser names and exits 2 on anything
+  else. Firefox-family browsers are now stored as `firefox:<profile directory>`,
+  the value is checked before it is saved, an unusable stored value is ignored
+  at download time rather than failing the job, and a profile path is no longer
+  lowercased (`Default` was being written as `default`, which matches nothing on
+  Linux).
 
 ## [0.1.0] — 2026-10-20
 
