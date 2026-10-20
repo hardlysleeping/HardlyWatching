@@ -192,7 +192,31 @@ class Handler(BaseHTTPRequestHandler):
                 f"That upload is larger than the {self.MAX_UPLOAD // (1024*1024)}MB "
                 "limit."}, 413)
 
-        raw = self.rfile.read(n)
+        # Stream the body to a scratch file rather than read(n) into RAM: the
+        # size cap allows hundreds of MB, and reading it whole doubles that in
+        # memory once the boundary split runs. The read here stays bounded to
+        # one chunk at a time; the body is then parsed from disk.
+        import tempfile
+        scratch = tempfile.NamedTemporaryFile(prefix="hw-up-", delete=False)
+        scratch_name = scratch.name
+        try:
+            remaining = n
+            while remaining > 0:
+                chunk = self.rfile.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                scratch.write(chunk)
+                remaining -= len(chunk)
+        finally:
+            scratch.close()
+        try:
+            with open(scratch_name, "rb") as fh:
+                raw = fh.read()
+        finally:
+            try:
+                os.unlink(scratch_name)
+            except OSError:
+                pass
         boundary = b"--" + m.group(1).encode()
 
         # Parts are: headers, blank line, content. Split on the boundary and
@@ -301,17 +325,42 @@ class Handler(BaseHTTPRequestHandler):
             return
         ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         size = path.stat().st_size
-        self.send_response(200)
+
+        # Honour a single byte range so a video can be seeked: the browser asks
+        # for `bytes=N-` and expects 206 with Content-Range. Without this the
+        # whole clip streams from the start, so scrubbing does nothing.
+        start, end, status = 0, size - 1, 200
+        rng = self.headers.get("Range") or ""
+        if rng.startswith("bytes="):
+            m = re.match(r"bytes=(\d*)-(\d*)$", rng.split(",")[0].strip())
+            if m:
+                a, b = m.group(1), m.group(2)
+                if a == "" and b and int(b) > 0:
+                    # suffix form `bytes=-N`: the last N bytes
+                    start, end, status = max(0, size - int(b)), size - 1, 206
+                elif a != "":
+                    start = int(a)
+                    end = min(int(b), size - 1) if b else size - 1
+                    if 0 <= start <= end < size:
+                        status = 206
+
+        self.send_response(status)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(size))
+        self.send_header("Accept-Ranges", "bytes")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Content-Length", str(end - start + 1))
+        else:
+            self.send_header("Content-Length", str(size))
         self.send_header("Cache-Control",
                          "private, max-age=86400" if cache else "no-store")
         self.end_headers()
         # Stream rather than read_bytes(): a clip can be hundreds of MB, and
         # loading one whole per request is how a couple of concurrent videos
-        # exhaust RAM. Copying in blocks keeps memory flat regardless of size.
+        # exhaust RAM. A range seeks and copies exactly that window.
         with open(path, "rb") as fh:
-            shutil.copyfileobj(fh, self.wfile, length=1024 * 1024)
+            fh.seek(start)
+            shutil.copyfileobj(fh, self.wfile, length=end - start + 1)
 
     # ---------- routes ----------
 
@@ -657,37 +706,40 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
             db.mark_imported("tiktok", [j.username for j in added])
-            # Ask TikTok whether each newly queued profile is actually visible.
-            # Only the new ones, and only when the user asked to check, because
-            # this costs one request per profile and that is exactly the kind
-            # of traffic that gets an IP noticed.
-            # Fill in each profile's video total now, so the count the queue
-            # shows has its denominator from the start instead of only after
-            # someone presses a step button.
-            #
-            # Capped deliberately: this is one listing request per profile, and
-            # a large paste would otherwise fire hundreds of requests back to
-            # back -- exactly the pattern that gets an IP throttled. Anything not
-            # filled here is looked up the first time its count is changed, and
-            # the UI shows the total as unknown until then rather than guessing.
+            # Ask TikTok whether each newly queued profile is actually visible,
+            # and fill in each profile's video total, so the count reads
+            # "5 / 120" without pressing a button. Both cost one request per
+            # profile -- exactly the traffic that gets an IP noticed -- so they
+            # are capped and run in the background: a large paste returns at
+            # once instead of blocking for minutes, and the totals and private
+            # flags fill in on the next poll as they complete.
             total_cap = int(body.get("totals") or 25)
-            targets = added[:max(0, total_cap)]
-            if targets:
-                import tiktok_engine as _tt
-                for job in targets:
-                    try:
-                        job.tiktok_total = _tt.profile_total(job.username)
-                    except Exception:
-                        job.tiktok_total = 0
+            do_probe = bool(body.get("probe"))
+            if total_cap > 0 or do_probe:
+                def _fill_tiktok_meta() -> None:
+                    import tiktok_engine as _tt
+                    eng = get_engine()
+                    targets = list(added[:max(0, total_cap)])
+                    for job in targets:
+                        try:
+                            total = _tt.profile_total(job.username)
+                        except Exception:
+                            total = 0
+                        with eng.lock:
+                            job.tiktok_total = total
+                    if do_probe:
+                        for job in added:
+                            try:
+                                verdict = _tt.probe_private(job.username)
+                            except Exception:
+                                verdict = None
+                            if verdict is True:
+                                with eng.lock:
+                                    job.private = True
+                    eng.save_state()
 
-            private = []
-            if body.get("probe") and added:
-                import tiktok_engine as _tt
-                for job in added:
-                    verdict = _tt.probe_private(job.username)
-                    if verdict is True:
-                        job.private = True
-                        private.append(job.username)
+                threading.Thread(target=_fill_tiktok_meta, daemon=True).start()
+
             return self._json({
                 "ok": True,
                 "parsed": len(handles),
@@ -695,8 +747,6 @@ class Handler(BaseHTTPRequestHandler):
                 "skipped": len(handles) - len(added),
                 "excluded": len(blocked),
                 "excluded_handles": blocked[:20],
-                "private": len(private),
-                "private_handles": private[:20],
                 "urls": tiktok_handles.to_urls(handles, "tiktok"),
             })
 
@@ -766,7 +816,8 @@ class Handler(BaseHTTPRequestHandler):
             fav = bool(body.get("favourites"))
             seen = body.get("exclude") or []
             db = _profile_db()
-            found = shorts.scan(get_engine().output_root)
+            known = db.known_reels()
+            found = shorts.scan(get_engine().output_root, known_reels=known)
             db.sync_clips(found)
             alive = [f["path"] for f in found]
             by_path = {f["path"]: f for f in found}
