@@ -336,6 +336,56 @@ def find_browser_sessions() -> list[dict]:
     return out
 
 
+def find_tiktok_browsers() -> list[str]:
+    """Browser names (yt-dlp's spelling) that have a TikTok cookie store.
+
+    yt-dlp's --cookies-from-browser takes a browser name, not a file, so
+    this only needs to know which browsers are logged into TikTok at all.
+    Detection is the same scan as the Instagram side, restricted to stores
+    that actually contain a tiktok.com cookie.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    # Map our internal labels to yt-dlp's expected names.
+    label_to_ytdlp = {
+        "Firefox": "firefox", "Zen": "zen", "LibreWolf": "librewolf",
+        "Chrome": "chrome", "Chromium": "chromium", "Edge": "edge",
+        "Brave": "brave", "Vivaldi": "vivaldi", "Opera": "opera",
+        "Safari": "safari",
+    }
+    roots = _browser_roots()
+    for label, pattern in BROWSER_GLOBS:
+        for root in roots:
+            for p in root.glob(pattern):
+                try:
+                    rp = str(p.resolve())
+                except OSError:
+                    continue
+                if rp in seen or not p.is_file():
+                    continue
+                seen.add(rp)
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(f"file:{p}?immutable=1", uri=True)
+                    try:
+                        cols = {r[1] for r in conn.execute("PRAGMA table_info(moz_cookies)")}
+                        if not cols:
+                            continue
+                        domain_col = "baseDomain" if "baseDomain" in cols else "host"
+                        rows = conn.execute(
+                            f"SELECT 1 FROM moz_cookies WHERE {domain_col} LIKE '%tiktok.com' LIMIT 1"
+                        ).fetchall()
+                    finally:
+                        conn.close()
+                    if rows:
+                        name = label_to_ytdlp.get(label, label.lower())
+                        if name not in out:
+                            out.append(name)
+                except Exception:
+                    pass
+    return out
+
+
 def import_browser_cookie(cookiefile: Path, username: str | None = None) -> dict:
     """Write an instaloader session file from a browser's Instagram cookie.
 
@@ -2148,60 +2198,76 @@ class Engine:
     # ---------- persistence ----------
 
     def _load_state(self) -> None:
-        try:
-            if STATE_FILE.is_file():
-                d = json.loads(STATE_FILE.read_text())
-                self.settings = Settings.from_dict(d.get("settings", {}))
-                self.active_session = d.get("active_session") or None
-                self.cooldown_until = float(d.get("cooldown_until") or 0.0)
-                self.consecutive_limits = int(d.get("consecutive_limits") or 0)
-                self.removed = list(d.get("removed") or [])
-                self.tombstones = list(d.get("tombstones") or [])
+        # Try the main state file, then fall back to backups. A corrupt file
+        # (trailing garbage, partial write) must never wipe the queue silently:
+        # raw_decode recovers the first complete object, and backups are a
+        # last resort that at least keeps the archive reachable.
+        candidates = [STATE_FILE,
+                      STATE_FILE.with_suffix(".bak"),
+                      STATE_FILE.with_name(STATE_FILE.name + ".bak2"),
+                      STATE_FILE.with_name(STATE_FILE.name + ".before-gap-120")]
+        d = None
+        for cand in candidates:
+            if not cand.is_file():
+                continue
+            try:
+                text = cand.read_text()
                 try:
-                    self._last_autocheck = float(d.get("last_autocheck") or 0.0)
-                except (TypeError, ValueError):
-                    self._last_autocheck = 0.0
-                # Where downloads go. A user-chosen folder persists across
-                # restarts; falls back to the default when unset.
-                # Extra archive folders (other disks / external drives), in
-                # priority order. Absent roots are normal: they come back on
-                # their own when mounted.
-                saved_roots = [Path(p) for p in (d.get("roots") or []) if p]
-                if saved_roots:
-                    self.roots = saved_roots
-                saved_root = d.get("output_root")
-                if saved_root:
-                    self.output_root = Path(saved_root)
-                # output_root must always be a root, and first. Deduped by
-                # resolved identity so a symlinked home cannot list it twice.
-                self.roots = [r for r in self.roots if not _same(r, self.output_root)]
-                self.roots.insert(0, self.output_root)
-                # Restore a rate-limit pause so the worker waits it out after a
-                # restart instead of hammering Instagram immediately.
-                if d.get("limit_paused"):
-                    self._limit_paused = True
-                    self.paused = True
-                for jd in d.get("jobs", []):
-                    if not jd.get("username"):
-                        continue
-                    j = Job(**{k: v for k, v in jd.items() if k in Job.__dataclass_fields__})
-                    # Jobs interrupted by a restart are not still running.
-                    if j.status in ("running", "retrying"):
-                        j.status = "queued"
-                        j.message = "resumed after restart"
-                        j.attempts = 0
-                    self.jobs[j.id] = j
-                # Restore the saved run order first, then append anything queued
-                # that the order list did not mention.
-                for jid in (d.get("order") or []):
-                    job = self.jobs.get(jid)
-                    if job is not None and job.status == "queued" and jid not in self.pending:
-                        self.pending.append(jid)
-                for jid, j in self.jobs.items():
-                    if j.status == "queued" and jid not in self.pending:
-                        self.pending.append(jid)
+                    d = json.loads(text)
+                except json.JSONDecodeError:
+                    try:
+                        d, _end = json.JSONDecoder().raw_decode(text)
+                    except Exception:
+                        d = None
+                if d is not None:
+                    break
+            except Exception:
+                d = None
+                continue
+        if d is None:
+            return
+        try:
+            self.settings = Settings.from_dict(d.get("settings", {}))
+            self.active_session = d.get("active_session") or None
+            self.cooldown_until = float(d.get("cooldown_until") or 0.0)
+            self.consecutive_limits = int(d.get("consecutive_limits") or 0)
+            if d.get("limit_paused"):
+                self._limit_paused = True
+                self.paused = True
+            self.removed = list(d.get("removed") or [])
+            self.tombstones = list(d.get("tombstones") or [])
+            try:
+                self._last_autocheck = float(d.get("last_autocheck") or 0.0)
+            except (TypeError, ValueError):
+                self._last_autocheck = 0.0
+            saved_roots = [Path(p) for p in (d.get("roots") or []) if p]
+            if saved_roots:
+                self.roots = saved_roots
+            saved_root = d.get("output_root")
+            if saved_root:
+                self.output_root = Path(saved_root)
+            self.roots = [r for r in self.roots if not _same(r, self.output_root)]
+            self.roots.insert(0, self.output_root)
+            # Restore queued/running jobs.
+            for jd in d.get("jobs", []):
+                if not jd.get("username"):
+                    continue
+                j = Job(**{k: v for k, v in jd.items() if k in Job.__dataclass_fields__})
+                if j.status in ("running", "retrying"):
+                    j.status = "queued"
+                    j.message = "resumed after restart"
+                    j.attempts = 0
+                self.jobs[j.id] = j
+            # Restore run order.
+            for jid in (d.get("order") or []):
+                if jid in self.jobs and jid not in self.pending:
+                    self.pending.append(jid)
+            for jid, j in self.jobs.items():
+                if j.status == "queued" and jid not in self.pending:
+                    self.pending.append(jid)
         except Exception:
-            pass  # corrupt state is not fatal
+            pass
+
 
     def save_state(self) -> None:
         try:
@@ -2227,9 +2293,39 @@ class Engine:
                     "roots": [str(p) for p in self.roots],
                     "jobs": jobs,
                 }
-            tmp = STATE_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=1))
-            tmp.replace(STATE_FILE)
+            # Write to a uniquely named temp file so two concurrent saves can
+            # never interleave on the same path, fsync it, validate that it
+            # parses, then atomically replace the real file. This is what keeps
+            # a partial or interleaved write from ever corrupting the queue.
+            import tempfile, os as _os
+            fd, tmp_name = tempfile.mkstemp(prefix="state-", suffix=".tmp",
+                                            dir=str(STATE_FILE.parent))
+            try:
+                with _os.fdopen(fd, "w") as fh:
+                    json.dump(data, fh, indent=1)
+                    fh.flush()
+                    _os.fsync(fh.fileno())
+                # Validate: a file that does not parse back is never installed.
+                with open(tmp_name) as fh:
+                    json.loads(fh.read())
+                # Rotate: the previous good state becomes the backup, so a bad
+                # write can always be recovered from by hand if needed.
+                if STATE_FILE.is_file():
+                    backup = STATE_FILE.with_suffix(".bak")
+                    try:
+                        # Keep one rolling backup. Overwrite is fine: the new
+                        # backup is the state we are about to replace.
+                        if backup.is_file():
+                            backup.unlink()
+                        STATE_FILE.rename(backup)
+                    except OSError:
+                        pass
+                _os.replace(tmp_name, STATE_FILE)
+            except Exception:
+                try:
+                    _os.unlink(tmp_name)
+                except OSError:
+                    pass
         except Exception:
             pass
 
@@ -2955,8 +3051,20 @@ class Engine:
     def list_sessions(self) -> list[dict]:
         return list_sessions()
 
-    def browser_sessions(self) -> list[dict]:
-        return find_browser_sessions()
+    def tiktok_browsers(self) -> list[str]:
+        return find_tiktok_browsers()
+
+    def set_tiktok_cookies_browser(self, browser: str) -> dict:
+        """Set tiktok.cookies_from_browser. Empty string clears it."""
+        browser = (browser or "").strip().lower()
+        if browser and browser not in find_tiktok_browsers():
+            # Allow a manual value even if we did not detect it; the user may
+            # know their browser better than our scan does.
+            pass
+        with self.lock:
+            self.settings.tiktok["cookies_from_browser"] = browser
+        self.save_state()
+        return {"ok": True, "browser": browser}
 
     def import_from_browser(self, cookiefile: str | None = None) -> dict:
         """Pull a session out of a browser and install it for instaloader.

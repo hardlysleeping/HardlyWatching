@@ -845,6 +845,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "weight": db.set_weight(path, "less")})
             return self._json({"ok": False, "error": "unknown action"})
 
+        if p == "/api/tiktok/cookies-from-browser":
+            browser = str(body.get("browser") or "").strip().lower()
+            if not browser:
+                # Auto-pick: the best detected browser with TikTok cookies.
+                cands = get_engine().tiktok_browsers()
+                if not cands:
+                    return self._json({"ok": False,
+                                       "error": "No browser with a TikTok login was found. "
+                                               "Sign in to TikTok in Firefox or Zen, then retry."})
+                browser = cands[0]
+            return self._json(get_engine().set_tiktok_cookies_browser(browser))
+
         if p == "/api/remove":
             return self._json({"ok": get_engine().remove(body.get("id", ""))})
         if p == "/api/forget":
@@ -962,6 +974,9 @@ class Handler(BaseHTTPRequestHandler):
             ok = get_engine().forget_session(str(body.get("username") or ""))
             return self._json({"ok": ok})
 
+        if p == "/api/tiktok/browsers":
+            return self._json({"browsers": get_engine().tiktok_browsers()})
+
         if p == "/api/session/browsers":
             return self._json({"browsers": get_engine().browser_sessions()})
 
@@ -993,9 +1008,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/open-folder":
             name = clean_profile_name(body.get("profile", ""))
+            plat = str(body.get("platform") or "instagram")
+            if plat not in ("instagram", "tiktok"):
+                plat = "instagram"
             # Open the folder the profile is actually in, not just the
             # downloads folder -- it may live on another drive.
-            target = (get_engine().root_for(name) if name
+            target = (get_engine().root_for(name, plat) if name
                       else get_engine().output_root) or get_engine().output_root
             threading.Thread(target=_open_folder, args=(target,), daemon=True).start()
             return self._json({"ok": True, "path": str(target)})

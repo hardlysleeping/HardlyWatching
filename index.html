@@ -611,6 +611,18 @@ the rows that happened to be on screen.
         </div>
         <div id="ttResult" class="hint" style="margin-top:10px"></div>
       </div>
+      <div class="card" style="margin-top:12px">
+        <h3 style="margin-top:0">TikTok login (private accounts)</h3>
+        <p class="hint" style="margin-top:0">
+          Private TikTok profiles only download if you are logged in. Pull
+          cookies from a browser that is signed into TikTok, or type a browser
+          name in the settings below (tiktok.cookies_from_browser).
+        </p>
+        <div class="row" style="margin-top:10px;gap:8px">
+          <button class="small" id="ttCookiesBtn">Pull cookies from browser</button>
+          <span class="hint" id="ttCookiesStatus" style="align-self:center"></span>
+        </div>
+      </div>
 
   </div><!-- /ttPane -->
 
@@ -1023,18 +1035,34 @@ const SPEC = [
   {k:"slide", l:"Sidecar slide index", d:"which image of a carousel", t:"str", flag:"--slide"},
 ];
 
+function applySettingsPlatform(plat){
+  const grid = $("sgrid");
+  if(!grid) return;
+  grid.querySelectorAll("[data-plat]").forEach((el) => {
+    const p = el.dataset.plat || "both";
+    if(p === "both" || p === plat) el.style.display = "";
+    else el.style.display = "none";
+  });
+}
+
 function buildSettings(){
+  const IG_ONLY = ["posts","profile_pic","stories","highlights","reels","tagged","igtv",
+    "captions","metadata_json","comments","geotags","compress_json","fast_update",
+    "latest_stamps","count","post_filter","storyitem_filter","between_profiles",
+    "max_connection_attempts","request_timeout","sanitize_paths","resume","iphone","slide"];
   $("sgrid").innerHTML = SPEC.map((s)=>{
-    if(s.group) return `<div class="sgroup" data-group="${esc(s.group)}">${esc(s.group)}</div>`;
+    if(s.group) return `<div class="sgroup" data-group="${esc(s.group)}" data-plat="both">${esc(s.group)}</div>`;
+    const plat = s.k.startsWith("tiktok.") ? "tiktok"
+      : IG_ONLY.includes(s.k) ? "ig" : "both";
     const hint = s.note ? `<div class="hint" style="color:var(--warn);font-size:11.5px;margin-top:4px">
         Queued as its own job just after this profile finishes.</div>` : "";
     if(s.t==="bool"){
-      return `<label class="tog" data-row="${esc(s.k)}"
+      return `<label class="tog" data-row="${esc(s.k)}" data-plat="${plat}"
         data-terms="${esc((s.l+" "+(s.d||"")+" "+(s.flag||"")+" "+(s.group||"")).toLowerCase())}">
         <input type="checkbox" data-k="${s.k}" data-t="bool">
         <span>${esc(s.l)}<small>${esc(s.d||"")}</small></span></label>`;
     }
-    return `<div class="num" data-row="${esc(s.k)}"
+    return `<div class="num" data-row="${esc(s.k)}" data-plat="${plat}"
       data-terms="${esc((s.l+" "+(s.d||"")+" "+(s.flag||"")+" "+(s.group||"")).toLowerCase())}">
       <span style="min-width:0">${esc(s.l)}
         <small class="hint" style="display:block">${esc(s.d||"")}</small></span>
@@ -1867,7 +1895,7 @@ function cardHtml(j, pos, qpos){
       btns.push(`<button class="icon" data-down="${j.id}" title="Move down one">↓</button>`);
       btns.push(`<button class="icon" data-bottom="${j.id}" title="Move to the back (run last)">⤓</button>`);
     }
-    btns.push(`<button class="small" data-open="${esc(j.username)}" title="Open the download folder">Open</button>`);
+    btns.push(`<button class="small" data-open="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}" title="Open the download folder">Open</button>`);
 
     // Secondary actions live behind one menu so the row stays readable.
     const more=[];
@@ -1986,7 +2014,14 @@ document.addEventListener("click", async (e) => {
   try{
     const r = await post("/api/tiktok/more", body);
     if(!r.ok){ toast(r.error || "Could not change the count"); }
-    else { toast(`${r.username}: ${r.count ? r.count : "all"}${r.total ? " / " + r.total : ""}`); }
+    else {
+      toast(`${r.username}: ${r.count ? r.count : "all"}${r.total ? " / " + r.total : ""}`);
+      const out = bar.querySelector(".ttnout");
+      if(out){
+        const shown = r.count ? r.count : (r.total || "all");
+        out.textContent = r.total ? `${shown} / ${r.total}` : `${shown}`;
+      }
+    }
   }catch(err){
     toast("Could not change the count");
   }
@@ -2107,7 +2142,7 @@ function wireCards(container){
   // Opening a folder used to be silent: the file manager window is the only
   // feedback and it can open behind the browser.
   on("[data-open]", b=>b.onclick=()=>busy(b, async()=>{
-    const r = await post("/api/open-folder",{profile:b.dataset.open});
+    const r = await post("/api/open-folder",{profile:b.dataset.open, platform:b.dataset.platform});
     if(!r || r.ok === false) showErr(r?.error || "Could not open that folder");
   }));
   on("[data-requeue]", b=>b.onclick=()=>busy(b, async()=>{
@@ -2291,6 +2326,7 @@ $("changeFolderBtn").addEventListener("click", () => {
 });
 
 buildSettings();
+applySettingsPlatform("ig");
 tick();
 setInterval(tick,1200);
 
@@ -2375,6 +2411,9 @@ function showPlatform(which){
   // The queue below the paste box belongs to the selected platform, so it has
   // to be redrawn immediately rather than waiting for the next poll.
   if(lastQueueRender) render(lastQueueRender);
+  // Settings that only make sense for one platform (IG posts/stories/reels
+  // vs TikTok yt-dlp options) should not be visible on the other tab.
+  applySettingsPlatform(ig ? "ig" : "tiktok");
 }
 $("subIg").onclick = () => showPlatform("ig");
 $("subTt").onclick = () => showPlatform("tt");
@@ -2482,6 +2521,17 @@ $("ttImportBtn").onclick = async () => {
 };
 
 $("ttClearBtn").onclick = () => { $("ttInput").value = ""; $("ttResult").textContent = ""; };
+$("ttCookiesBtn").onclick = async () => {
+  const st = $("ttCookiesStatus");
+  if(st) st.textContent = "Checking browsers…";
+  try{
+    const r = await post("/api/tiktok/cookies-from-browser", {});
+    if(!r.ok){ if(st) st.textContent = r.error || "No browser found"; toast(r.error || "No browser found"); return; }
+    if(st) st.textContent = `Using ${r.browser}`;
+    toast(`TikTok cookies: ${r.browser}`);
+    tick();
+  }catch(e){ if(st) st.textContent = "Error"; toast("Could not pull cookies"); }
+};
 
 function buildAllBar(profileCount){
   const bar = $("allBar");
