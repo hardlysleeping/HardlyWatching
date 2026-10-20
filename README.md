@@ -601,3 +601,7 @@ This project bundles no instaloader or yt-dlp code: both are installed
 separately and keep their own licences (instaloader is MIT; check yt-dlp's
 licence with its own distribution). GPL-3.0 applies to this project's own
 code, and it is not imported from either tool.
+
+## Support
+
+[![Donate with PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=RNT5W4XNC64EY)
