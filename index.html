@@ -3622,8 +3622,13 @@ function paintViewer(){
     vd.title = "";
   }
   host.querySelector(".vcap").textContent = post.caption || post.title || "";
-  host.querySelector(".vnav.prev").style.visibility = many ? "visible" : "hidden";
-  host.querySelector(".vnav.next").style.visibility = many ? "visible" : "hidden";
+  // Show the arrows whenever pressing them would do something. `many` only
+  // means this post has several parts; now that they also walk the grid, a
+  // single photo still has a next and previous post, so hiding them here left
+  // most posts with no arrows at all.
+  const canStep = many || (gridWalk && gridWalk.length > 1);
+  host.querySelector(".vnav.prev").style.visibility = canStep ? "visible" : "hidden";
+  host.querySelector(".vnav.next").style.visibility = canStep ? "visible" : "hidden";
 
   // The action buttons describe the CURRENT item, so they are repainted on
   // every step (carousel parts can be a mix of images and videos).
