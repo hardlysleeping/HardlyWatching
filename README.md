@@ -38,9 +38,9 @@ reboots, and browse what you hoarded.
 
 ## Screenshots
 
-**Queue** — paste profiles, add them, start. They download one at a time, with the
-waiting list and finished list side by side. Both page and search, so a queue of
-hundreds is still easy to navigate.
+**Queue** — paste profiles, add them, start. Instagram and TikTok download in
+parallel, one profile each, with the waiting list and finished list side by side.
+Both page and search, so a queue of hundreds is still easy to navigate.
 
 ![The queue screen: profiles waiting and finished, with the page and search controls](docs/queue.png)
 
@@ -190,17 +190,20 @@ Two pieces:
   instaloader for it, reads instaloader's output to show progress, and serves the
   gallery from the files on disk.
 
-A job is one profile. Jobs run **one at a time**. State lives in
-`~/.config/hardlywatching/state.json`, so closing the browser, restarting the app
-or rebooting all keep the queue, its order and any cooldown. Only a profile that
-was mid-download restarts from the beginning.
+A job is one profile. **Instagram and TikTok each have their own worker**, so
+one download per platform runs at a time and they run *alongside* each other.
+They go through different programs to different servers with separate rate
+limits, so neither waits for the other: a TikTok video starts in seconds even
+when the Instagram queue is hundreds of profiles long, and an Instagram
+rate-limit pause does not stop TikTok.
 
-**Instagram and TikTok share that one worker.** The sub-tabs split which queue
-you are looking at, not which one runs. The start button follows the sub-tab:
-on TikTok it reads **Start TikTok** and moves TikTok profiles ahead of the
-Instagram ones, so a few videos do not have to wait behind hundreds of profiles.
-A profile that is already downloading always finishes first — the queue is never
-interrupted mid-run.
+State lives in `~/.config/hardlywatching/state.json`, so closing the browser,
+restarting the app or rebooting all keep the queue, its order and any cooldown.
+Only a profile that was mid-download restarts from the beginning.
+
+The sub-tabs split which queue you are *looking at*; the workers run regardless.
+Start, Pause and Resume act on the platform on screen, so pausing Instagram to
+sit out a block leaves TikTok downloading.
 
 Re-running a profile does not re-download it. instaloader's `--fast-update` stops
 at the first file it already has, and `--latest-stamps` records what has been

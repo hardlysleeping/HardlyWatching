@@ -1351,17 +1351,37 @@ let lastQueueRender = null;
 // is a temporal-dead-zone crash, not a hoisted undefined.
 let activePlatform = "instagram";
 
+// Each platform has its own worker, so "current", "paused" and "wait" are per
+// platform. The UI shows one platform at a time, so these read the one you are
+// looking at. Instagram and TikTok downloads never wait on each other.
+function platCurrent(st, p){
+  const c = st && st.current;
+  if(c && typeof c === "object") return c[p] || null;
+  return (p === "instagram" && c) ? c : null;   // older server: flat value
+}
+function platPaused(st, p){
+  return p === "tiktok" ? !!(st && st.tt_paused) : !!(st && st.paused);
+}
+function platWait(st, p){
+  if(st && st.waits && st.waits[p]) return st.waits[p];
+  if(st && st.wait && st.next_platform === p) return st.wait;
+  return {};
+}
+
 function renderLight(st){
   const cAll = st.counts || {};
   // Follow the open sub-tab so the button label and its enabled state agree
   // with what is actually on screen.
   const c = (cAll.by_platform && cAll.by_platform[activePlatform]) || cAll;
   const tt = activePlatform === "tiktok";
-  paused = st.paused;
-  const cd = st.cooldown_remaining || 0;
+  const cur = platCurrent(st, activePlatform);
+  paused = platPaused(st, activePlatform);
+  // A rate-limit cooldown is Instagram's alone; it must not put a "cooling
+  // down" label on the TikTok button.
+  const cd = tt ? 0 : (st.cooldown_remaining || 0);
   const run = $("runBtn");
   if(run){
-    if(st.current){
+    if(cur){
       run.textContent = "Pause"; run.className = "small";
       run.title = "Pause after the current profile finishes";
     } else if(paused){
@@ -1369,19 +1389,19 @@ function renderLight(st){
       run.className = "small primary";
       run.title = cd > 0
         ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
-        : "Resume the queue";
+        : "Resume this queue";
     } else if((c.queued || 0) > 0){
       run.textContent = tt ? "Start TikTok" : "Start";
       run.className = "small primary";
       run.title = tt
-        ? "Download TikTok profiles next, ahead of the Instagram queue"
+        ? "Start the TikTok queue, which runs alongside Instagram"
         : "Start downloading the queue";
     } else {
       run.textContent = tt ? "Start TikTok" : "Start";
       run.className = "small primary";
       run.disabled = true; run.title = "Nothing queued yet";
     }
-    if((c.queued || 0) > 0 || st.current || paused) run.disabled = false;
+    if((c.queued || 0) > 0 || cur || paused) run.disabled = false;
   }
   const qh = $("queueHint");
   if(qh){
@@ -1413,11 +1433,13 @@ function viewForPlatform(st){
     if(j.status === "running" || j.status === "retrying") counts.running++;
     else if(j.status in counts) counts[j.status]++;
   }
-  // A wait belongs to whichever platform is about to run, so it is only shown
-  // on the tab it applies to.
-  let wait = null;
-  if(st.wait && st.next_platform === want) wait = st.wait;
-  return {...st, jobs, counts, wait, total_jobs: jobs.length};
+  // A wait belongs to one platform's worker, so show only that platform's.
+  // Instagram being rate limited must not put a countdown on the TikTok tab.
+  const wait = platWait(st, want);
+  return {...st, jobs, counts, wait,
+          paused: platPaused(st, want),
+          current: platCurrent(st, want),
+          total_jobs: jobs.length};
 }
 
 function render(st){
@@ -1501,7 +1523,14 @@ function render(st){
     (nPriv?` · <b style="color:var(--err)" title="yt-dlp cannot download a private TikTok profile">${nPriv} private</b>`:"") +
     ` · <b>${c.done||0}</b> done` +
     (c.failed?` · <b style="color:var(--err)">${c.failed} failed</b>`:"");
-  $("queueHint").textContent = st.current ? "downloading: "+st.current : "";
+  // Both workers can be downloading at once, so say so. The queue list below
+  // only shows the active platform, and hiding the other one entirely would
+  // make a running download look like it had stopped.
+  const otherP = activePlatform === "tiktok" ? "instagram" : "tiktok";
+  const otherCur = platCurrent(st, otherP);
+  $("queueHint").textContent = st.current
+    ? "downloading: " + st.current + (otherCur ? ` · also ${otherP}: ${otherCur}` : "")
+    : (otherCur ? `${otherP} downloading: ${otherCur}` : "");
 
   // While anything is downloading, keep the profiles grid moving: a profile
   // mid-run is listed live, and its item count and badge should climb instead
@@ -1534,15 +1563,16 @@ function render(st){
   // it look as though they had been removed from the wrong place.
   renderRemoved(activePlatform === "instagram" ? (st.removed || []) : []);
 
-  // One button whose label always matches what clicking it does. On the
-  // Download tab it acts on the platform whose queue is on screen: "Start" on
-  // the TikTok sub-tab has to begin TikTok work, not silently pick up whatever
-  // sits at the top of the shared queue (which is why it looked like the
-  // button only ever started Instagram).
+  // One button whose label always matches what clicking it does. It acts on the
+  // platform whose queue is on screen, and each platform has its own worker, so
+  // "Start TikTok" begins the TikTok queue rather than picking up whatever sits
+  // at the top of the shared order.
   paused = st.paused;
-  const cd = st.cooldown_remaining || 0;
-  const run = $("runBtn");
   const tt = activePlatform === "tiktok";
+  // A rate-limit cooldown is Instagram's alone. Showing it on the TikTok tab
+  // would put "Resume (cooling down)" on a queue that is not cooling down.
+  const cd = tt ? 0 : (st.cooldown_remaining || 0);
+  const run = $("runBtn");
   if(st.current){
     run.textContent = "Pause";
     run.className = "small";
@@ -1550,12 +1580,12 @@ function render(st){
   } else if(paused){
     run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
     run.className = "small primary";
-    run.title = cd > 0 ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min` : "Resume the queue";
+    run.title = cd > 0 ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min` : "Resume this queue";
   } else if((c.queued||0) > 0){
     run.textContent = tt ? "Start TikTok" : "Start";
     run.className = "small primary";
     run.title = tt
-      ? "Download TikTok profiles next, ahead of the Instagram queue"
+      ? "Start the TikTok queue, which runs alongside Instagram"
       : "Start downloading the queue";
   } else {
     run.textContent = tt ? "Start TikTok" : "Start";
@@ -2342,18 +2372,17 @@ $("startBtn").onclick = async () => {
 $("runBtn").onclick = async () => {
   // Label tells us what this click means; act on the live state.
   const st = await (await fetch("/api/state")).json();
-  if(st.current){ await post("/api/pause",{}); toast("Pausing after this profile"); }
-  else if(st.paused){ await post("/api/resume",{}); toast("Resumed"); }
+  // Everything here is scoped to the platform on screen: each has its own
+  // worker, its own pause, and its own queue to start.
+  const p = activePlatform;
+  const label = p === "tiktok" ? "TikTok" : "Instagram";
+  const cur = platCurrent(st, p);
+  if(cur){ await post("/api/pause",{platform: p}); toast(`Pausing ${label} after this profile`); }
+  else if(platPaused(st, p)){ await post("/api/resume",{platform: p}); toast(`Resumed ${label}`); }
   else {
-    // Start the platform whose queue is on screen. Without this, Start on the
-    // TikTok tab simply picked up whatever was at the top of the shared queue
-    // (usually Instagram), which is why it looked like TikTok could not start.
-    const r = await post("/api/start",{platform: activePlatform});
-    if(r && r.ok){
-      const n = r.moved || 0;
-      toast(n ? `Starting ${activePlatform === "tiktok" ? "TikTok" : "Instagram"} — ${n} queued`
-              : `Starting ${activePlatform === "tiktok" ? "TikTok" : "Instagram"}`);
-    } else toast("Started");
+    const r = await post("/api/start",{platform: p});
+    if(!r || !r.ok) toast(r && r.error ? r.error : `Could not start ${label}`);
+    else toast(`Starting ${label}`);
   }
   tick();
 };

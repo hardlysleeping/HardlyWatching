@@ -5,15 +5,29 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Instagram and TikTok download independently.** They were sharing one worker,
+  one queue position and one pause flag, so a TikTok video sat behind hundreds
+  of Instagram profiles and an Instagram rate-limit pause stopped TikTok too.
+  They use different programs against different servers with separate rate
+  limits, so there was nothing to serialise: each platform now has its own
+  worker, queue, pause, cooldown and pacing timer, and one download per platform
+  runs at a time. Measured: a two-second TikTok download and a two-second
+  Instagram download overlap by the full two seconds.
+- **Start, Pause and Resume act on the platform on screen.** Pausing Instagram
+  to sit out a block no longer stops yt-dlp, and the TikTok tab no longer shows
+  Instagram's cooling-down countdown. "Start TikTok" simply starts the TikTok
+  queue rather than reordering the shared one.
+
 ### Added
 
 - **Shorts is a tab.** Download / Gallery / Shorts, swapped to like the others,
   in a phone-shaped column. `/shorts` still works on its own for the installed
   phone app.
 - **Start the platform you are looking at.** The start button follows the
-  Instagram/TikTok sub-tab: on TikTok it is **Start TikTok** and moves TikTok
-  profiles ahead of the Instagram queue, so they do not have to wait behind
-  hundreds of Instagram jobs. A profile already downloading finishes first.
+  Instagram/TikTok sub-tab: on TikTok it is **Start TikTok** and starts that
+  queue, so it no longer looks like it only ever starts Instagram.
 - **A seek bar in Shorts on desktop**, plus ← / → to jump 5 seconds. Each clip
   loops, so without it there was no way to go back.
 - **"More / less often" applies to the profile**, not the single clip: one video

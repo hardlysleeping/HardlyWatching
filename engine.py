@@ -2124,13 +2124,22 @@ class Engine:
         self.jobs: dict[str, Job] = {}
         self.lock = threading.RLock()
         self.worker: threading.Thread | None = None
-        self.current: str | None = None
-        self.paused = False
+        # One worker per platform. Instagram goes through instaloader and TikTok
+        # through yt-dlp: different programs talking to different servers with
+        # separate rate limits, so neither should ever wait behind the other's
+        # queue. Everything that used to be a single slot is keyed by platform
+        # now -- the running profile, the cancel flag, the child process and the
+        # pacing deadline.
+        self.worker_tt: threading.Thread | None = None
+        self.current: dict[str, str | None] = {"instagram": None, "tiktok": None}
+        self.cancel_current: dict[str, bool] = {"instagram": False, "tiktok": False}
+        self.paused = False          # Instagram: user pause, or a 429
+        self.tt_paused = False       # TikTok: user pause only
         self.stop_requested = False
-        self.cancel_current = False
         self.settings = Settings()
         self.active_session: str | None = None  # chosen instaloader session
-        self._proc: subprocess.Popen | None = None
+        self._proc: dict[str, subprocess.Popen | None] = {"instagram": None,
+                                                          "tiktok": None}
         # Wall-clock time before which NO request may be made. Persisted, so
         # restarting the app cannot bypass a rate-limit cooldown.
         self.cooldown_until: float = 0.0
@@ -2149,11 +2158,12 @@ class Engine:
         self._last_autocheck: float = 0.0
         self._autocheck_note: str = ""
         self._limit_paused: bool = False
-        # While the worker sleeps out `between_profiles`, these hold the wait's
-        # start and deadline (epoch seconds, 0 when not waiting). The UI counts
-        # down from wait_until so the number it shows is the real one.
-        self.wait_started: float = 0.0
-        self.wait_until: float = 0.0
+        # While a worker sleeps out its gap, these hold that platform's wait
+        # start and deadline (epoch seconds, 0 when not waiting). Keyed by
+        # platform so an Instagram gap and a TikTok gap can run at once; the UI
+        # counts down from wait_until so the number it shows is the real one.
+        self.wait_started: dict[str, float] = {"instagram": 0.0, "tiktok": 0.0}
+        self.wait_until: dict[str, float] = {"instagram": 0.0, "tiktok": 0.0}
         self._load_state()
 
     # ---------- gallery ----------
@@ -2332,12 +2342,22 @@ class Engine:
     # ---------- public API ----------
 
     def start(self) -> None:
+        """Make sure both platform workers are running.
+
+        Two threads, one per platform. Instagram and TikTok downloads do not
+        wait on each other, so a long Instagram queue no longer delays a single
+        TikTok video.
+        """
         with self.lock:
-            if self.worker and self.worker.is_alive():
-                return
             self.stop_requested = False
-            self.worker = threading.Thread(target=self._run, daemon=True)
-            self.worker.start()
+            if not (self.worker and self.worker.is_alive()):
+                self.worker = threading.Thread(target=self._run, args=("instagram",),
+                                               daemon=True, name="worker-instagram")
+                self.worker.start()
+            if not (self.worker_tt and self.worker_tt.is_alive()):
+                self.worker_tt = threading.Thread(target=self._run, args=("tiktok",),
+                                                  daemon=True, name="worker-tiktok")
+                self.worker_tt.start()
 
     def cleanup_partials_at_startup(self) -> None:
         """Remove interrupted-download leftovers once per start.
@@ -2373,17 +2393,28 @@ class Engine:
             self.start()
 
     def watchdog(self) -> None:
-        """Restart the worker if it died while work remains.
+        """Restart a worker that died while work remains.
 
-        The worker thread exits when it believes it is idle. If jobs are still
-        queued at that moment, something went wrong -- revive it rather than
-        leaving the queue stalled until the user notices.
+        Each worker thread exits when it believes its platform is idle. If jobs
+        for that platform are still queued at that moment, something went wrong
+        -- revive it rather than leaving that queue stalled until the user
+        notices. Checked per platform, because one worker going quiet says
+        nothing about the other.
         """
         with self.lock:
-            work = [jid for jid, j in self.jobs.items() if j.status == "queued"]
-            alive = bool(self.worker and self.worker.is_alive())
-        if work and not alive and not self.paused:
-            self.start()
+            for platform, alive in (
+                ("instagram", bool(self.worker and self.worker.is_alive())),
+                ("tiktok", bool(self.worker_tt and self.worker_tt.is_alive())),
+            ):
+                if alive:
+                    continue
+                waiting = any(j.status == "queued"
+                              and getattr(j, "platform", "instagram") == platform
+                              for j in self.jobs.values())
+                blocked = self.paused if platform == "instagram" else self.tt_paused
+                if waiting and not blocked:
+                    self.start()
+                    return
 
     def update_settings(self, patch: dict) -> Settings:
         with self.lock:
@@ -2579,12 +2610,14 @@ class Engine:
             exclude_platform = getattr(job, "platform", "instagram")
             exclude_handle = job.username
             if job.status == "running":
-                self.cancel_current = True
-                self._terminate_proc()
+                # Cancel only this job's own worker process. Both platforms can
+                # be downloading at once, and the other one is not involved.
+                self.cancel_current[exclude_platform] = True
+                self._terminate_proc(exclude_platform)
                 job.status = "cancelled"
                 job.finished_at = time.time()
                 job.message = "cancelled"
-                self.current = None
+                self.current[exclude_platform] = None
             elif job.status in ("queued", "retrying"):
                 job.status = "cancelled"
                 job.finished_at = time.time()
@@ -2872,7 +2905,9 @@ class Engine:
         if self.paused or self._limit_paused:
             return False
         # Never pile on: only when there is genuinely nothing left to do.
-        if self.pending or self.current:
+        # Autocheck tops up Instagram profiles, so only Instagram's work counts
+        # here -- a busy TikTok queue is no reason to skip it.
+        if self._has_pending("instagram") or self.current["instagram"]:
             return False
         last = float(getattr(self, "_last_autocheck", 0) or 0)
         return now - last >= hours * 3600
@@ -2959,43 +2994,50 @@ class Engine:
         return {"enabled": AUTO_RETRY_MAX > 0, "max": AUTO_RETRY_MAX,
                 "waiting": waiting}
 
-    def pause(self) -> None:
-        self.paused = True
-        self._limit_paused = False  # a user pause must never auto-clear
+    def pause(self, platform: str = "instagram") -> None:
+        """Pause one platform's worker.
 
-    def resume(self) -> None:
-        """Resume the queue. Also clears any rate-limit cooldown the user
-        is explicitly choosing to override."""
-        self.paused = False
-        self._limit_paused = False
+        Instagram and TikTok pause separately. Stopping Instagram to sit out a
+        block has no bearing on yt-dlp, so it must not stop it too. "all" pauses
+        both, for callers that want the whole app quiet.
+        """
+        platform = (platform or "instagram").strip().lower()
+        if platform in ("instagram", "all"):
+            self.paused = True
+            self._limit_paused = False  # a user pause must never auto-clear
+        if platform in ("tiktok", "all"):
+            self.tt_paused = True
+
+    def resume(self, platform: str = "instagram") -> None:
+        """Resume one platform. Instagram's resume also clears any rate-limit
+        cooldown the user is explicitly choosing to override."""
+        platform = (platform or "instagram").strip().lower()
+        if platform in ("instagram", "all"):
+            self.paused = False
+            self._limit_paused = False
+        if platform in ("tiktok", "all"):
+            self.tt_paused = False
         self.kick_if_work()
 
     def start_platform(self, platform: str) -> dict:
-        """Jump one platform's queued jobs to the front, then resume.
+        """Start one platform's worker, unpausing just that platform.
 
-        The queue is shared and there is a single worker, so a profile that is
-        already downloading cannot be interrupted. "Start TikTok" therefore
-        means: make the NEXT job the worker takes a TikTok one, instead of
-        waiting behind a few hundred Instagram profiles. Relative order inside
-        each platform is preserved.
+        There is a worker per platform now, so nothing needs reordering: the
+        TikTok worker picks up TikTok jobs wherever they sit in the shared
+        order. Moving them to the front would rewrite the user's queue order for
+        no benefit, so it no longer happens.
         """
         platform = (platform or "").strip().lower()
         if platform not in ("instagram", "tiktok"):
             return {"ok": False, "error": "unknown platform"}
-        with self.lock:
-            mine, rest = [], []
-            for jid in self.pending:
-                job = self.jobs.get(jid)
-                same = (job is not None
-                        and getattr(job, "platform", "instagram") == platform
-                        and job.status == "queued")
-                (mine if same else rest).append(jid)
-            self.pending[:] = mine + rest
+        if platform == "tiktok":
+            self.tt_paused = False
+        else:
             self.paused = False
             self._limit_paused = False
         self.save_state()
         self.start()
-        return {"ok": True, "platform": platform, "moved": len(mine)}
+        return {"ok": True, "platform": platform}
 
     def clear_cooldown(self) -> None:
         """Drop the rate-limit cooldown (user override)."""
@@ -3008,18 +3050,23 @@ class Engine:
     def cooldown_remaining(self) -> int:
         return max(0, int(self.cooldown_until - time.time()))
 
-    def wait_reason(self) -> dict:
-        """What (if anything) is holding the queue up, with a real deadline.
+    def wait_reason(self, platform: str = "instagram") -> dict:
+        """What (if anything) is holding one platform's worker up.
 
         Three distinct causes, deliberately kept apart so a countdown can say
         which one it is:
           paused       -- user action; no deadline, waits for a human
           rate_limit   -- Instagram told us to back off; deadline is real
-          pacing       -- the normal between_profiles gap; deadline is real
-        Returns {} when the worker is free to run.
+          pacing       -- the normal between-profiles gap; deadline is real
+        Returns {} when that platform's worker is free to run.
+
+        Instagram's pause and cooldown are not reported for TikTok. The TikTok
+        worker ignores both, so repeating them there would say a download is
+        stalled when it is running.
         """
         now = time.time()
-        if self.paused:
+        ig = platform == "instagram"
+        if ig and self.paused:
             # A 429 sets paused *and* cooldown_until. If this pause came from a
             # rate limit, report that with its real deadline -- otherwise this
             # branch shadows the cooldown check below and the UI shows a bare
@@ -3033,34 +3080,28 @@ class Engine:
                             "label": "rate limited"}
             return {"kind": "paused", "remaining": 0, "total": 0,
                     "until": 0, "label": "paused"}
-        cd = int(self.cooldown_until - now)
-        if cd > 0:
-            return {"kind": "rate_limit", "remaining": cd,
-                    "total": cd, "until": self.cooldown_until,
-                    "label": "rate limited"}
-        if self.wait_until > now:
-            # Which gap is running depends on the platform of the NEXT job, the
-            # same rule the scheduler used to pick the delay. Without that, a
-            # TikTok gap would report Instagram's 120s as its total.
-            next_platform = "instagram"
-            with self.lock:
-                for jid in self.pending:
-                    nx = self.jobs.get(jid)
-                    if nx is not None and nx.status == "queued":
-                        next_platform = getattr(nx, "platform", "instagram")
-                        break
-            if next_platform == "tiktok":
-                total = int(self.settings.between_tiktok) or 0
-                label = "pacing between TikTok profiles"
-            else:
-                total = int(self.settings.between_profiles) or 0
+        if ig:
+            cd = int(self.cooldown_until - now)
+            if cd > 0:
+                return {"kind": "rate_limit", "remaining": cd,
+                        "total": cd, "until": self.cooldown_until,
+                        "label": "rate limited"}
+        elif self.tt_paused:
+            return {"kind": "paused", "remaining": 0, "total": 0,
+                    "until": 0, "label": "paused"}
+        wu = self.wait_until.get(platform, 0.0)
+        if wu > now:
+            if ig:
                 # Named for what it actually is: the voluntary gap between
                 # profiles that keeps Instagram from rate-limiting us.
                 # Instaloader has no inter-profile delay of its own, so this
                 # gap is ours.
                 label = "pacing between profiles"
-            return {"kind": "pacing", "remaining": int(self.wait_until - now),
-                    "total": total, "until": self.wait_until, "label": label}
+            else:
+                label = "pacing between TikTok profiles"
+            return {"kind": "pacing", "remaining": int(wu - now),
+                    "total": self._pacing_delay(platform), "until": wu,
+                    "label": label}
         return {}
 
     def check_ip_block(self) -> bool:
@@ -3294,15 +3335,20 @@ class Engine:
             removed = [dict(r, tail=[]) for r in list(reversed(self.removed))[-100:]]
         sess = self.session_info()
         return {
+            # Per platform now, because both can be downloading at once. The
+            # flat keys that follow are kept for older callers.
             "current": self.current,
+            "current_instagram": self.current["instagram"],
+            "current_tiktok": self.current["tiktok"],
             "paused": self.paused,
+            "tt_paused": self.tt_paused,
             "limit_paused": self._limit_paused,
             # `busy` must mean "a profile is being downloaded right now". It used
             # to be true whenever the worker thread was alive with anything
-            # pending, so the 4-minute pacing gap, a pause and a rate-limit wait
-            # all reported busy=True with current=None -- which looks like a
-            # wedged worker. The wait block below says which of those it is.
-            "busy": bool(self.current),
+            # pending, so the pacing gap, a pause and a rate-limit wait all
+            # reported busy=True with current=None -- which looks like a wedged
+            # worker. The wait block below says which of those it is.
+            "busy": any(self.current.values()),
             "queued": pending_count,
             "output_root": str(self.output_root),
             "instaloader": INSTALOADER,
@@ -3323,11 +3369,15 @@ class Engine:
                 "last": float(getattr(self, "_last_autocheck", 0) or 0),
                 "note": getattr(self, "_autocheck_note", ""),
             },
-            # Two unrelated waits can make the queue look idle. Report both,
+            # Two unrelated waits can make a queue look idle. Report both,
             # labelled, so a countdown never implies the wrong one:
-            #   "pacing"   -- the between_profiles gap (short, routine)
+            #   "pacing"   -- the between-profiles gap (short, routine)
             #   "rate_limit" -- Instagram asked us to back off (long, an issue)
-            "wait": self.wait_reason(),
+            # Per platform: Instagram being rate limited says nothing about
+            # whether the TikTok worker is running.
+            "wait": self.wait_reason("instagram"),
+            "waits": {"instagram": self.wait_reason("instagram"),
+                      "tiktok": self.wait_reason("tiktok")},
             # Which platform the queue will run next. The UI shows one platform
             # at a time, so a countdown belongs on that tab and not the other.
             "next_platform": self._next_platform(),
@@ -3379,8 +3429,13 @@ class Engine:
     def _kick(self) -> None:
         self.start()
 
-    def _terminate_proc(self) -> None:
-        p = self._proc
+    def _terminate_proc(self, platform: str = "instagram") -> None:
+        """Kill the child process belonging to one platform's worker.
+
+        Each worker owns its own yt-dlp/instaloader process, so cancelling a
+        TikTok profile must not kill the Instagram download running alongside it.
+        """
+        p = self._proc.get(platform)
         if p and p.poll() is None:
             try:
                 p.terminate()
@@ -3403,11 +3458,30 @@ class Engine:
             # Remember the latest line so a resumed job still shows context.
             job.last_line = line.strip()[:200]
 
-    def _next_job(self) -> Job | None:
-        """Return the next runnable job in queue order, leaving the order intact.
+    def _has_pending(self, platform: str) -> bool:
+        """Is there a queued job for this platform waiting in the order?"""
+        with self.lock:
+            for jid in self.pending:
+                j = self.jobs.get(jid)
+                if j is not None and getattr(j, "platform", "instagram") == platform:
+                    return True
+            return False
 
-        Only removes the id from self.pending once the job is actually handed
-        to the worker, so a job that is temporarily not runnable is never lost.
+    def _pacing_delay(self, platform: str) -> int:
+        """The voluntary gap this platform takes before its next profile."""
+        if platform == "tiktok":
+            return max(0, int(self.settings.between_tiktok))
+        return max(0, int(self.settings.between_profiles))
+
+    def _next_job(self, platform: str = "instagram") -> Job | None:
+        """Return the next runnable job for `platform`, leaving the order intact.
+
+        Only this platform's jobs are considered. Both workers take from the one
+        shared order, but each skips past the other's jobs, so a long Instagram
+        queue can never hold up a TikTok download or the other way round.
+
+        Only removes the id from self.pending once the job is actually handed to
+        the worker, so a job that is temporarily not runnable is never lost.
         """
         with self.lock:
             for jid in list(self.pending):
@@ -3415,12 +3489,22 @@ class Engine:
                 if job is None:
                     self.pending.remove(jid)  # forgotten job: drop the stale id
                     continue
+                if getattr(job, "platform", "instagram") != platform:
+                    continue
                 if job.status == "queued":
                     self.pending.remove(jid)
                     return job
             return None
 
-    def _run(self) -> None:
+    def _run(self, platform: str = "instagram") -> None:
+        """One platform's worker loop.
+
+        Instagram waits out pauses and rate-limit cooldowns, and stops when its
+        session is broken. TikTok does none of that: yt-dlp has no session, does
+        not share Instagram's request budget and has no 429s of its own, so
+        gating it on Instagram's state would only make it wait for no reason.
+        """
+        ig = platform == "instagram"
         while not self.stop_requested:
             # Clear out anything whose backoff has elapsed before choosing the
             # next job, so a swept job joins the queue the moment it is eligible
@@ -3429,52 +3513,53 @@ class Engine:
                 self.sweep_retries()
             except Exception:
                 pass
-            # Wait out both user-pause and any rate-limit cooldown BEFORE taking
-            # a job. A 429 sets paused=True *and* cooldown_until, so the two
-            # must be handled together or the worker sleeps forever in the
-            # pause loop and never reaches the cooldown countdown.
-            while not self.stop_requested:
-                # A 429 pause clears itself when its cooldown elapses; a pause
-                # the user asked for never does.
-                if self.paused and self._limit_paused and self.cooldown_remaining() <= 0:
+
+            if ig:
+                # Wait out both user-pause and any rate-limit cooldown BEFORE
+                # taking a job. A 429 sets paused=True *and* cooldown_until, so
+                # the two must be handled together or the worker sleeps forever
+                # in the pause loop and never reaches the cooldown countdown.
+                while not self.stop_requested:
+                    # A 429 pause clears itself when its cooldown elapses; a
+                    # pause the user asked for never does.
+                    if self.paused and self._limit_paused and self.cooldown_remaining() <= 0:
+                        with self.lock:
+                            self.paused = False
+                            self._limit_paused = False
+                        self.save_state()
+                    if self.paused:
+                        self.save_state()  # keep the UI countdown fresh
+                        time.sleep(1.0)
+                        continue
                     with self.lock:
-                        self.paused = False
-                        self._limit_paused = False
+                        cooling = self.cooldown_remaining() > 0 and bool(self.pending)
+                    if cooling:
+                        self.save_state()
+                        time.sleep(2.0)
+                        continue
+                    break
+                if self.stop_requested:
+                    break
+
+                # A broken session fails every request with 401 and just burns
+                # attempts. Stop and let the UI explain what to fix. Only
+                # Instagram needs a session, so only this worker cares.
+                if not self.session_info()["valid"] and self._has_pending("instagram"):
                     self.save_state()
-                if self.paused:
-                    self.save_state()  # keep the UI countdown fresh
+                    return  # idle; the UI shows session_problem
+            else:
+                while not self.stop_requested and self.tt_paused:
                     time.sleep(1.0)
-                    continue
-                if self.cooldown_remaining() > 0 and self.pending:
-                    self.save_state()
-                    time.sleep(2.0)
-                    continue
-                break
-            if self.stop_requested:
-                break
+                if self.stop_requested:
+                    break
 
-            # A broken session fails every request with 401 and just burns
-            # attempts. Stop and let the UI explain what to fix.
-            #
-            # Only Instagram jobs need a session. A queue holding nothing but
-            # TikTok work must still run: yt-dlp downloads public profiles
-            # without any Instagram login, so halting here would wedge the
-            # worker on a queue it could have finished.
-            sess = self.session_info()
-            ig_pending = any(
-                (self.jobs.get(jid) is not None
-                 and getattr(self.jobs[jid], "platform", "instagram") == "instagram")
-                for jid in list(self.pending)
-            )
-            if not sess["valid"] and ig_pending:
-                self.save_state()
-                return  # idle; the UI shows session_problem
-
-            job = self._next_job()
+            job = self._next_job(platform)
             if job is None:
-                # Nothing runnable in the order. Before giving up, re-sync the
-                # order from jobs{}: a job can be "queued" yet missing from
+                # Nothing runnable for this platform. Before giving up, re-sync
+                # the order from jobs{}: a job can be "queued" yet missing from
                 # pending (e.g. after a crash path or an interrupted edit).
+                # Other-platform jobs are skipped here on purpose -- the other
+                # worker owns them and this one must not adopt them.
                 with self.lock:
                     stragglers = [jid for jid, j in self.jobs.items()
                                   if j.status == "queued" and jid not in self.pending]
@@ -3484,30 +3569,27 @@ class Engine:
                     continue  # try again now that the order is repaired
 
                 # Nothing to do. Before going idle, see whether an automatic
-                # check for new posts is due -- this is the only place the queue
-                # is known to be empty, so it is where the check belongs. If it
-                # queues work, loop again instead of exiting.
-                if self.autocheck_due():
+                # check for new posts is due -- it tops up Instagram profiles,
+                # so the Instagram worker owns it.
+                if ig and self.autocheck_due():
                     with self.lock:
-                        self.current = "auto-check"
+                        self.current["instagram"] = "auto-check"
                     try:
                         self.autocheck()
                     except Exception:
                         pass
                     finally:
                         with self.lock:
-                            self.current = None
-                    with self.lock:
-                        refilled = bool(self.pending)
-                    if refilled:
+                            self.current["instagram"] = None
+                    if self._has_pending("instagram"):
                         continue
 
                 self.save_state()
-                return  # genuinely idle; thread exits, busy=false
+                return  # genuinely idle; thread exits, this platform goes free
 
             with self.lock:
-                self.current = job.username
-                self.cancel_current = False
+                self.current[platform] = job.username
+                self.cancel_current[platform] = False
             self._set(job, status="running", started_at=time.time(),
                       message="starting", error="")
             t0 = time.time()
@@ -3518,44 +3600,37 @@ class Engine:
                           finished_at=time.time())
             finally:
                 with self.lock:
-                    self.current = None
-                    self.cancel_current = False
+                    self.current[platform] = None
+                    self.cancel_current[platform] = False
                 self._set(job, last_run_seconds=round(time.time() - t0, 1))
                 self.save_state()
 
             if self.stop_requested:
                 break
 
-            with self.lock:
-                has_more = bool(self.pending)
-            # The gap depends on what is coming NEXT, not on what just
-            # finished: after an Instagram profile the next one may well be a
-            # TikTok, and each tool paces on its own timer.
-            next_platform = "instagram"
-            if has_more:
+            # The gap this platform waits before its next profile. It depends on
+            # whether that platform has more to do, not on the shared order.
+            delay = self._pacing_delay(platform) if self._has_pending(platform) else 0
+            if delay:
+                # Publish the deadline so the UI can count down honestly, rather
+                # than guessing from the last job's finish time.
                 with self.lock:
-                    for jid in self.pending:
-                        nx = self.jobs.get(jid)
-                        if nx is not None and nx.status == "queued":
-                            next_platform = getattr(nx, "platform", "instagram")
-                            break
-            if has_more:
-                if next_platform == "tiktok":
-                    delay = max(0, int(self.settings.between_tiktok))
-                else:
-                    delay = max(0, int(self.settings.between_profiles))
-                # Publish the deadline so the UI can count down honestly,
-                # rather than guessing from the last job's finish time.
-                with self.lock:
-                    self.wait_started = time.time()
-                    self.wait_until = self.wait_started + delay
-                for _ in range(delay):
-                    if self.stop_requested or self.cancel_current:
+                    self.wait_started[platform] = time.time()
+                    self.wait_until[platform] = self.wait_started[platform] + delay
+                waited = 0
+                while waited < delay:
+                    if self.stop_requested or self.cancel_current[platform]:
                         break
+                    if not ig and self.tt_paused:
+                        time.sleep(0.5)   # paused: hold this platform's clock
+                        continue
+                    if ig and self.paused:
+                        break             # the pause loop above takes over
+                    waited += 1
                     time.sleep(1.0)
                 with self.lock:
-                    self.wait_started = 0.0
-                    self.wait_until = 0.0
+                    self.wait_started[platform] = 0.0
+                    self.wait_until[platform] = 0.0
 
     def _process_tiktok(self, job: Job) -> None:
         """Download a TikTok profile with yt-dlp.
@@ -3610,12 +3685,12 @@ class Engine:
             return
 
         with self.lock:
-            self._proc = proc
+            self._proc["tiktok"] = proc
 
         downloaded = 0
         warned = False
         for line in (proc.stdout or []):
-            if self.cancel_current or self.stop_requested:
+            if self.cancel_current["tiktok"] or self.stop_requested:
                 break
             line = line.rstrip()
             if not line:
@@ -3641,9 +3716,9 @@ class Engine:
 
         rc = proc.wait()
         with self.lock:
-            self._proc = None
+            self._proc["tiktok"] = None
 
-        if self.cancel_current:
+        if self.cancel_current["tiktok"]:
             self._set(job, status="cancelled", finished_at=time.time(), message="cancelled")
             return
         if self.stop_requested:
@@ -3692,7 +3767,7 @@ class Engine:
         session_user = self.session_username()
         cfg = job.effective(self.settings)
 
-        while job.attempts < job.max_attempts and not self.stop_requested and not self.cancel_current:
+        while job.attempts < job.max_attempts and not self.stop_requested and not self.cancel_current["instagram"]:
             job.attempts += 1
             cmd = self._build_cmd(job, target_dir, session_user, cfg)
             self._log(job, f"$ {' '.join(cmd)}")
@@ -3700,7 +3775,7 @@ class Engine:
 
             outcome = self._exec(job, cmd, target_dir)
 
-            if self.cancel_current:
+            if self.cancel_current["instagram"]:
                 self._set(job, status="cancelled", finished_at=time.time(), message="cancelled")
                 return
             if outcome in ("ok", "ok_warned"):
@@ -3836,7 +3911,7 @@ class Engine:
                 self._set(job, status="queued", message="paused: rate limit")
                 return
             waited = 0
-            while waited < backoff and not self.stop_requested and not self.cancel_current:
+            while waited < backoff and not self.stop_requested and not self.cancel_current["instagram"]:
                 if not self.paused:
                     waited += 1
                 time.sleep(1.0)
@@ -3844,7 +3919,7 @@ class Engine:
 
         # Attempts exhausted. Without this terminal status the job is left
         # "queued" and silently restarts forever.
-        if not self.cancel_current and job.status not in ("done", "failed", "cancelled"):
+        if not self.cancel_current["instagram"] and job.status not in ("done", "failed", "cancelled"):
             # Schedule an automatic retry rather than leaving a dead card the
             # user has to clear by hand. The first delay is set here so the
             # sweep has a deadline to work from.
@@ -3968,7 +4043,7 @@ class Engine:
             self._set(job, error=f"instaloader not found at {INSTALOADER}")
             return "fatal"
 
-        self._proc = proc
+        self._proc["instagram"] = proc
         assert proc.stdout is not None
         try:
             for line in proc.stdout:
@@ -4009,10 +4084,10 @@ class Engine:
                     last_err = line.strip()
         finally:
             proc.wait()
-            self._proc = None
+            self._proc["instagram"] = None
         self._parse_counts(job, target_dir)
 
-        if self.cancel_current:
+        if self.cancel_current["instagram"]:
             return "ok"
 
         # A Python crash must never be mistaken for a rate limit: retrying the

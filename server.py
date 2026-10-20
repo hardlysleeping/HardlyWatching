@@ -1045,15 +1045,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"requeued": get_engine().retry_all_failed()})
 
         if p == "/api/pause":
-            get_engine().pause()
-            return self._json({"ok": True})
+            # Per platform: pausing Instagram (usually to sit out a block) must
+            # not stop yt-dlp, which shares nothing with it.
+            eng = get_engine()
+            who = str(body.get("platform") or "instagram").strip().lower()
+            eng.pause(who)
+            return self._json({"ok": True, "platform": who})
 
         if p == "/api/resume":
-            get_engine().resume()
-            return self._json({"ok": True})
+            eng = get_engine()
+            who = str(body.get("platform") or "instagram").strip().lower()
+            eng.resume(who)
+            return self._json({"ok": True, "platform": who})
 
         if p == "/api/start":
-            # Start downloads, optionally ahead of the other platform's queue.
+            # Start one platform's worker.
             return self._json(get_engine().start_platform(str(body.get("platform") or "")))
 
         if p == "/api/autostart":
