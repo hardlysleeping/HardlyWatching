@@ -182,16 +182,30 @@ rather than instaloader. Same queue, same one-at-a-time worker, same gallery.
 Pick TikTok on the Download tab and paste any of:
 
 - the whole **Following accounts** page (`Ctrl+A`, `Ctrl+C`) — the usernames are
-  found for you
+  found for you. Open it with **view all** next to Following accounts, then
+  **scroll that list to the bottom** until it stops loading before you copy.
+  Only the rows on screen exist in the page, so copying early grabs a fraction
+  of your list. The app notices the mismatch and tells you if that happened
 - plain handles, one per line
 - `@handles` and profile URLs
 
-Videos per profile is 5, 10, 25, 50 or all. There is no Instagram login involved:
-yt-dlp reads a public profile itself.
+**How many videos to grab is adjustable per profile, at any time.** Each TikTok
+row in the queue has its own `−5 −15 [n] +5 +15 +25 all` control, counting back
+from the newest video. Start with a few and raise it whenever you like — nothing
+needs re-pasting.
 
-**Re-running only fetches what is new.** Each profile keeps its own
-`.yt-dlp-archive.txt`, so raising the count from 5 to 50 downloads 45 videos, not
-50.
+**Raising the number only fetches what is new.** Each profile keeps its own
+`.yt-dlp-archive.txt` listing what was already downloaded, so going from 5 to 50
+fetches the 45 missing ones rather than 50 again. A profile that has finished can
+be raised too: it returns to the queue and picks up where it left off.
+
+The `n` is shown against the profile's own total, as `5 / 120`, so you can see
+how much of someone you have not taken yet. Asking for more than exists just
+means all of them.
+
+There is no Instagram login involved: yt-dlp reads a public profile itself, which
+is also why a **private** TikTok profile cannot be downloaded at all. Those show
+in **red** next to the queue count rather than failing quietly.
 
 The two platforms keep **separate folders** and never merge on disk. The gallery
 groups them by label, so either side can be deleted or re-fetched without
@@ -225,8 +239,20 @@ the arrow keys. Each clip has **like**, **trash**, **download**, **more** and
 
 It is deliberately random with repetition, so the same clip can come back.
 **More** and **less** change how often it reappears rather than hiding it.
-**Favourites** filters to liked clips. Add it to your home screen and it runs as
-an app.
+**Favourites** filters to liked clips.
+
+The order is reshuffled each time you reload the page or scroll back to the top,
+so the feed does not start the same way twice. Switching tabs, backgrounding the
+app or letting the phone sleep is **not** a new session — it carries on where you
+left off, and only closing it starts over.
+
+It covers TikTok videos and Instagram videos alike (Instagram does not record
+which of its videos were reels, so all of them are included rather than guessing).
+
+Videos start **muted**, because browsers block autoplay with sound. Tap a clip to
+play or pause it.
+
+Add it to your home screen and it runs as an app.
 
 ---
 
@@ -282,7 +308,7 @@ archiving is wise.
 - **Delete safely.** Trashing moves files to your desktop Trash and leaves a
   marker so instaloader doesn't fetch them again. Everything is recoverable.
 - **Recoverable removals.** Removing a profile never loses it — restore it from
-  the Removed list.
+  the Removed list on the Instagram side.
 - **Reels as a separate pass.** Optionally queue reels as their own follow-up job
   instead of mixing them into the main download.
 
@@ -415,7 +441,9 @@ again. The panel shows it as incomplete instead of silently burning requests.
 
 | Path | What |
 | --- | --- |
-| `~/instagram/<username>/` | Downloaded media (changeable, see below) |
+| `~/instagram/<username>/` | Downloaded Instagram media (changeable, see below) |
+| `~/instagram/tiktok/<handle>/` | Downloaded TikTok videos, kept apart so the two platforms cannot collide |
+| `~/instagram/tiktok/<handle>/.yt-dlp-archive.txt` | Which TikTok videos are already downloaded, so raising the count only fetches new ones |
 | `~/instagram/<username>/.insta-index.json` | Hidden record of what was there, used to spot file-manager deletions |
 | `~/.config/insta-desktop/state.json` | Queue, order, settings, cooldowns, deleted-post markers |
 | `~/.config/instaloader/session-<user>` | Instagram session, created by instaloader |
