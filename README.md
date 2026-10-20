@@ -16,6 +16,25 @@ pacing, and a way to actually browse what you collected.
 
 ---
 
+## Screenshots
+
+**Queue** — paste profiles, add them, start. Everything downloads one at a time.
+
+![The queue screen: a paste box for profiles, a start button, and an empty waiting list](docs/queue.png)
+
+**Gallery** — every profile you have archived, plus archive-wide views, and a box
+to add your own photos or folders to any profile.
+
+![The gallery: profile list with All Favourites, All Trash and Timeline, and an upload box](docs/gallery-views.png)
+
+Uploading from a phone or another computer works through the same browser page —
+choose files or a folder, pick the destination profile, and they appear in that
+profile's grid.
+
+![The upload control on the gallery page: choose files, choose folder, or drag files in](docs/gallery-upload.png)
+
+---
+
 ## Install and run
 
 You need **Python 3.10+** and an **Instagram account**. Nothing else — no pip
