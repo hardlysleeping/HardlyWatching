@@ -356,6 +356,20 @@ Video thumbnails inside the gallery are generated from the video itself by the
 browser, so they also appear as the file is available — a tile with no preview
 is one whose file has not landed yet.
 
+### Phone photos (HEIC)
+
+iPhones save photos as `.heic`, which no browser except Safari can display.
+Rather than leave them invisible, they are accepted like any other image and
+converted to JPEG for viewing:
+
+- **Tile** — served as a small JPEG thumbnail, same as every other photo.
+- **Enlarged view** — converted on demand, capped at 2400px on the long edge.
+- **Download** — gives you the original `.heic`, untouched. The archive is
+  never re-encoded.
+
+Conversion needs the optional `pillow-heif` package, which `run.py` installs.
+Without it, JPEG and PNG keep working and only HEIC fails to display.
+
 ### Deleting for good
 
 "Delete all trash" does two things, both deliberately recoverable:
@@ -548,6 +562,10 @@ browser while signed in as the same account before assuming something broke.
 
 Use this for content you have the right to download. Respect Instagram's Terms of
 Service and the rights of the people whose content you are archiving.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed between versions.
 
 ## Licence
 
