@@ -15,3 +15,11 @@ latest-stamps.ini
 
 # generated thumbnails (also lives in ~/.cache by default)
 thumbs/
+
+# runtime databases (rebuilt per install)
+*.db
+*.db-shm
+*.db-wal
+# corrupted state recovery artifacts
+*.corrupt
+*.tmp
