@@ -1937,9 +1937,22 @@ function groupFinished(jobs){
                  // fetched this profile; without it every entry reads as
                  // Instagram because the field is simply absent.
                  platform: j.platform || "instagram",
+                 // Same reasoning for the count controls: a finished TikTok
+                 // profile still has a count the user can raise to pull the
+                 // next batch. Dropping these made every finished card read
+                 // "grab newest all" with both minus buttons dead, because
+                 // ttCountBar saw 0 and 0.
+                 tiktok_count: j.tiktok_count || 0,
+                 tiktok_total: j.tiktok_total || 0,
+                 files: j.files || 0,
                  passes: {}, jobs: [], posts: 0, total_bytes: 0,
                  last_run_seconds: 0, message: "", error: ""};
              byUser.set(key, g); }
+    // A raised count should survive grouping even if the main pass was not the
+    // job that carried it.
+    if(j.tiktok_count) g.tiktok_count = j.tiktok_count;
+    if(j.tiktok_total) g.tiktok_total = j.tiktok_total;
+    if(j.files) g.files = j.files;
     g.jobs.push(j);
     g.passes[j.kind || "main"] = j.status;
     g.posts += j.posts || 0;
@@ -2132,6 +2145,28 @@ function ttCountBar(j){
     </div>`;
 }
 
+// Raising a finished profile's count re-queues it server-side. Waiting for the
+// next 1.2s poll to show that means the click looks like it did nothing, so move
+// the card into the waiting list here and let the poll confirm it.
+function optimisticRequote(jobId, newCount){
+  if(!lastState) return false;
+  const st = JSON.parse(JSON.stringify(lastState));
+  const j = (st.jobs || []).find(x => x.id === jobId);
+  if(!j) return false;
+  if(newCount !== undefined) j.tiktok_count = newCount;
+  if(j.status === "done" || j.status === "failed" || j.status === "cancelled"){
+    j.status = "queued";
+    j.finished_at = null;
+    j.error = "";
+    j.message = "queued for more videos";
+  }
+  // Hold the poll off briefly so the server's pre-change copy cannot snap the
+  // card back into Finished and make it jump twice.
+  optimisticUntil = Date.now() + 900;
+  render(st);
+  return true;
+}
+
 // Wire the count buttons once per painted batch. Delegated from the document so
 // a re-render does not need to rebind, and so cards inside any section work.
 document.addEventListener("click", async (e) => {
@@ -2140,24 +2175,49 @@ document.addEventListener("click", async (e) => {
   const bar = b.closest(".ttcount");
   if(!bar) return;
   const id = bar.dataset.ttid;
+  const out = bar.querySelector(".ttnout");
+  const was = out ? out.textContent : "";
+  // Immediate confirmation that the click landed: the number goes to "…" and
+  // every button in the bar goes quiet, so a slow round-trip cannot be mistaken
+  // for a dead button.
+  if(out) out.textContent = "…";
   bar.querySelectorAll("button").forEach(x => x.disabled = true);
   const body = {id};
   if(b.dataset.ttall){ body.all = true; }
   else if(b.dataset.ttadd){ body.add = parseInt(b.dataset.ttadd, 10); }
   else { body.add = parseInt(b.dataset.ttminus, 10); body.minus = true; }
+
+  let painted = false;
+  let res = null;
   try{
     const r = await post("/api/tiktok/more", body);
-    if(!r.ok){ toast(r.error || "Could not change the count"); }
-    else {
-      toast(`${r.username}: ${r.count ? r.count : "all"}${r.total ? " / " + r.total : ""}`);
-      const out = bar.querySelector(".ttnout");
-      if(out){
-        const shown = r.count ? r.count : (r.total || "all");
-        out.textContent = r.total ? `${shown} / ${r.total}` : `${shown}`;
-      }
+    res = r;
+    if(!r.ok){
+      toast(r.error || "Could not change the count");
+      if(out) out.textContent = was;
+      bar.querySelectorAll("button").forEach(x => x.disabled = false);
+      return;
     }
+    toast(r.revived
+      ? `${r.username}: back in the queue for ${r.count ? r.count : "all"}`
+      : `${r.username}: ${r.count ? r.count : "all"}${r.total ? " / " + r.total : ""}`);
+    // Paint the new number and, when it was already finished, move it back to
+    // the waiting list at once.
+    painted = optimisticRequote(id, r.count);
   }catch(err){
     toast("Could not change the count");
+    if(out) out.textContent = was;
+    bar.querySelectorAll("button").forEach(x => x.disabled = false);
+    return;
+  }
+  if(!painted && res){
+    // No cached snapshot to work from: show the number here and let the next
+    // poll repaint the sections properly.
+    if(out){
+      const shown = res.count ? res.count : (res.total || "all");
+      out.textContent = res.total ? `${shown} / ${res.total}` : `${shown}`;
+    }
+    bar.querySelectorAll("button").forEach(x => x.disabled = false);
   }
   tick();   // repaint from the server rather than guessing the new value
 });

@@ -67,6 +67,22 @@ versioning is [SemVer](https://semver.org/).
   counts down to when it resumes by itself.
 - **The Download tab's header said two different things** — one line in the
   static HTML on a fresh load, another after any tab switch.
+- **The count buttons on a Finished TikTok profile lied and half-worked.**
+  `groupFinished` copied `platform` through but not `tiktok_count` /
+  `tiktok_total`, so every finished card read "grab newest all" and both minus
+  buttons were permanently disabled — the numbers were there, the card just
+  never saw them.
+- **Changing a count could block for over two minutes.** `/api/tiktok/more` ran
+  a full profile listing (measured: **89 s** for a 1,492-video profile) inline
+  while holding the engine lock, so the click appeared dead and both workers
+  stalled with it. The total is no longer looked up in the request path; it
+  fills in from the background filler and shows as unknown until then.
+- **Raising a count gave no sign that anything happened.** The card now moves
+  into the Waiting list as soon as the server confirms it was re-queued, and the
+  number goes to `…` the instant you click, so a slow round-trip cannot look
+  like a dead button. A re-queued profile also goes to the **front** of its own
+  platform's queue rather than the back of 377 — appending put the extra videos
+  days away and made the button pointless.
 - **A bad cookie setting failed every TikTok download.** Firefox forks (Zen,
   LibreWolf) were written as `zen` and `librewolf`, which yt-dlp rejects
   outright — it accepts a fixed list of browser names and exits 2 on anything

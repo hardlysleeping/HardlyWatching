@@ -857,16 +857,14 @@ class Handler(BaseHTTPRequestHandler):
                 if job is None or getattr(job, "platform", "") != "tiktok":
                     return self._json({"ok": False, "error": "no such TikTok profile"})
                 current = int(getattr(job, "tiktok_count", 0) or 0)
+                # Never look the profile's total up here. A flat listing of a
+                # real profile measures ~89 seconds (1492 videos) and it would
+                # run synchronously while holding the engine lock -- which also
+                # stalls both workers and every other API call. The click has to
+                # answer immediately; the total is filled in the background by
+                # the import-time filler and is simply shown as unknown until
+                # then.
                 total = int(getattr(job, "tiktok_total", 0) or 0)
-                if not total:
-                    # Fetch the real number once, so the count can be shown out
-                    # of the profile's total and clamped to it.
-                    try:
-                        import tiktok_engine as _tt
-                        total = _tt.profile_total(job.username)
-                    except Exception:
-                        total = 0
-                    job.tiktok_total = total
 
                 if body.get("all"):
                     new_count = 0
@@ -884,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
                             new_count = total
                 job.tiktok_count = new_count
                 revived = False
-                if job.status in ("done", "failed", "cancelled"):
+                if job.status in ("done", "failed", "cancelled", "skipped"):
                     # Anything already on disk stays; the run fetches the rest.
                     job.status = "queued"
                     job.finished_at = None
@@ -892,8 +890,14 @@ class Handler(BaseHTTPRequestHandler):
                     job.message = "queued for more videos"
                     job.fatal = False
                     revived = True
-                    if job.id not in eng.pending:
-                        eng.pending.append(job.id)
+                    # Front of the queue, not the back. You just acted on this
+                    # profile, so it should be next for its own platform rather
+                    # than behind every other profile -- at a few minutes of
+                    # pacing per profile, appending would put it days away and
+                    # make the button look like it did nothing.
+                    if job.id in eng.pending:
+                        eng.pending.remove(job.id)
+                    eng.pending.insert(0, job.id)
             eng.save_state()
             return self._json({"ok": True, "count": new_count, "total": job.tiktok_total,
                                "revived": revived, "username": job.username})
