@@ -312,6 +312,13 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Which clips the feed picks.** The feed is weighted, newest-ignored-first, and
+balanced for how much each profile has: a profile's share follows the square root
+of its clip count (`ALGO_CLIP_BALANCE = 0.5`), so someone with five videos is not
+buried by someone with two thousand. Set it to 0 to weight purely by count, or 1
+to give every profile an equal share. Likes, trash and the per-profile
+show-more/less buttons apply on top of that.
+
 **Pasting.** One box handles both platforms, with the Instagram/TikTok buttons under it. Instagram and TikTok links go in
 together, one per line, and each is routed by its link; plain names follow the
 tab you are on, since a bare handle carries no way to tell the two apart. The

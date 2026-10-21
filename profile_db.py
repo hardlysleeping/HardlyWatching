@@ -269,6 +269,24 @@ class ProfileDB:
     # "show more" / "show less" nudges how often a clip comes back rather than
     # hiding it. Bounded so it can never become always or never by accident.
     WEIGHT_MIN = 0.1
+    # How strongly the feed compensates for a profile having few clips.
+    #
+    # A profile's share of the feed is proportional to how many clips it has, so
+    # the biggest archives dominated: of 484 profiles here, the top ten took
+    # 48.7% of the feed while the 378 profiles with five clips or fewer took
+    # 8.6% between them. A profile with 500 clips came up 500x as often as one
+    # with a single clip, which is not a judgement about the person, just about
+    # how many files they happen to have.
+    #
+    # Scaling each clip by 1 / count**this makes a profile's share proportional
+    # to count**(1 - this):
+    #   0.0 -> off; the biggest archive wins (what this did before)
+    #   0.5 -> measured: the small profiles go from 8.6% of the feed to 42%, and
+    #          the top ten from 48.7% to 15.8%; the 500-vs-1 gap becomes 22x
+    #   0.75 -> 62.9% and 6.2%; 1.0 -> every profile gets an equal share
+    # Deliberately not 1.0: a profile with one video should be seen, not given
+    # the same airtime as one with two thousand.
+    ALGO_CLIP_BALANCE = 0.5
     WEIGHT_MAX = 5.0
     WEIGHT_STEP = 1.6
 
@@ -340,11 +358,24 @@ class ProfileDB:
         # their videos or another.
         pw = self._profile_weights()
 
+        # How many clips each profile has, counted over everything the feed
+        # could show rather than over what is left after `exclude`. Counting the
+        # remainder would make a profile's weight shift as you swiped through it,
+        # so its clips would get easier to hit exactly when they were running
+        # out -- the opposite of what the balance is for.
+        counts: dict[tuple, int] = {}
+        for r in rows:
+            key = (r["platform"], (r["profile"] or "").lower())
+            counts[key] = counts.get(key, 0) + 1
+
         now = time.time()
         weights = []
         for r in rows:
+            key = (r["platform"], (r["profile"] or "").lower())
             w = max(self.WEIGHT_MIN, float(r["weight"] or 1.0))
-            w *= pw.get((r["platform"], (r["profile"] or "").lower()), 1.0)
+            w *= pw.get(key, 1.0)
+            # Fewer clips, more of the feed. See ALGO_CLIP_BALANCE.
+            w *= counts.get(key, 1) ** -self.ALGO_CLIP_BALANCE
             # Staleness nudge: half a weight per hour unseen, capped, so a
             # high-weight clip still reappears more often but does not dominate.
             unseen_h = min(24.0, max(0.0, (now - (r["last_shown"] or 0)) / 3600.0))

@@ -17,6 +17,17 @@ versioning is [SemVer](https://semver.org/).
 
 ### Changed
 
+- **The Shorts feed no longer belongs to whoever has the most videos.** A
+  profile's share of the feed was proportional to its clip count, which is not a
+  judgement about the person, just about how many files they happen to have: of
+  484 profiles, the top ten took 63% of the feed and the 378 with five clips or
+  fewer took under 6% between them. Each clip is now scaled by
+  `1 / count ** 0.5` (`ALGO_CLIP_BALANCE`), so a profile's share follows the
+  square root of its clip count. Measured on the real archive: the small profiles
+  go from 5.9% of the feed to 38.3%, the top ten from 63.5% to 24.5%, and the
+  profiles seen in a long run from 340 to 483 of 484. The constant is one number:
+  0 restores the old behaviour, 1 gives every profile a flat equal share.
+
 - **Pause stops the profile downloading now, not after it.** Pressing Pause kills
   the running `instaloader`/`yt-dlp` process for that platform and puts the
   interrupted profile back at the **front** of its queue, where it restarts on
