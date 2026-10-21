@@ -2909,11 +2909,27 @@ $("tabShorts").onclick = () => showTab("shorts");
 // which paste box is on screen. The queue below never changes.
 function showPlatform(which){
   const ig = which === "ig";
-  activePlatform = ig ? "instagram" : "tiktok";
+  const next = ig ? "instagram" : "tiktok";
+  const switched = next !== activePlatform;
+  activePlatform = next;
   $("subIg").classList.toggle("active", ig);
   $("subTt").classList.toggle("active", !ig);
   $("igPane").style.display = ig ? "" : "none";
   $("ttPane").style.display = ig ? "none" : "";
+  // The search box and page number are per list, not per platform, and they used
+  // to carry across a tab switch. A search typed on one platform then filtered
+  // the other one too, so the queue could show "No waiting profile matches"
+  // with hundreds queued -- which reads exactly like the queue having emptied.
+  // Switching platform now starts that list clean.
+  if(switched){
+    listUI.queue.q = "";
+    listUI.queue.page = 0;
+    listUI.done.q = "";
+    listUI.done.page = 0;
+    for(const box of document.querySelectorAll('input[placeholder^="Search waiting"], input[placeholder^="Search finished"]')){
+      box.value = "";
+    }
+  }
   // Keep the header consistent with the tab + platform in one place.
   paintHeader("queue");
   // The queue below the paste box belongs to the selected platform, so it has
@@ -3040,18 +3056,45 @@ $("ttImportBtn").onclick = async () => {
   const text = $("ttInput").value;
   if(!text.trim()){ $("ttResult").textContent = "Paste something first."; return; }
   const count = parseInt($("ttCount").value, 10);
-  $("ttImportBtn").disabled = true;
+  const btn = $("ttImportBtn");
+  // The button is the thing that was clicked, so it is the thing that has to
+  // answer. It used to stay reading "Add to queue" for the whole round trip and
+  // put its only message in the line under the paste box, which on a long paste
+  // is off screen -- so a slow add looked like a dead button.
+  const was = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Adding…";
   $("ttResult").textContent = "Adding to queue…";
   try{
     const r = await post("/api/tiktok/import", {text, count});
-    if(!r.ok){ $("ttResult").textContent = r.error || "Failed."; return; }
+    if(!r.ok){
+      $("ttResult").textContent = r.error || "Failed.";
+      btn.textContent = "Failed — try again";
+      setTimeout(() => { btn.textContent = was; }, 2500);
+      return;
+    }
     $("ttResult").textContent =
       `Queued ${r.queued} profile${r.queued === 1 ? "" : "s"}` +
       (r.skipped ? `, ${r.skipped} already in the list.` : ".") +
       " Nothing has started — remove any you don't want, then press Start.";
     $("ttInput").value = "";
-  }catch(e){ $("ttResult").textContent = "Error: " + e.message; }
-  finally{ $("ttImportBtn").disabled = false; }
+    btn.textContent = r.queued
+      ? `Added ${r.queued} ✓` : "All already added";
+    setTimeout(() => { btn.textContent = was; }, 2500);
+    // Show the result where the queue actually is, rather than only under the
+    // paste box: jump to the top of the waiting list and flash it, so the new
+    // rows are visibly there instead of the list apparently not changing.
+    if(r.queued){
+      const waiting = $("queueList") || $("list");
+      if(waiting && waiting.scrollIntoView) waiting.scrollIntoView({block:"nearest"});
+      toast(`Queued ${r.queued} TikTok profile${r.queued === 1 ? "" : "s"}`);
+    }
+  }catch(e){
+    $("ttResult").textContent = "Error: " + e.message;
+    btn.textContent = "Failed — try again";
+    setTimeout(() => { btn.textContent = was; }, 2500);
+  }
+  finally{ btn.disabled = false; }
 };
 
 $("ttClearBtn").onclick = () => { $("ttInput").value = ""; $("ttResult").textContent = ""; };
