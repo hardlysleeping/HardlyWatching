@@ -7,6 +7,29 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **Accounts that are the same person show as one card.** An identical handle on
+  both sites is folded into a single entry automatically, and any two accounts can
+  be merged by hand for burners and finstas. Gallery view only: the folders, the
+  jobs and the downloads are untouched. Opening a merged card shows the posts from
+  every account in it, each still knowing which profile and platform it came from,
+  so favouriting, moving or trashing acts on the folder the file is really in.
+- **Splitting, which stays split.** A merged card offers a way to say "these are
+  different people". That drops the merge and remembers the handle, so the
+  automatic same-name rule leaves it alone from then on — an automatic rule that
+  silently undoes a decision is worse than having no rule.
+- **A profile picture in the viewer.** Tapping it opens that person's gallery, and
+  going back to Shorts returns to the same clip and, from then on, shows only that
+  person. The viewer is an iframe, so the tap is sent to the app as a message
+  rather than a navigation, which is what keeps the sitting intact.
+
+### Fixed
+
+- **`PRIMARY` is a reserved word in SQLite**, so the column named that made every
+  request fail with a syntax error while the service still reported itself as
+  running. The column is `parent` now. Tables are also created before columns are
+  migrated, since adding a column to a table that does not exist yet fails on a
+  fresh install.
+
 - **Shorts has stars, separate from likes.** A star is a bookmark -- the thing you
   want to find again -- and a like is a reaction, so they are different columns
   and neither implies the other: a clip can be liked, starred, both or neither.

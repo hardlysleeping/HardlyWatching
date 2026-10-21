@@ -933,6 +933,20 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/gallery":
             # Profiles whose archive is finished and still on disk.
             return self._json({"profiles": get_engine().gallery_profiles()})
+        if p == "/api/links":
+            # Which accounts stand for the same person. Gallery view only.
+            db = _profile_db()
+            links = db.profile_links()
+            return self._json({
+                "links": [
+                    {"platform": plat, "alias": alias, "parent": parent,
+                     "parent_platform": parent_plat, "auto": auto}
+                    for (plat, alias), (parent, parent_plat, auto)
+                    in sorted(links.items())],
+                # Accounts told apart by hand, which the same-name rule leaves be.
+                "splits": sorted(db.profile_splits()),
+            })
+
         if p == "/api/timeline":
             # The months present and how many posts each holds. Deliberately not
             # the posts themselves: that was 7.6MB for 30k posts to draw one
@@ -1379,6 +1393,33 @@ class Handler(BaseHTTPRequestHandler):
             db.mark_shown([r["path"] for r in out])
             return self._json({"clips": out, "stats": db.clip_stats(),
                                "profile": prof, "platform": plat})
+
+        if p == "/api/links/merge":
+            import engine as _eng
+            alias = _eng.clean_profile_name(str(body.get("alias") or ""))
+            primary = _eng.clean_profile_name(str(body.get("primary") or ""))
+            plat = str(body.get("platform") or "instagram").strip().lower()
+            if plat not in ("instagram", "tiktok"):
+                return self._json({"ok": False, "error": "unknown platform"})
+            if not alias or not primary:
+                return self._json({"ok": False, "error": "both accounts are needed"})
+            parent_plat = str(body.get("parent_platform") or plat).strip().lower()
+            return self._json(_profile_db().link_profiles(
+                alias, primary, plat, parent_plat))
+
+        if p == "/api/links/split":
+            # Tell two accounts apart, and keep the same-name rule from putting
+            # them back together. This is the "these are different people" case.
+            import engine as _eng
+            who = _eng.clean_profile_name(str(body.get("profile") or ""))
+            if not who:
+                return self._json({"ok": False, "error": "an account is needed"})
+            return self._json(_profile_db().split_profile(who))
+
+        if p == "/api/links/unmerge":
+            return self._json(_profile_db().unlink_profile(
+                str(body.get("alias") or ""),
+                str(body.get("platform") or "instagram")))
 
         if p == "/api/shorts/action":
             db = _profile_db()

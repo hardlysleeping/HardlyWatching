@@ -317,6 +317,18 @@ independent — a clip can be liked, starred, both or neither — and the topbar
 star button filters the feed to the clips you have starred. The rail's buttons are
 icons only; the words survive as tooltips.
 
+**One card per person.** An identical handle on Instagram and TikTok is folded
+into a single gallery card automatically, and any two accounts can be merged by
+hand — which is the burner/finsta case, where the handles differ. This is gallery
+view only: the archives stay separate folders and the downloads stay separate
+jobs. Opening a merged card shows both accounts' posts, and each post keeps its own
+profile and platform so actions land on the right folder. A merged card offers a
+split; a split is remembered, so the same-name rule will not quietly re-merge it.
+
+**Getting between the viewer and the gallery.** The viewer shows the account's
+picture next to the handle; tapping it opens that person's gallery with the clip
+still playing behind it, and going back to Shorts resumes where you were.
+
 **Shorts for one profile.** Open someone in the Gallery and then tap Shorts, and
 the feed is that person alone; go back to the profile list and it is everyone
 again. The count line says "only @someone" while a filter is on.

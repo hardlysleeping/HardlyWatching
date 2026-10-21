@@ -84,6 +84,24 @@
     letter-spacing:.05em;text-transform:uppercase}
 
   /* ---- bottom info ---- */
+  .who{
+    display:flex;align-items:center;gap:9px;background:none;border:0;padding:0;
+    color:inherit;font:inherit;cursor:pointer;max-width:70%;
+  }
+  .who .pfpwrap{position:relative;width:36px;height:36px;flex:none}
+  .who .pfp,.who .pfallback{
+    position:absolute;inset:0;width:36px;height:36px;border-radius:50%;
+    object-fit:cover;border:1.5px solid rgba(255,255,255,.55);box-sizing:border-box;
+  }
+  .who .pfallback{
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(255,255,255,.16);font-weight:600;text-transform:uppercase;
+  }
+  .who .wname{
+    font-weight:600;text-shadow:0 1px 6px rgba(0,0,0,.8);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .who:active{opacity:.75}
   .bottombar{
     position:fixed;left:0;right:0;bottom:0;z-index:20;
     padding:.9rem 1rem calc(env(safe-area-inset-bottom) + .9rem);
@@ -220,7 +238,11 @@
 </div>
 
 <div class="bottombar" id="bottombar" style="display:none">
-  <div class="who" id="who"></div>
+  <!-- Tapping the picture opens that person's gallery. The viewer is an iframe
+       with its own document, so the tap is sent up to the app as a message and
+       the gallery opens there live -- the sitting is not reloaded, and coming
+       back is another tap on the Shorts tab. -->
+  <button class="who" id="who" aria-label="Open this profile's gallery"></button>
   <div class="meta" id="meta"></div>
 </div>
 
@@ -589,7 +611,7 @@ function playCurrent(){
 function fillRail(){
   const c = currentData();
   if(!c) return;
-  $("who").textContent = "@" + (c.profile || "");
+  paintWho(c);
   const mb = c.bytes ? (c.bytes / 1048576).toFixed(1) + " MB" : "";
   $("meta").textContent = [c.platform, mb,
     "shown " + (c.shown || 0) + "×", "weight " + (c.weight ?? 1)]
@@ -648,6 +670,49 @@ let wantSound = (() => {
 
 // The topbar filter shows the star's own state: filled while you are looking at
 // starred clips only.
+// The picture and the handle, as one tap target into that person's gallery.
+//
+// Repainted only when the person changes: the feed plays clips from the same
+// account in a row, and re-setting the image would re-fetch it every clip.
+function paintWho(c){
+  const b = $("who");
+  if(!b) return;
+  const u = c.profile || "";
+  const plat = c.platform || "instagram";
+  if(b.dataset.profile === u && b.dataset.platform === plat) return;
+  b.dataset.profile = u;
+  b.dataset.platform = plat;
+  b.title = "Open @" + u + "'s gallery";
+  // The initial sits underneath, so a profile with no picture still shows
+  // something to tap rather than a broken frame.
+  b.innerHTML =
+    '<span class="pfpwrap">'
+    + '<span class="pfallback">' + (u ? u[0] : "?") + '</span>'
+    + '<img class="pfp" alt="" src="/api/profile-pic?profile='
+    + encodeURIComponent(u) + '&platform=' + encodeURIComponent(plat) + '"'
+    + ' onerror="this.remove()">'
+    + '</span>'
+    + '<span class="wname">@' + u + '</span>';
+}
+
+// Hand the tap to the app if this is embedded, otherwise go there directly --
+// the full-screen link and a phone that opened /shorts on its own are not inside
+// anything and would otherwise have nowhere to send it.
+function openProfile(username, platform){
+  if(!username) return;
+  const plat = platform || "instagram";
+  try {
+    if(window.parent && window.parent !== window){
+      window.parent.postMessage(
+        {type: "hw-open-profile", profile: username, platform: plat},
+        location.origin);
+      return;
+    }
+  } catch(e){ /* a parent we cannot talk to: fall through to the plain link */ }
+  location.href = "/?tab=gallery&profile=" + encodeURIComponent(username)
+    + "&platform=" + encodeURIComponent(plat);
+}
+
 function paintFavBtn(){
   const b = $("favBtn");
   if(!b) return;
@@ -805,6 +870,11 @@ $("likeBtn").onclick = async () => {
   c.liked = c.liked ? 0 : 1;
   fillRail();
   await act("like", {value: !!c.liked});
+};
+
+$("who").onclick = () => {
+  const b = $("who");
+  openProfile(b.dataset.profile, b.dataset.platform);
 };
 
 $("starBtn").onclick = async () => {

@@ -1649,10 +1649,22 @@ def gallery_sections(self, username: str, platform: str = "instagram") -> dict:
     without losing track of where the file physically lives.
     """
     out = {}
+    # A merged account's media belongs here too. Every post keeps the profile it
+    # actually came from, because moving or favouriting it has to act on that
+    # folder -- the file is not in the primary's directory.
+    family = self.profile_family(username, platform)
     for key in ("main", "favorites", "trash"):
-        posts = self.gallery_posts(username, key, platform)
-        for p in posts:
-            p["section"] = key
+        posts = []
+        for who, who_plat in family:
+            for p in self.gallery_posts(who, key, who_plat):
+                p["section"] = key
+                p["profile"] = who
+                # The post keeps the platform of the account it actually came
+                # from: a merged card shows two sites at once, and moving or
+                # trashing a file has to act on the folder it is really in.
+                p["platform"] = who_plat
+                posts.append(p)
+        posts.sort(key=lambda p: p.get("ts") or 0)
         out[key] = posts
     return out
 
@@ -1664,6 +1676,59 @@ def gallery_sections(self, username: str, platform: str = "instagram") -> dict:
 # until it finished. Its folder is scanned live, so the tiles fill in as it
 # goes; the badge tells the UI which ones are still moving.
 GALLERY_LIVE_STATUSES = {"running", "retrying", "queued", "paused"}
+
+
+def _real_profile_name(self, username: str, platform: str = "instagram") -> str | None:
+    """The folder's own spelling of a handle, or None if that account is absent.
+
+    A match is case-insensitive: a handle is not case-sensitive on either site and
+    the folder may not be spelled the way it was typed.
+    """
+    want = (username or "").strip().lower()
+    if not want:
+        return None
+    for root in self.roots:
+        dirs = tiktok_roots(root) if platform == "tiktok" else [root]
+        for c in dirs:
+            try:
+                with os.scandir(c) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_dir() and entry.name.lower() == want:
+                                return entry.name
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+    return None
+
+
+def profile_family(self, username: str, platform: str = "instagram"
+                   ) -> list[tuple[str, str]]:
+    """[(handle, platform)] one gallery entry stands for, the card's own first.
+
+    Links live in profiles.db, which is also what the gallery reads, so a merge
+    survives a restart without anything else having to remember it.
+    """
+    import profile_db as _pdb
+    db = _pdb._shared_db()
+    plat = (platform or "instagram").lower()
+    family = list(db.linked_family(username, plat))
+    if not family:
+        family = [(username, plat)]
+    # The same-name rule: an identical handle on the other site is the same
+    # person. Skipped for anything split by hand -- that split is an instruction,
+    # and putting it back would undo a decision every time the page loaded.
+    base, base_plat = family[0]
+    if base.lower() not in db.profile_splits():
+        for other in ("instagram", "tiktok"):
+            if other == base_plat:
+                continue
+            real = self._real_profile_name(base, other)
+            if real and not any(h.lower() == real.lower() and p == other
+                                for h, p in family):
+                family.append((real, other))
+    return family
 
 
 def gallery_profiles(self) -> list[dict]:
@@ -1752,6 +1817,66 @@ def gallery_profiles(self) -> list[dict]:
             "done_count": job.done_count if job else 0,
             "total_count": job.total_count if job else 0,
         })
+    # Fold merged accounts into one entry.
+    #
+    # Gallery view only: the folders, the jobs and the downloads are untouched.
+    # This is the one place that decides a card stands for more than one handle.
+    #
+    # Two rules, in this order:
+    #   1. what was asked for -- the merge table, whether that is a burner on one
+    #      site or the same person on both;
+    #   2. the same-name rule -- an identical handle on both sites is the same
+    #      person, unless it was split by hand. A split is an instruction, and a
+    #      rule that silently undoes one is worse than having no rule.
+    import profile_db as _pdb
+    db = _pdb._shared_db()
+    splits = db.profile_splits()
+    by_key = {(p["username"].lower(), p["platform"]): p for p in out}
+
+    pairs = []
+    for (plat, alias), (parent, parent_plat, _auto) in sorted(db.profile_links().items()):
+        pairs.append(((alias, plat), (parent.lower(), parent_plat)))
+    for handle, plat in list(by_key):
+        # Only from the Instagram side, so each pair is made once: walking both
+        # would fold each card into the other and count everything twice.
+        if plat != "instagram" or handle in splits:
+            continue
+        if (handle, "tiktok") not in by_key:
+            continue
+        mine, theirs = by_key[(handle, "instagram")], by_key[(handle, "tiktok")]
+        # The better-populated archive keeps the card, so opening it lands on the
+        # fuller view. A tie goes to Instagram, which is where stories and tagged
+        # posts live.
+        if (theirs.get("count", 0), True) > (mine.get("count", 0), False):
+            pairs.append(((handle, "instagram"), (handle, "tiktok")))
+        else:
+            pairs.append(((handle, "tiktok"), (handle, "instagram")))
+
+    folded = set()
+    for child_key, parent_key in pairs:
+        if child_key in folded or child_key == parent_key:
+            continue
+        child, prim = by_key.get(child_key), by_key.get(parent_key)
+        if child is None or child is prim:
+            continue
+        if prim is None:
+            # Nothing on disk for the parent, so this card stands for both but
+            # there are no numbers to add to it. Register it under the parent's
+            # key so a later pair folds into the same card instead of making a
+            # second one, and record the other name so it is not silently lost.
+            by_key[parent_key] = child
+            child.setdefault("merged", []).append(parent_key[0])
+            continue
+        folded.add(child_key)
+        prim["count"] = prim.get("count", 0) + child.get("count", 0)
+        prim["posts"] = prim.get("posts", 0) + child.get("posts", 0)
+        prim.setdefault("merged", []).append(child["username"])
+        if child["platform"] != prim["platform"]:
+            prim.setdefault("merged_platforms", []).append(child["platform"])
+    if folded:
+        out = [p for p in out
+               if (p["username"].lower(), p["platform"]) not in folded]
+
     out.sort(key=lambda p: p["username"].lower())
     return out
 
@@ -2591,6 +2716,10 @@ class Engine:
     gallery_profiles = gallery_profiles
     gallery_sections = gallery_sections
     gallery_posts = gallery_posts
+    # These two are what make a merged card show more than one account, and they
+    # have to be bound here to be reachable as methods at all.
+    profile_family = profile_family
+    _real_profile_name = _real_profile_name
     timeline = timeline
     timeline_month = timeline_month
     gallery_all = gallery_all

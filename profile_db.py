@@ -101,9 +101,48 @@ class ProfileDB:
         # you actually want to find again -- so they are separate columns and one
         # never implies the other.
         ("clips", "starred", "INTEGER NOT NULL DEFAULT 0"),
+        # Which site the parent lives on. Blank means "the same one as the alias",
+        # which is what every within-platform merge means.
+        ("profile_links", "parent_platform", "TEXT NOT NULL DEFAULT ''"),
+        # 1 when the same-name rule made the link, 0 when it was asked for. A
+        # merge the user made by hand outranks anything inferred.
+        ("profile_links", "auto", "INTEGER NOT NULL DEFAULT 0"),
     ]
 
+    def _create_tables(self):
+        # Accounts that are the same person: a main and its burner/finsta, or the
+        # same handle on both sites. Gallery view only -- the archives stay
+        # separate folders and the downloads stay separate jobs. This decides only
+        # that one card stands for more than one account.
+        #
+        # `platform` is where the alias lives, `parent_platform` where it shows:
+        # blank means the same site, which is what a burner merge is. They are
+        # separate columns because a burner merge must not merge the other site
+        # (the same handle is a different person there) while the same-name rule
+        # does exactly the opposite.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS profile_links (
+                   platform        TEXT NOT NULL,
+                   alias           TEXT NOT NULL,
+                   parent          TEXT NOT NULL,
+                   parent_platform TEXT NOT NULL DEFAULT '',
+                   auto            INTEGER NOT NULL DEFAULT 0,
+                   created         REAL NOT NULL,
+                   PRIMARY KEY (platform, alias))""")
+        # Accounts told apart by hand that the same-name rule would put back
+        # together. A split is an instruction, and an automatic rule that silently
+        # undoes an instruction is worse than no rule.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS profile_splits (
+                   handle  TEXT PRIMARY KEY,
+                   created REAL NOT NULL)""")
+        self._conn.commit()
+
     def _migrate(self):
+        # Tables first, then columns: adding a column to a table that has not been
+        # created yet fails on a fresh database, which is exactly what happens the
+        # first time this runs somewhere new.
+        self._create_tables()
         for table, column, decl in self._MIGRATIONS:
             cols = {r["name"] for r in
                     self._conn.execute(f"PRAGMA table_info({table})")}
@@ -531,6 +570,139 @@ class ProfileDB:
             self._conn.execute("UPDATE clips SET trashed=? WHERE path=?",
                                (1 if trashed else 0, path))
             self._conn.commit()
+
+    def profile_links(self) -> dict:
+        """{(platform, alias_lower): (parent, parent_platform, auto)} per merge.
+
+        A blank `parent_platform` means the parent lives on the alias's own site,
+        which is what a burner merge is. `auto` says whether the same-name rule
+        made it, which is what a split needs to know how to undo.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT platform, alias, parent, parent_platform, auto "
+                "FROM profile_links")
+            return {(r["platform"], r["alias"].lower()):
+                    (r["parent"], r["parent_platform"] or r["platform"],
+                     r["auto"] or 0) for r in cur}
+
+    def profile_splits(self) -> set:
+        """Handles told apart by hand. The same-name rule must leave these alone."""
+        with self._lock:
+            cur = self._conn.execute("SELECT handle FROM profile_splits")
+            return {r["handle"].lower() for r in cur}
+
+    def linked_family(self, username: str, platform: str = "instagram"
+                      ) -> list[tuple[str, str]]:
+        """[(handle, platform)] the merge table puts under one entry.
+
+        This half is what was asked for by hand. The same-name rule needs to know
+        what is actually on disk, which is not this table's business, so the
+        caller adds that half.
+        """
+        plat = (platform or "instagram").strip().lower()
+        me = (username or "").strip()
+        if not me:
+            return []
+        links = self.profile_links()
+        # Walk to the top of the chain. link_profiles() refuses to build one, but a
+        # link added either side of a later merge could leave a stale step, and a
+        # loop here would hang the gallery rather than show it wrong.
+        parent, parent_plat, _auto = links.get((plat, me.lower()), (me, plat, 0))
+        seen = {me.lower()}
+        for _ in range(8):
+            if parent.lower() in seen:
+                break
+            seen.add(parent.lower())
+            nxt = links.get((parent_plat, parent.lower()))
+            if not nxt:
+                break
+            parent, parent_plat = nxt[0], nxt[1]
+        out = [(parent, parent_plat)]
+        for (p_plat, alias), (target, target_plat, _a) in sorted(links.items()):
+            if target.lower() == parent.lower() and target_plat == parent_plat:
+                if alias.lower() != parent.lower():
+                    out.append((alias, p_plat))
+        # Keep the casing the caller passed for the entry itself; folders may be
+        # spelled differently and callers match case-insensitively.
+        if out[0][0].lower() == me.lower():
+            out[0] = (me, out[0][1])
+        return out
+
+    def split_profile(self, username: str) -> dict:
+        """Undo a merge, and stop the same-name rule putting it back.
+
+        Both halves matter: dropping the link separates them now, remembering the
+        handle keeps them apart later. An automatic rule that silently re-forms a
+        split the user made is worse than having no rule.
+        """
+        me = (username or "").strip()
+        if not me:
+            return {"ok": False, "error": "an account is needed"}
+        low = me.lower()
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM profile_links WHERE lower(alias)=? OR lower(parent)=?",
+                (low, low))
+            self._conn.execute(
+                "INSERT INTO profile_splits (handle, created) VALUES (?,?) "
+                "ON CONFLICT(handle) DO UPDATE SET created=excluded.created",
+                (low, time.time()))
+            self._conn.commit()
+        return {"ok": True, "profile": me, "unlinked": cur.rowcount}
+
+    def link_profiles(self, alias: str, primary: str, platform: str,
+                      parent_platform: str = "", auto: bool = False) -> dict:
+        """Make `alias` show as part of `primary` in the gallery.
+
+        Refuses the ways this can contradict itself: merging something into
+        itself, and chains (A into B where B is already an alias of C), which would
+        make what-is-shown depend on the order the links were read.
+        """
+        platform = (platform or "instagram").strip().lower()
+        parent_platform = (parent_platform or platform).strip().lower()
+        if parent_platform not in ("instagram", "tiktok"):
+            return {"ok": False, "error": "unknown platform"}
+        alias, primary = (alias or "").strip(), (primary or "").strip()
+        if not alias or not primary:
+            return {"ok": False, "error": "both accounts are needed"}
+        if alias.lower() == primary.lower():
+            return {"ok": False, "error": "that is the same account"}
+        links = self.profile_links()
+        step = links.get((platform, primary.lower()))
+        if step:
+            # Point at the top of the chain instead of building one.
+            primary, parent_platform = step[0], step[1]
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO profile_links "
+                "(platform, alias, parent, parent_platform, auto, created) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(platform, alias) DO UPDATE SET "
+                "parent=excluded.parent, parent_platform=excluded.parent_platform, "
+                "auto=excluded.auto",
+                (platform, alias.lower(), primary, parent_platform,
+                 1 if auto else 0, time.time()))
+            # Anything merged into `alias` now belongs to `primary`.
+            self._conn.execute(
+                "UPDATE profile_links SET parent=?, parent_platform=? "
+                "WHERE platform=? AND lower(parent)=?",
+                (primary, parent_platform, platform, alias.lower()))
+            # Merging by hand is a later instruction than a split, so it clears the
+            # note that said to keep these two apart.
+            self._conn.execute(
+                "DELETE FROM profile_splits WHERE handle IN (?,?)",
+                (alias.lower(), primary.lower()))
+            self._conn.commit()
+        return {"ok": True, "alias": alias, "primary": primary, "platform": platform,
+                "parent_platform": parent_platform}
+
+    def unlink_profile(self, alias: str, platform: str) -> dict:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM profile_links WHERE platform=? AND lower(alias)=?",
+                ((platform or "instagram").strip().lower(), (alias or "").strip().lower()))
+            self._conn.commit()
+        return {"ok": bool(cur.rowcount), "alias": alias}
 
     def clip(self, path: str) -> dict | None:
         with self._lock:
