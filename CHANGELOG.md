@@ -5,6 +5,14 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The search box sits above the queue and finished lists.** It was at the bottom
+  of the pager, so a long queue had to be scrolled past before you could type in
+  it. The paging controls stay at the bottom; a search with no matches keeps its
+  box on screen, because hiding the box would strand the filter with no way to
+  clear it.
+
 ### Added
 
 - **"All" can mean a slice at a time.** A TikTok profile set to *all* can now

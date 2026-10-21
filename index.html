@@ -367,6 +367,12 @@
     border:1px solid var(--line);border-radius:7px;padding:4px 8px;
     font-size:12px;font-family:inherit;max-width:190px}
   .pager input.listsearch{flex:1;min-width:110px}
+  /* The search belongs above the list it filters. It used to sit in the pager at
+     the bottom, so a long queue had to be scrolled past before you could type. */
+  .listsearch-row{display:flex;align-items:center;gap:7px;margin:0 0 8px}
+  .listsearch-row input.listsearch{flex:1;min-width:110px;background:var(--panel-3);
+    color:var(--text);border:1px solid var(--line);border-radius:7px;
+    padding:5px 9px;font-size:12.5px;font-family:inherit}
   .pager button.small{padding:3px 9px}
   .gsearch{display:flex;align-items:center;gap:8px;margin-bottom:12px}
   .gsearch input{flex:1;max-width:340px;background:var(--panel-3);color:var(--text);
@@ -876,6 +882,7 @@ some.profile
           </div>
           <div id="removedList" style="margin-top:10px"></div>
         </div>
+        <div class="listsearch-row" id="queueSearch" style="display:none"></div>
         <div id="list" class="list"></div>
         <div id="queuePager" class="pager" style="display:none"></div>
         <div id="viewerHost"></div>
@@ -895,6 +902,7 @@ some.profile
             <button class="small" id="ttAllPlus" style="margin-left:auto;display:none"
               title="Grab 5 more videos from every finished TikTok profile">+5 all</button>
             <button class="small" id="clearFinishedBtn">Clear</button></div>
+          <div class="listsearch-row" id="doneSearch" style="display:none"></div>
           <div id="doneList" class="list"></div>
           <div id="donePager" class="pager" style="display:none"></div>
         </div>
@@ -2185,8 +2193,33 @@ function paintPager(key, total, _hint, hintEl, noun){
   const { hits, pages } = pageSlice(key);
   const count = hits.length;
 
-  if(!all){ bar.style.display = "none"; return; }
+  const sbar = $(key === "done" ? "doneSearch" : "queueSearch");
+  if(!all){
+    bar.style.display = "none";
+    if(sbar) sbar.style.display = "none";   // nothing to search
+    return;
+  }
   bar.style.display = "flex";
+  if(sbar) sbar.style.display = "";
+
+  // The search box, above the list. Built once and then only updated: the poll
+  // repaints this every 1.2s, and rebuilding it would drop the caret and the
+  // selection out from under whatever is being typed.
+  if(sbar && sbar.dataset.built !== key){
+    sbar.innerHTML = "";
+    sbar.dataset.built = key;
+    const b = document.createElement("input");
+    b.type = "search";
+    b.className = "listsearch";
+    b.placeholder = key === "done" ? "Search finished…" : "Search waiting…";
+    b.value = ui.q;
+    b.oninput = () => { ui.q = b.value.trim(); ui.page = 0; repaintList(key); };
+    sbar.appendChild(b);
+  }
+  if(sbar){
+    const b = sbar.querySelector("input.listsearch");
+    if(b && document.activeElement !== b && b.value !== ui.q) b.value = ui.q;
+  }
 
   const hint = hintEl || $(key === "done" ? "doneHint" : "queueHint");
   if(hint){
@@ -2200,8 +2233,6 @@ function paintPager(key, total, _hint, hintEl, noun){
   // destroy the search box's focus and selection while you are typing, so the
   // controls are created once and only their values are updated afterwards.
   if(bar.dataset.built === key){
-    const box = bar.querySelector("input.listsearch");
-    if(box && document.activeElement !== box && box.value !== ui.q) box.value = ui.q;
     const lbl = bar.querySelector(".pagelabel");
     if(lbl) lbl.textContent = pages > 1 ? `page ${ui.page + 1} / ${pages}` : "";
     const prev = bar.querySelector('[data-step="-1"]');
@@ -2238,19 +2269,6 @@ function paintPager(key, total, _hint, hintEl, noun){
     b.onclick = fn;
     return b;
   };
-
-  // Search
-  const box = document.createElement("input");
-  box.type = "search";
-  box.className = "listsearch";
-  box.placeholder = key === "done" ? "Search finished…" : "Search waiting…";
-  box.value = ui.q;
-  box.oninput = () => {
-    ui.q = box.value.trim();
-    ui.page = 0;
-    repaintList(key);
-  };
-  bar.appendChild(box);
 
   const pageLabel = document.createElement("span");
   pageLabel.className = "hint pagelabel";
