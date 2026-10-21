@@ -75,6 +75,9 @@
   }
   .act:active{transform:scale(.9)}
   .act.liked{color:#ff5c8a}
+  /* Gold, not the heart's pink: the two are different things and should not read
+     as one control in two states. */
+  .act.starred{color:#f5c451}
   .act.trashed{color:#ff5c5c}
   .act small{font-size:.55rem;display:block;margin-top:-.15rem}
   .lbl{font-size:.58rem;color:var(--muted);text-align:center;margin-top:.15rem;
@@ -172,36 +175,36 @@
 
 <div class="topbar" id="topbar" style="display:none">
   <span class="title">Shorts</span>
-  <button class="filt" id="favBtn">Favourites</button>
+  <button class="filt" id="favBtn" aria-label="Starred only"
+          title="Starred only — the clips you have starred">&#9734;</button>
   <span class="count" id="count"></span>
 </div>
 
 <div class="rail" id="rail" style="display:none">
   <div>
     <button class="act" id="muteBtn" aria-label="Unmute" title="Sound (m)">&#128263;</button>
-    <div class="lbl" id="muteLbl">muted</div>
   </div>
   <div>
-    <button class="act" id="likeBtn" aria-label="Like">&#9825;</button>
-    <div class="lbl">like</div>
+    <button class="act" id="likeBtn" aria-label="Like" title="Like">&#9825;</button>
   </div>
   <div>
-    <button class="act" id="dlBtn" aria-label="Download">&#8595;</button>
-    <div class="lbl">save</div>
+    <!-- A star is a bookmark, not a reaction: the thing you want to find again.
+         It sits apart from the heart on purpose -- neither implies the other. -->
+    <button class="act" id="starBtn" aria-label="Star" title="Star — save this one">&#9734;</button>
   </div>
   <div>
-    <button class="act" id="trashBtn" aria-label="Trash">&#128465;</button>
-    <div class="lbl">trash</div>
+    <button class="act" id="dlBtn" aria-label="Download" title="Save the file to this device">&#8595;</button>
+  </div>
+  <div>
+    <button class="act" id="trashBtn" aria-label="Trash" title="Trash — take it out of the feed">&#128465;</button>
   </div>
   <div>
     <button class="act" id="moreBtn" aria-label="Show more often from this profile"
             title="See more from this profile">&#8679;</button>
-    <div class="lbl">more</div>
   </div>
   <div>
     <button class="act" id="lessBtn" aria-label="Show less often from this profile"
             title="See less from this profile">&#8681;</button>
-    <div class="lbl">less</div>
   </div>
 </div>
 
@@ -294,7 +297,7 @@ function saveSession(extra){
   try{
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({
       seen: seen.slice(-MAX_EXCLUDE),
-      favourites: !!favourites,
+      starred: !!starredOnly,
       at: Date.now(),
       ...(extra || {}),
     }));
@@ -305,7 +308,9 @@ let session = 0;
 // spliced in ahead of the tail, so a new batch is not simply bolted onto the
 // bottom in the order the server happened to return it.
 let queue = [];
-let favourites = false;
+// The topbar filter is "starred only". A star is a bookmark; a like is a
+// reaction. They are separate and one never implies the other.
+let starredOnly = false;
 let loading = false;
 
 const $ = id => document.getElementById(id);
@@ -385,7 +390,7 @@ function clipEl(c){
 
 function renderEmpty(message, sub){
   // The Favourites button lives in the topbar. Hiding the bar here would also
-  // hide the only way back out of Favourites mode, so with no favourites yet
+  // hide the only way back out of starred-only mode, so with nothing starred yet
   // you would be stuck in an empty screen with no control to leave it. Keep
   // the bar; hide only what has nothing to show (the rail and bottombar).
   $("topbar").style.display = "";
@@ -406,7 +411,7 @@ async function fetchMore(){
   try{
     const r = await post("/api/shorts/feed", {
       limit: TOP,
-      favourites,
+      starred: starredOnly,
       profile: ONLY_USER,
       platform: ONLY_PLATFORM,
       exclude: seen.slice(-MAX_EXCLUDE),
@@ -419,13 +424,13 @@ async function fetchMore(){
     if(!got.length && !clips.length){
       renderEmpty(
         ONLY_USER ? `Nothing from @${ONLY_USER}`
-          : (favourites ? "No favourites yet" : "Nothing to show"),
+          : (starredOnly ? "Nothing starred yet" : "Nothing to show"),
         ONLY_USER
           ? (ONLY_PLATFORM === "instagram"
               ? "This profile has no reels or short videos archived."
               : "This profile has no videos archived yet.")
-          : (favourites
-              ? "Like a few clips and they will appear here."
+          : (starredOnly
+              ? "Star a few clips and they will appear here."
               : "Download some TikToks first, then come back.")
       );
       return;
@@ -591,6 +596,9 @@ function fillRail(){
     .filter(Boolean).join(" · ");
   $("likeBtn").classList.toggle("liked", !!c.liked);
   $("likeBtn").innerHTML = c.liked ? "&#9829;" : "&#9825;";
+  // The star is its own thing: a clip can be liked, starred, both or neither.
+  $("starBtn").classList.toggle("starred", !!c.starred);
+  $("starBtn").innerHTML = c.starred ? "&#9733;" : "&#9734;";
   $("count").textContent = (idx + 1) + " / " + clips.length
     + (ONLY_USER ? " · only @" + ONLY_USER : "");
 }
@@ -638,6 +646,18 @@ let wantSound = (() => {
   try { return sessionStorage.getItem("shorts.sound") === "1"; } catch(e){ return false; }
 })();
 
+// The topbar filter shows the star's own state: filled while you are looking at
+// starred clips only.
+function paintFavBtn(){
+  const b = $("favBtn");
+  if(!b) return;
+  b.innerHTML = starredOnly ? "&#9733;" : "&#9734;";
+  b.classList.toggle("on", starredOnly);
+  b.title = starredOnly
+    ? "Showing starred only — tap for everything"
+    : "Starred only — the clips you have starred";
+}
+
 function paintMute(){
   const b = $("muteBtn");
   if(!b) return;
@@ -645,8 +665,8 @@ function paintMute(){
   b.setAttribute("aria-label", wantSound ? "Mute" : "Unmute");
   b.title = wantSound ? "Mute (m)" : "Unmute (m)";
   b.classList.toggle("on", wantSound);
-  const l = $("muteLbl");
-  if(l) l.textContent = wantSound ? "sound" : "muted";
+  // The icon carries this on its own now: the word under it was one of the labels
+  // the buttons do not have any more.
 }
 
 function setSound(on){
@@ -787,6 +807,14 @@ $("likeBtn").onclick = async () => {
   await act("like", {value: !!c.liked});
 };
 
+$("starBtn").onclick = async () => {
+  const c = currentData();
+  if(!c) return;
+  c.starred = c.starred ? 0 : 1;
+  fillRail();
+  await act("star", {value: !!c.starred});
+};
+
 $("trashBtn").onclick = async () => {
   const c = currentData();
   if(!c) return;
@@ -857,8 +885,8 @@ $("dlBtn").onclick = () => {
 };
 
 $("favBtn").onclick = () => {
-  favourites = !favourites;
-  $("favBtn").classList.toggle("on", favourites);
+  starredOnly = !starredOnly;
+  paintFavBtn();
   // Rebuild from scratch: the pool has changed, so old clips are not valid.
   clips = []; idx = 0; seen = [];
   feed.innerHTML = "";
@@ -904,8 +932,8 @@ document.addEventListener("keydown", e => {
 const restored = loadSession();
 if(restored){
   seen = Array.isArray(restored.seen) ? restored.seen : [];
-  favourites = !!restored.favourites;
-  $("favBtn").classList.toggle("on", favourites);
+  starredOnly = !!restored.starredOnly;
+  paintFavBtn();
 }
 paintMute();
 paintSkip();

@@ -7,6 +7,22 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **Shorts has stars, separate from likes.** A star is a bookmark -- the thing you
+  want to find again -- and a like is a reaction, so they are different columns
+  and neither implies the other: a clip can be liked, starred, both or neither.
+  The star sits in the rail beside the heart (gold, against the heart's pink, so
+  they do not read as one control in two states) and the topbar filter is now the
+  star: filled while you are looking at starred clips only.
+  `starred` is a new column; existing likes are untouched and stay likes.
+
+### Changed
+
+- **The button labels are gone** from the Shorts rail. Each action is the icon
+  alone, with the words kept as tooltips and labels for screen readers, so
+  hovering or long-pressing still says what it does. The topbar filter reads as a
+  star rather than the word "Favourites". The skip buttons keep their number --
+  that is the step you set by tapping three times, not a name for the button.
+
 - **Shorts for one person.** Opening the Shorts tab while a profile is open in
   the Gallery shows only that person's clips. The filter travels in the player's
   URL, which the app sets when the tab opens and reloads when the open profile

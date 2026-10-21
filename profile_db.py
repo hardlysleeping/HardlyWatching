@@ -96,6 +96,11 @@ class ProfileDB:
         # 1 = a reel, 0 = an Instagram video that is not a reel, -1 = not known
         # (no sidecar). Stored rather than re-read on every feed request.
         ("clips", "is_reel", "INTEGER NOT NULL DEFAULT -1"),
+        # A favourite, kept apart from `liked` on purpose. A like is a reaction --
+        # it should stay a light, throwaway tap. A star is a bookmark: the thing
+        # you actually want to find again -- so they are separate columns and one
+        # never implies the other.
+        ("clips", "starred", "INTEGER NOT NULL DEFAULT 0"),
     ]
 
     def _migrate(self):
@@ -323,7 +328,8 @@ class ProfileDB:
 
     def feed(self, limit: int = 20, favourites_only: bool = False,
              exclude: list[str] | None = None, known_paths: list[str] | None = None,
-             profile: str | None = None, platform: str | None = None) -> list[dict]:
+             profile: str | None = None, platform: str | None = None,
+             starred_only: bool = False) -> list[dict]:
         """Pick the next clips, weighted, newest-ignored-first.
 
         Weighted choice is done here rather than in SQL: the set is small enough
@@ -351,7 +357,10 @@ class ProfileDB:
             if platform:
                 sql += " AND platform=?"
                 params.append(platform.strip().lower())
-            sql += " AND liked=1" if favourites_only else ""
+            # `favourites_only` was the old name for this filter and meant likes.
+            # Either one now means starred: the star is the bookmark, the heart is
+            # only a reaction.
+            sql += " AND starred=1" if (starred_only or favourites_only) else ""
             cur = self._conn.execute(sql, params)
             rows = [dict(r) for r in cur]
         if known_paths:
@@ -511,6 +520,12 @@ class ProfileDB:
                                (1 if liked else 0, path))
             self._conn.commit()
 
+    def set_starred(self, path: str, starred: bool = True):
+        with self._lock:
+            self._conn.execute("UPDATE clips SET starred=? WHERE path=?",
+                               (1 if starred else 0, path))
+            self._conn.commit()
+
     def set_trashed(self, path: str, trashed: bool = True):
         with self._lock:
             self._conn.execute("UPDATE clips SET trashed=? WHERE path=?",
@@ -526,10 +541,11 @@ class ProfileDB:
     def clip_stats(self) -> dict:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT COUNT(*) total, SUM(liked) liked, SUM(trashed) trashed FROM clips")
+                "SELECT COUNT(*) total, SUM(liked) liked, SUM(trashed) trashed, "
+                "SUM(starred) starred FROM clips")
             r = cur.fetchone()
             return {"total": r["total"] or 0, "liked": r["liked"] or 0,
-                    "trashed": r["trashed"] or 0}
+                    "trashed": r["trashed"] or 0, "starred": r["starred"] or 0}
 
 
 _shared = None

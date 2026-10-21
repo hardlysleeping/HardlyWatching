@@ -1355,7 +1355,9 @@ class Handler(BaseHTTPRequestHandler):
             # itself is cached for a few seconds so a swipe does not re-walk
             # the whole archive.
             limit = int(body.get("limit") or 20)
-            fav = bool(body.get("favourites"))
+            # "favourites" is the old key for this and meant likes; either one
+            # means starred now.
+            fav = bool(body.get("starred") or body.get("favourites"))
             seen = body.get("exclude") or []
             # Opened from one person's gallery: show only them.
             import engine as _eng
@@ -1368,7 +1370,7 @@ class Handler(BaseHTTPRequestHandler):
             db.sync_clips(found)
             alive = [f["path"] for f in found]
             by_path = {f["path"]: f for f in found}
-            rows = db.feed(limit, favourites_only=fav, exclude=seen, known_paths=alive,
+            rows = db.feed(limit, starred_only=fav, exclude=seen, known_paths=alive,
                            profile=prof or None, platform=plat or None)
             out = []
             for r in rows:
@@ -1385,6 +1387,11 @@ class Handler(BaseHTTPRequestHandler):
             if action == "like":
                 db.set_liked(path, bool(body.get("value", True)))
                 return self._json({"ok": True, "liked": db.clip(path)["liked"]})
+            if action == "star":
+                # The bookmark, kept apart from the like. Either can be set
+                # without the other.
+                db.set_starred(path, bool(body.get("value", True)))
+                return self._json({"ok": True, "starred": db.clip(path)["starred"]})
             if action == "trash":
                 db.set_trashed(path, True)
                 return self._json({"ok": True})

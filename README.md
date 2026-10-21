@@ -312,6 +312,11 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Likes and stars.** The heart is a like; the star is a bookmark. They are
+independent — a clip can be liked, starred, both or neither — and the topbar's
+star button filters the feed to the clips you have starred. The rail's buttons are
+icons only; the words survive as tooltips.
+
 **Shorts for one profile.** Open someone in the Gallery and then tap Shorts, and
 the feed is that person alone; go back to the profile list and it is everyone
 again. The count line says "only @someone" while a filter is on.
