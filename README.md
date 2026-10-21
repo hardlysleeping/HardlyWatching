@@ -283,10 +283,16 @@ which is what used to leave every clip sitting frozen at 0:00. Turn sound on wit
 the speaker button in the rail (or **m** on a desktop) and the choice is kept for
 the rest of the sitting, so clips you scroll to later are not silent again.
 
+Skips come in **5, 10 or 15 second** steps, starting at 5. Tap either skip
+button — the **↺5s** and **5s↻** at the ends of the seek bar — three times to step
+through them; the label and the buttons update to show the new step, and cycling
+never throws the clip around. A single tap on a button skips by the current step,
+and so do **← / →**. Two taps on a button skip twice the step.
+
 On a phone, where there is no seek bar and no keyboard, **double-tap the left or
-right half** of a clip to jump ten seconds either way; a single tap plays and
-pauses. A brief play or skip mark flashes over the clip either way, since there
-is no visible control to move.
+right half** of a clip to jump by the current step either way; a single tap plays
+and pauses. A brief play or skip mark flashes over the clip either way, since
+there is no visible control to move.
 
 **One limitation, told plainly:** iOS will not let a clip that scrolls into view
 play sound unless you have tapped that page, so if a clip refuses to start with

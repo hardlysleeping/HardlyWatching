@@ -17,10 +17,12 @@ versioning is [SemVer](https://semver.org/).
 
 - **Shorts player conveniences.** A speaker button in the rail (and **m**) turns
   sound on and off, remembered for the sitting; clips still start muted, since a
-  browser refuses to autoplay audible video. On a phone — where the seek bar is
-  desktop-only and there is no keyboard — **double-tap the left or right half**
-  to jump ten seconds, with a brief play/skip mark flashing over the clip so a
-  tap visibly does something. A clip that a browser refuses to start with sound
+  browser refuses to autoplay audible video. Tappable **skip buttons** flank the
+  seek bar; tapping either three times steps the jump through 5, 10 and 15
+  seconds and back, without also skipping. On a phone — where the seek bar is
+  desktop-only and there is no keyboard — **double-tap the left or right half** to
+  jump by the current step, with a brief play/skip mark flashing over the clip so
+  a tap visibly does something. A clip that a browser refuses to start with sound
   falls back to muted and the button shows that, instead of claiming sound is on
   over a silent video.
 - **`install-service.sh` now prefers the project's venv** and checks the chosen

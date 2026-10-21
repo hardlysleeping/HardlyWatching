@@ -102,6 +102,18 @@
   }
   .scrub .t{font-size:.62rem;color:var(--muted);font-variant-numeric:tabular-nums;
     min-width:2.7rem;text-align:center}
+  /* Tappable skip controls. On a desktop these are the whole point of the row:
+     the bar alone is a fiddly target and the arrow keys have to be remembered.
+     Tap one three times to step the jump 5 -> 10 -> 15 -> 5. */
+  .skipbtn{
+    pointer-events:auto;flex:none;
+    background:rgba(10,10,14,.62);color:var(--fg);
+    border:1px solid rgba(255,255,255,.18);border-radius:999px;
+    padding:.2rem .55rem;font:inherit;font-size:.68rem;
+    font-variant-numeric:tabular-nums;cursor:pointer;white-space:nowrap;
+  }
+  .skipbtn:hover{border-color:rgba(255,255,255,.4)}
+  .skipbtn:active{transform:scale(.94)}
   .scrub input{
     pointer-events:auto;flex:1;min-width:0;height:18px;margin:0;padding:0;
     -webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;
@@ -196,10 +208,12 @@
 <div class="tapicon" id="tapIcon" aria-hidden="true"></div>
 
 <div class="scrub" id="scrubWrap" style="display:none">
+  <button class="skipbtn" id="skipBack" aria-label="Skip back">&#8634;<span id="skipBackN">5</span>s</button>
   <span class="t" id="tCur">0:00</span>
   <input type="range" id="scrub" min="0" max="1000" value="0" step="1"
          aria-label="Seek">
   <span class="t" id="tDur">0:00</span>
+  <button class="skipbtn" id="skipFwd" aria-label="Skip forward"><span id="skipFwdN">5</span>s&#8635;</button>
 </div>
 
 <div class="bottombar" id="bottombar" style="display:none">
@@ -218,7 +232,10 @@ const TOP = 8;            // clips fetched per batch (8, not 4: each batch is a
                           // every couple of swipes)
 const REFILL_AT = 3;      // fetch more when this many remain below the fold
 const MAX_EXCLUDE = 400;  // remember this many recently shown, then forget
-const SKIP = 10;          // seconds a double-tap jumps, either way
+// Seconds a skip jumps. Step through these by tapping either skip button three
+// times: 5, then 10, then 15, then back to 5. Starts at the first, and resets on
+// reload -- it is part of the sitting, like the scroll position.
+const SKIP_STEPS = [5, 10, 15];
 const DOUBLE_TAP_MS = 260;// wait this long before a tap counts as a single tap
 
 // Opened inside the main app's Shorts tab (an iframe of /shorts?embed=1) rather
@@ -327,8 +344,8 @@ function clipEl(c){
     const dir = (e.clientX - r.left) < r.width / 2 ? -1 : 1;
     if(tapTimer){
       clearTimeout(tapTimer); tapTimer = null;
-      seekTo(v.currentTime + dir * SKIP);
-      tapIcon((dir < 0 ? "&minus;" : "+") + SKIP + "s");
+      seekTo(v.currentTime + dir * skipStep());
+      tapIcon((dir < 0 ? "&minus;" : "+") + skipStep() + "s");
       return;
     }
     tapTimer = setTimeout(() => {
@@ -589,6 +606,50 @@ function setSound(on){
 
 function toggleSound(){ setSound(!wantSound); }
 
+// Which step a skip uses. Lives for the sitting only: a reload starts at five
+// again, which is a legible default rather than a mystery setting carried over
+// from weeks ago.
+let skipIdx = 0;
+function skipStep(){ return SKIP_STEPS[skipIdx]; }
+
+function paintSkip(){
+  for(const [id, n] of [["skipBack","skipBackN"], ["skipFwd","skipFwdN"]]){
+    const nEl = $(n);
+    if(nEl) nEl.textContent = String(skipStep());
+    const b = $(id);
+    if(b) b.setAttribute("aria-label",
+      (id === "skipBack" ? "Skip back " : "Skip forward ") + skipStep() + " seconds" +
+      " (tap 3 times to change the step)");
+  }
+}
+
+// Three taps on either button moves the step on and does NOT skip: cycling the
+// setting should not also throw the clip around. Anything short of three is a
+// plain skip by the current step, once the third-tap window has passed.
+let tapRun = 0, tapRunTimer = null, tapRunDir = 0;
+
+function skipButtonTap(dir){
+  if(tapRunDir !== dir){ tapRun = 0; tapRunDir = dir; }
+  tapRun++;
+  clearTimeout(tapRunTimer);
+  if(tapRun >= 3){
+    tapRun = 0; tapRunDir = 0;
+    skipIdx = (skipIdx + 1) % SKIP_STEPS.length;
+    paintSkip();
+    tapIcon("&#8635; " + skipStep() + "s");
+    return;
+  }
+  tapRunTimer = setTimeout(() => {
+    const n = tapRun;
+    tapRun = 0; tapRunDir = 0;
+    if(!n) return;
+    const v = current() && current().querySelector("video");
+    if(!v) return;
+    seekTo(v.currentTime + dir * n * skipStep());
+    tapIcon((dir < 0 ? "&minus;" : "+") + (n * skipStep()) + "s");
+  }, 420);
+}
+
 function seekTo(seconds){
   const v = current() && current().querySelector("video");
   if(!v) return;
@@ -738,11 +799,11 @@ document.addEventListener("keydown", e => {
     // desktop once the native controls are out of the way.
     e.preventDefault();
     const v = current() && current().querySelector("video");
-    if(v) seekTo(v.currentTime - 5);
+    if(v) seekTo(v.currentTime - skipStep());
   }else if(e.key === "ArrowRight"){
     e.preventDefault();
     const v = current() && current().querySelector("video");
-    if(v) seekTo(v.currentTime + 5);
+    if(v) seekTo(v.currentTime + skipStep());
   }else if(e.key === " "){
     e.preventDefault();
     const v = current()?.querySelector("video");
@@ -766,6 +827,11 @@ if(restored){
   $("favBtn").classList.toggle("on", favourites);
 }
 paintMute();
+paintSkip();
+const _skipBack = $("skipBack");
+const _skipFwd  = $("skipFwd");
+if(_skipBack) _skipBack.addEventListener("click", () => skipButtonTap(-1));
+if(_skipFwd)  _skipFwd.addEventListener("click",  () => skipButtonTap(1));
 const _muteBtn = $("muteBtn");
 if(_muteBtn) _muteBtn.addEventListener("click", toggleSound);
 renderLoading();
