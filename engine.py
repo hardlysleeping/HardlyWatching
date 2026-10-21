@@ -551,6 +551,11 @@ def clean_profile_name(raw: str) -> str | None:
 # which is why adding the extension is enough for them to appear.
 GALLERY_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".heic", ".heif"}
 GALLERY_VIDEO_EXTS = {".mp4", ".mov"}
+# What a TikTok archive holds. yt-dlp writes .mp4, and .webm/.m4v turn up when a
+# clip had no H.264 version; .jpg only when thumbnails were asked for. Used to
+# recognise an archive folder, so a directory that merely shares the name is not
+# mistaken for one.
+TIKTOK_EXTS = {".mp4", ".webm", ".m4v", ".mov", ".mkv", ".jpg", ".jpeg", ".webp"}
 # What an upload is allowed to write. Deliberately the same set the gallery can
 # display: storing something it would then refuse to show is just a confusing
 # way to fill the disk. .heic is absent on purpose -- see the note in the docs;
@@ -1108,6 +1113,15 @@ def tiktok_roots(root: Path) -> tuple[Path, ...]:
     in the gallery's profile scan, and that copy kept looking in the old spot
     after the layout changed, so TikTok profiles vanished from the gallery while
     everything else worked.
+
+    A sibling folder is only used when this app can tell it belongs here: it must
+    look like a TikTok archive, meaning it holds the marker this app drops when
+    it creates the folder, or at least one child that contains a media file or a
+    `.yt-dlp-archive.txt`. An unrelated directory that merely happens to be named
+    `tiktok` -- a game's cache, a dataset, someone's notes -- is therefore left
+    alone, and the archive stays inside the root rather than scattering into it.
+    Without that check, "there is a folder called tiktok next to Downloads" was
+    enough to have it adopted and listed in the gallery.
     """
     root = Path(root)
     nested = root / "tiktok"
@@ -1117,9 +1131,53 @@ def tiktok_roots(root: Path) -> tuple[Path, ...]:
         # Root missing, or unreadable: prefer the location inside it, which is
         # the one that cannot escape onto a different volume.
         same_disk = False
-    if same_disk:
-        return (root.parent / "tiktok", nested)
+    if not same_disk:
+        return (nested,)
+
+    sibling = root.parent / "tiktok"
+    if _looks_like_tiktok_archive(sibling):
+        return (sibling, nested)
+    # Either it is not there yet (nothing to decide), or it is there and is not
+    # ours. Both end up inside the root, so a first download still lands next to
+    # the Instagram folder while a stranger's directory is never touched.
+    if not sibling.exists():
+        return (sibling, nested)
     return (nested,)
+
+
+TIKTOK_MARKER = ".hardlywatching-tiktok"
+
+
+def _looks_like_tiktok_archive(folder: Path) -> bool:
+    """True when `folder` is a TikTok archive this app made, or clearly grew into.
+
+    Deliberately shallow and bounded: the marker file, or one child folder that
+    holds something recognisably downloaded. It never walks deeper than that, so
+    pointing downloads at a big drive cannot turn into a slow scan on every
+    gallery request.
+    """
+    try:
+        if not folder.is_dir():
+            return False
+        if (folder / TIKTOK_MARKER).exists():
+            return True
+        for entry in os.scandir(folder):
+            if not entry.is_dir():
+                continue
+            if (Path(entry.path) / ".yt-dlp-archive.txt").exists():
+                return True
+            try:
+                with os.scandir(entry.path) as kids:
+                    for kid in kids:
+                        if not kid.is_file():
+                            continue
+                        if os.path.splitext(kid.name)[1].lower() in TIKTOK_EXTS:
+                            return True
+            except OSError:
+                continue
+        return False
+    except OSError:
+        return False
 
 
 def _platform_of_folder(folder: Path) -> str:
@@ -3974,6 +4032,18 @@ class Engine:
         tt_root = existing.parent if existing else tiktok_roots(base_root)[0]
         target_dir = tt_root / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
+        # Say so, once. `tiktok_roots` only adopts a sibling folder it can
+        # recognise as an archive; dropping this marker is what makes that
+        # recognition certain for a folder it just created, rather than relying
+        # on the downloads inside it to be spotted later.
+        marker = tt_root / TIKTOK_MARKER
+        if not marker.exists():
+            try:
+                marker.write_text(
+                    "This folder holds this app's TikTok archives "
+                    "(yt-dlp downloads).\n", encoding="utf-8")
+            except OSError:
+                pass
         archive = tt.archive_path(tt_root, job.username)
 
         count = int(getattr(job, "tiktok_count", 0) or 0)

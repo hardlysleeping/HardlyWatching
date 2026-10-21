@@ -606,6 +606,14 @@ point of a drive (e.g. you set it to `/mnt/bigdrive` rather than
 TikTok goes inside the downloads folder instead. The app checks which case it is
 rather than assuming.
 
+That sibling folder is only used when the app can tell it is a TikTok archive: it
+holds a `.hardlywatching-tiktok` marker (written the first time video is
+downloaded there), or at least one child folder containing a video or a
+`.yt-dlp-archive.txt`. So an unrelated directory that merely happens to be called
+`tiktok` — a game's cache, a dataset — is never adopted or listed. Without that
+check, having a folder by that name next to your downloads was enough for the
+gallery to read it as an archive.
+
 Worth knowing: the downloads folder is often called `instagram` because that is
 instaloader's own default name. Renaming it is fine — use **Change…** on the
 Downloads folder card.

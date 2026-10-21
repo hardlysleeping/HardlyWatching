@@ -12,9 +12,6 @@ versioning is [SemVer](https://semver.org/).
 - **"Show all platforms"** in the settings toolbar. Settings belonging to the other
   platform were hidden outright, with no way to see them without switching tabs.
   They are now revealed dimmed rather than hidden, and stay editable.
-
-### Added
-
 - **Shorts player conveniences.** A speaker button in the rail (and **m**) turns
   sound on and off, remembered for the sitting; clips still start muted, since a
   browser refuses to autoplay audible video. Tappable **skip buttons** flank the
@@ -33,6 +30,13 @@ versioning is [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **The sibling `tiktok` folder is only adopted when it is actually an archive.**
+  Any directory of that name next to the downloads folder used to be read as one
+  and listed in the gallery. It must now carry a `.hardlywatching-tiktok` marker,
+  written the first time video is downloaded there, or hold at least one child
+  folder with a video or a `.yt-dlp-archive.txt`. An unrelated folder that happens
+  to share the name is left alone, and the archive stays inside the downloads
+  folder instead.
 - **Carousels that mix photos and videos were split into separate posts.** Parts
   are numbered in one sequence across both types, so grouping them per file
   extension broke a twenty-part post into two — a carousel looked like a single
