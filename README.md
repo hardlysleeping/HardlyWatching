@@ -298,6 +298,13 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Pasting.** One box handles both platforms. Instagram and TikTok links go in
+together, one per line, and each is routed by its link; plain names follow the
+tab you are on, since a bare handle carries no way to tell the two apart. The
+TikTok videos-per-profile setting sits in the same box and applies to TikTok
+lines only. **Check** reads the pasted text and reports the usernames it finds
+without queueing anything.
+
 **Shorts, as both.** Shorts is a tab in the app and `/shorts` still stands alone
 for the installed phone copy. An installed app launches at `/?tab=shorts`, which
 opens on Shorts *inside* the full app: the tabs and the menu are there, so

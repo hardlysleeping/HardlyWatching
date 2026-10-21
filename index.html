@@ -658,50 +658,55 @@
     <button class="subtab" id="subTt">TikTok</button>
   </div>
 
-  <div id="igPane">
+  <!-- One paste box for both platforms, sitting above the sub-tabs so it is the
+       same box whichever tab you are on.
+       Each line is routed by what it POINTS AT: an instagram.com link is an
+       Instagram profile, a tiktok.com link is a TikTok one, so a mixed list goes
+       in as a single paste. A bare name has no domain to route on and the same
+       handle can be two different people on the two sites, so it follows the tab
+       you are on rather than being guessed at. -->
   <div class="composer">
-    <textarea id="input" placeholder="One per line — username, @username, or a profile URL:
+    <textarea id="input" placeholder="Paste Instagram and TikTok links together — one per line:
+https://www.instagram.com/some.profile/
+https://www.tiktok.com/@another.profile
+
+Bare names (no link) work too, and follow the platform tab you are on:
 some.profile
-@another.profile
-https://www.instagram.com/a.third.profile/"></textarea>
+@another.profile"></textarea>
     <div class="row">
       <button class="primary" id="startBtn">Add to queue</button>
       <button class="small" id="pasteBtn">Paste from clipboard</button>
       <button class="small" id="clearInputBtn">Clear text</button>
+      <button class="small" id="ttCheckBtn"
+              title="Read the paste and say what it found, without queueing anything">Check</button>
       <span class="hint">Commas work too · Ctrl+Enter to add · duplicates skipped</span>
     </div>
+    <div class="row" style="margin-top:9px">
+      <label class="hint" for="ttCount" style="align-self:center">TikTok videos per profile</label>
+      <select id="ttCount" class="small" style="width:auto">
+        <option value="5" selected>5 most recent</option>
+        <option value="10">10</option>
+        <option value="25">25</option>
+        <option value="50">50</option>
+        <option value="0">All</option>
+      </select>
+      <span class="hint" style="align-self:center">— applies to TikTok lines; Instagram takes the settings below</span>
+    </div>
+    <div class="hint" id="ttResult" style="margin-top:9px"></div>
     <div class="hint" style="margin-top:7px">
       New profiles use the settings below. Existing queue items keep their own settings.
     </div>
   </div>
 
-  </div><!-- /igPane -->
-
   <div id="ttPane" style="display:none">
       <div class="card">
-        <h3 style="margin-top:0">Import from TikTok</h3>
+        <h3 style="margin-top:0">TikTok notes</h3>
         <p class="hint" style="margin-top:0">
-          Plain handles, <b>@handles</b> and profile links work too, one per line or
-          comma separated.
+          The paste box above handles TikTok too — links, plain handles and
+          <b>@handles</b>, mixed in with Instagram links in the same paste. Its
+          <b>Check</b> button reads a block of text and reports the usernames it
+          finds before anything is queued.
         </p>
-        <textarea id="ttInput" placeholder="Paste here — it finds the usernames for you.
-
-  someone
-  @somebody
-  https://www.tiktok.com/@another"></textarea>
-        <div class="row" style="margin-top:10px">
-          <label class="hint" for="ttCount" style="align-self:center">Videos per profile</label>
-          <select id="ttCount" class="small" style="width:auto">
-            <option value="5" selected>5 most recent</option>
-            <option value="10">10</option>
-            <option value="25">25</option>
-            <option value="50">50</option>
-            <option value="0">All</option>
-          </select>
-          <button class="small" id="ttCheckBtn">Check</button>
-          <button class="primary" id="ttImportBtn">Add to queue</button>
-          <button class="small" id="ttClearBtn">Clear</button>
-        </div>
         <!-- The long "how to copy your following list" text used to live in the
              placeholder, where it filled the box and read as noise. It still
              needs to be findable, so it is one collapsed line instead. -->
@@ -714,7 +719,6 @@ https://www.instagram.com/a.third.profile/"></textarea>
             rows that happened to be on screen.
           </p>
         </details>
-        <div id="ttResult" class="hint" style="margin-top:10px"></div>
         <!-- Where the files actually land, as a clickable path. The TikTok tree
              is one level below the downloads folder, so opening that folder
              never shows it and the videos look like they went somewhere else. -->
@@ -2698,13 +2702,45 @@ function setOffline(on){
 /* ---------- actions ---------- */
 
 $("startBtn").onclick = async () => {
+  // One box, both platforms. The server routes each line by the link it
+  // contains; a bare name follows the tab that is open, which is why the
+  // current platform is sent along with it.
   const val = $("input").value.trim();
   if(!val){ showErr("Paste at least one profile first."); return; }
-  const res = await post("/api/add",{profiles:val});
-  if(res.rejected&&res.rejected.length) showErr("Skipped: "+res.rejected.join(", "));
-  if(res.added&&res.added.length){
-    $("input").value="";
-    showOk(`Added ${res.added.length} profile${res.added.length>1?"s":""} to the queue.`);
+  const btn = $("startBtn");
+  const was = btn.textContent;
+  // The button answers for itself: on a long paste the round trip is long enough
+  // that a silent button reads as a dead one.
+  btn.disabled = true;
+  btn.textContent = "Adding…";
+  let res;
+  try{
+    res = await post("/api/add_mixed",
+      {text: val, platform: activePlatform, count: parseInt($("ttCount").value, 10) || 5});
+  }catch(e){
+    res = {ok:false, error:"Could not reach the server."};
+  }
+  btn.disabled = false;
+  btn.textContent = was;
+  if(!res || res.ok === false){
+    showErr((res && res.error) || "Nothing was added.");
+    return;
+  }
+  const ig = res.instagram || {added:[], rejected:[]};
+  const tt = res.tiktok || {added:[], skipped:[], parsed:0, dropped:0};
+  const parts = [];
+  if(ig.added.length) parts.push(`${ig.added.length} Instagram`);
+  if(tt.added.length) parts.push(`${tt.added.length} TikTok`);
+  const problems = (ig.rejected || []).concat(tt.skipped || []);
+  if(problems.length) showErr("Skipped: " + problems.join(", "));
+  if(parts.length){
+    $("input").value = "";
+    showOk(`Added ${parts.join(" and ")} profile${parts.length > 1 ? "s" : ""} to the queue.`);
+    $("ttResult").textContent = "";
+  } else if(!problems.length){
+    // Worth saying out loud: a paste of only links the app already had looks
+    // exactly like the button doing nothing.
+    showErr("Nothing new to add — those profiles are already in the list.");
   }
   tick();
 };
@@ -2743,7 +2779,11 @@ $("clearFinishedBtn").onclick = async () => {
   const r = await post("/api/clear-finished",{});
   toast(`Cleared ${r.removed} entries`); tick();
 };
-$("clearInputBtn").onclick = () => { $("input").value=""; $("input").focus(); };
+$("clearInputBtn").onclick = () => {
+  $("input").value = "";
+  const r = $("ttResult"); if(r) r.textContent = "";
+  $("input").focus();
+};
 $("pasteBtn").onclick = async () => {
   try{
     const t = await navigator.clipboard.readText();
@@ -2972,7 +3012,8 @@ function showPlatform(which){
   activePlatform = next;
   $("subIg").classList.toggle("active", ig);
   $("subTt").classList.toggle("active", !ig);
-  $("igPane").style.display = ig ? "" : "none";
+  // The paste box is shared and stays put; only the platform-specific cards
+  // swap. There is no Instagram-only card, so nothing needs showing for it.
   $("ttPane").style.display = ig ? "none" : "";
   // The search box and page number are per list, not per platform, and they used
   // to carry across a tab switch. A search typed on one platform then filtered
@@ -3088,13 +3129,17 @@ $("ttRestoreAllBtn").onclick = async () => {
 };
 
 $("ttCheckBtn").onclick = async () => {
-  const text = $("ttInput").value;
+  const text = $("input").value;
   if(!text.trim()){ $("ttResult").textContent = "Paste something first."; return; }
   $("ttResult").textContent = "Reading…";
   try{
     const r = await post("/api/tiktok/parse", {text});
     if(!r.parsed){ $("ttResult").textContent = "No usernames found in that text."; return; }
-    let msg = `Found ${r.parsed} username${r.parsed === 1 ? "" : "s"} ` +
+    // Say which reader spoke. On the shared box a mixed paste can contain
+    // Instagram links too, and reporting those as "usernames already imported"
+    // made it look as though the Instagram line had been checked as a TikTok
+    // profile. This is the TikTok reader reading the text, nothing more.
+    let msg = `TikTok reader: found ${r.parsed} username${r.parsed === 1 ? "" : "s"} ` +
               `(read from the ${r.source} format). ${r.new} new, ${r.already_known} already imported.`;
     if(r.sample && r.sample.length) msg += ` First: ${r.sample.slice(0,5).join(", ")}`;
     // The page prints the real Following count, so a short paste is detectable.
@@ -3110,52 +3155,11 @@ $("ttCheckBtn").onclick = async () => {
   }catch(e){ $("ttResult").textContent = "Error: " + e.message; }
 };
 
-$("ttImportBtn").onclick = async () => {
-  const text = $("ttInput").value;
-  if(!text.trim()){ $("ttResult").textContent = "Paste something first."; return; }
-  const count = parseInt($("ttCount").value, 10);
-  const btn = $("ttImportBtn");
-  // The button is the thing that was clicked, so it is the thing that has to
-  // answer. It used to stay reading "Add to queue" for the whole round trip and
-  // put its only message in the line under the paste box, which on a long paste
-  // is off screen -- so a slow add looked like a dead button.
-  const was = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Adding…";
-  $("ttResult").textContent = "Adding to queue…";
-  try{
-    const r = await post("/api/tiktok/import", {text, count});
-    if(!r.ok){
-      $("ttResult").textContent = r.error || "Failed.";
-      btn.textContent = "Failed — try again";
-      setTimeout(() => { btn.textContent = was; }, 2500);
-      return;
-    }
-    $("ttResult").textContent =
-      `Queued ${r.queued} profile${r.queued === 1 ? "" : "s"}` +
-      (r.skipped ? `, ${r.skipped} already in the list.` : ".") +
-      " Nothing has started — remove any you don't want, then press Start.";
-    $("ttInput").value = "";
-    btn.textContent = r.queued
-      ? `Added ${r.queued} ✓` : "All already added";
-    setTimeout(() => { btn.textContent = was; }, 2500);
-    // Show the result where the queue actually is, rather than only under the
-    // paste box: jump to the top of the waiting list and flash it, so the new
-    // rows are visibly there instead of the list apparently not changing.
-    if(r.queued){
-      const waiting = $("queueList") || $("list");
-      if(waiting && waiting.scrollIntoView) waiting.scrollIntoView({block:"nearest"});
-      toast(`Queued ${r.queued} TikTok profile${r.queued === 1 ? "" : "s"}`);
-    }
-  }catch(e){
-    $("ttResult").textContent = "Error: " + e.message;
-    btn.textContent = "Failed — try again";
-    setTimeout(() => { btn.textContent = was; }, 2500);
-  }
-  finally{ btn.disabled = false; }
-};
-
-$("ttClearBtn").onclick = () => { $("ttInput").value = ""; $("ttResult").textContent = ""; };
+// The TikTok-only "Add to queue" used to be a second button in a second box.
+// One box and one button now: startBtn above routes each line by its link, so a
+// TikTok-only paste does not need its own control.
+// (ttClearBtn removed with the second paste box; the shared Clear text button
+// clears the one box and its result line.)
 // A cookie spec can be "firefox:/home/you/.zen/abc.Default (release)", which is
 // the value yt-dlp needs but an unreadable thing to show next to a button. Say
 // which browser it came from instead.

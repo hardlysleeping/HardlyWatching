@@ -384,6 +384,35 @@ def _static_remove(paths: list[str], keep_image: bool) -> dict:
             "bytes": freed, "errors": errors}
 
 
+def route_lines(text: str, fallback: str = "instagram") -> tuple[list[str], list[str]]:
+    """Split a mixed paste into (instagram lines, tiktok lines).
+
+    A line is routed by the link it contains, because that is the only reliable
+    signal: the same handle can be two different people on the two sites, so a
+    bare name cannot be guessed at. Bare names therefore follow `fallback` --
+    the platform tab that was open -- so the result stays predictable rather than
+    the app quietly picking a site for you.
+
+    Commas split too, matching the Instagram box's long-standing behaviour.
+    """
+    ig: list[str] = []
+    tt: list[str] = []
+    for raw in (text or "").replace(",", "\n").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if "tiktok.com" in low:
+            tt.append(line)
+        elif "instagram.com" in low:
+            ig.append(line)
+        elif fallback == "tiktok":
+            tt.append(line)
+        else:
+            ig.append(line)
+    return ig, tt
+
+
 def _tt_raise_all(eng, step: int, scope: str = "finished") -> dict:
     """Raise the grab-count of every finished TikTok profile by `step`.
 
@@ -1057,6 +1086,48 @@ class Handler(BaseHTTPRequestHandler):
             overrides = body.get("overrides") or None
             added, rejected = get_engine().add(names, overrides)
             return self._json({"added": [j.username for j in added], "rejected": rejected})
+
+        if p == "/api/add_mixed":
+            # One paste box for both platforms, so a list mixing Instagram and
+            # TikTok links goes in as one paste.
+            #
+            # Each line is routed by what it POINTS AT: an instagram.com link is
+            # an Instagram profile, a tiktok.com link is a TikTok one. That is the
+            # only reliable signal -- a bare name has no domain, and the same
+            # handle can be two different people on the two sites. So a bare name
+            # follows the tab you were on (sent as `platform`) instead of being
+            # guessed at, which makes the behaviour something you can predict.
+            text = str(body.get("text") or "")
+            fallback = "tiktok" if str(body.get("platform") or "") == "tiktok" else "instagram"
+            count = int(body.get("count") or 5)
+            ig_lines, tt_lines = route_lines(text, fallback)
+            if not ig_lines and not tt_lines:
+                return self._json({"ok": False, "error": "Nothing to add."})
+
+            out: dict = {"ok": True, "fallback": fallback,
+                         "instagram": None, "tiktok": None}
+            if ig_lines:
+                added, rejected = get_engine().add(ig_lines)
+                out["instagram"] = {"added": [j.username for j in added],
+                                    "rejected": rejected}
+            if tt_lines:
+                import tiktok_handles
+                # Parsed as one block, because a pasted TikTok page dump is not
+                # one link per line and the parser is what finds the usernames
+                # inside it.
+                handles, source, dropped = tiktok_handles.parse("\n".join(tt_lines))
+                db = _profile_db()
+                excluded = db.excluded("tiktok")
+                for h in handles:
+                    if h.lower() not in excluded:
+                        db.record("tiktok", h, source=source or "paste")
+                added, skipped = get_engine().add_tiktok(
+                    handles, count=count, start=False, excluded=excluded)
+                db.mark_imported("tiktok", [j.username for j in added])
+                out["tiktok"] = {"added": [j.username for j in added],
+                                 "skipped": skipped, "parsed": len(handles),
+                                 "dropped": dropped}
+            return self._json(out)
 
         if p == "/api/tiktok/parse":
             # Dry run: parse a pasted dump and report what would be queued,

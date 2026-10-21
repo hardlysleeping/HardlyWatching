@@ -5,6 +5,20 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **One paste box for both platforms.** The Instagram and TikTok tabs each had
+  their own box, so a mixed list meant two pastes on two tabs. There is now a
+  single box above the sub-tabs, on screen whichever tab you are on, and a mixed
+  paste of Instagram and TikTok links goes in at once, one per line.
+
+  Each line is routed by what it points at: an `instagram.com` link is an
+  Instagram profile, a `tiktok.com` link is a TikTok one. A bare name has no
+  domain to read and the same handle can be two different people on the two
+  sites, so it follows the tab you are on rather than being guessed at. The
+  TikTok grab-count select moved into the same box (it applies to TikTok lines
+  only), and the "Add to queue" button now reports both counts.
+
 ### Fixed
 
 - **The app now opens on the tab it was asked for.** The `?tab=` handler was
