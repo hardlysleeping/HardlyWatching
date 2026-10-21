@@ -312,6 +312,11 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Picking several at once.** *☑ Select* in the gallery bar (or holding a tile)
+turns tapping into picking. Star, Like, Favourite or Trash the whole lot in one
+go; the trash view offers Restore instead, and the favourites view offers
+Un-favourite. Done, Escape or a tap outside leaves the mode.
+
 **The Starred view.** Gallery → *★ Starred* lists every starred clip, newest star
 first. A star is the bookmark, kept apart from the like, and it stays on the clip
 rather than moving the file.

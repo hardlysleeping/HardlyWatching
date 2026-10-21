@@ -1911,6 +1911,26 @@ def gallery_profiles(self) -> list[dict]:
     return out
 
 
+def post_files(self, username: str, platform: str, section: str,
+               first_file: str) -> list[str]:
+    """Every file of the post whose first item is `first_file`.
+
+    A tile stands for a whole post, so acting on one file of a carousel would
+    leave the rest behind. Resolved on the server because the grouping lives here,
+    and because the page only knows the tile's first file.
+    """
+    if not first_file:
+        return []
+    try:
+        for p in self.gallery_posts(username, section, platform):
+            items = p.get("items") or []
+            if items and items[0].get("file") == first_file:
+                return [i.get("file") for i in items if i.get("file")]
+    except Exception:
+        pass
+    return [first_file]
+
+
 def starred_posts(self) -> list[dict]:
     """Every starred clip, shaped like a gallery post so it can be shown as tiles.
 
@@ -2786,6 +2806,7 @@ class Engine:
     gallery_profiles = gallery_profiles
     gallery_sections = gallery_sections
     starred_posts = starred_posts
+    post_files = post_files
     tiktok_avatar = tiktok_avatar
     gallery_posts = gallery_posts
     # These two are what make a merged card show more than one account, and they

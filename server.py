@@ -1559,6 +1559,83 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("path") or ""), bool(body.get("migrate")))
             return self._json({"ok": ok, "message": msg})
 
+        if p == "/api/gallery/bulk":
+            # Many tiles at once: this is the gallery's selection mode.
+            #
+            # Grouped by profile/platform/section so each folder is worked out
+            # once. Grouping a folder's media into posts is the expensive part,
+            # and a selection is easily fifty tiles.
+            eng = get_engine()
+            db = _profile_db()
+            action = str(body.get("action") or "")
+            items = [i for i in (body.get("items") or []) if isinstance(i, dict)]
+            flags = ("like", "unlike", "star", "unstar")
+            if action not in ("trash", "favorites", "main", *flags):
+                return self._json({"ok": False, "error": "unknown action"})
+            if not items:
+                return self._json({"ok": False, "error": "nothing selected"})
+            if len(items) > 500:
+                return self._json({"ok": False, "error": "too many at once"})
+
+            groups: dict[tuple, list[str]] = {}
+            for it in items:
+                key = (str(it.get("profile") or ""),
+                       str(it.get("platform") or "instagram").lower(),
+                       str(it.get("section") or "main"))
+                groups.setdefault(key, []).append(str(it.get("file") or ""))
+
+            done, skipped, errors = 0, 0, []
+            for (who, plat, sec), files in groups.items():
+                name = clean_profile_name(who)
+                if not name:
+                    skipped += len(files)
+                    continue
+                # A tile stands for a whole post, so a carousel's parts have to
+                # travel together -- acting on the first file alone would move one
+                # photo and leave the rest behind. Only the move actions need this:
+                # a like or a star is recorded against the one clip.
+                by_first: dict = {}
+                if action not in flags:
+                    try:
+                        for p in eng.gallery_posts(name, sec, plat):
+                            parts = p.get("items") or []
+                            if parts and parts[0].get("file"):
+                                by_first[parts[0]["file"]] = [
+                                    i.get("file") for i in parts if i.get("file")]
+                    except Exception:
+                        by_first = {}
+                for f in files:
+                    if not f:
+                        continue
+                    try:
+                        if action in flags:
+                            path = db.clip_path(name, f, plat)
+                            if not path:
+                                # A photo: likes and stars are about clips.
+                                skipped += 1
+                                continue
+                            on = action in ("like", "star")
+                            if action in ("like", "unlike"):
+                                db.set_liked(path, on)
+                            else:
+                                db.set_starred(path, on)
+                            done += 1
+                            continue
+                        for target_file in (by_first.get(f) or [f]):
+                            ok, msg = eng.move_media(name, target_file, action, plat)
+                            if ok:
+                                done += 1
+                            else:
+                                skipped += 1
+                                if msg and len(errors) < 5:
+                                    errors.append(f"{name}/{target_file}: {msg}")
+                    except Exception as exc:
+                        skipped += 1
+                        if len(errors) < 5:
+                            errors.append(f"{name}/{f}: {type(exc).__name__}: {exc}")
+            return self._json({"ok": True, "done": done, "skipped": skipped,
+                               "errors": errors})
+
         if p == "/api/gallery/move":
             # Favourite / trash / restore a single photo. Moves, never deletes.
             section = str(body.get("section") or "")

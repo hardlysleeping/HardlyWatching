@@ -634,6 +634,27 @@ class ProfileDB:
             out[0] = (me, out[0][1])
         return out
 
+    def clip_path(self, profile: str, file: str, platform: str = "instagram") -> str | None:
+        """The clips row that stands for a gallery file, or None.
+
+        A like or a star is stored against the clip, and the gallery works in
+        profile+file terms, so this is the join between them. The two platforms
+        store the path differently -- TikTok's carries a leading `tiktok/` -- so
+        the file name is matched on the end of the path rather than the whole of
+        it. None means the file is not a clip at all: a photo, not a video.
+        """
+        who = (profile or "").strip().lower()
+        name = (file or "").strip()
+        if not who or not name:
+            return None
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT path FROM clips WHERE lower(profile)=? AND platform=? "
+                "AND (path=? OR path LIKE ?) LIMIT 1",
+                (who, (platform or "instagram").lower(), name, "%/" + name))
+            row = cur.fetchone()
+            return row["path"] if row else None
+
     def starred_clips(self) -> list[dict]:
         """Every starred clip, newest first. Backs the gallery's Starred view.
 

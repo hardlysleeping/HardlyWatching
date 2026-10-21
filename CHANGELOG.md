@@ -7,6 +7,15 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **Selection mode in the gallery.** *☑ Select* (or holding a tile) turns tapping
+  into picking: choose as many tiles as you like and then Star, Like, Favourite,
+  Trash them — or Restore from the trash view, or Un-favourite from the favourites
+  view — in one go. Done, Escape, or a tap outside leaves it. Trashing from the
+  full-screen viewer no longer opens a hidden dialog: the confirmation was at
+  z-index 60, below the viewer at 70, so the viewer was all you could see.
+
+### Fixed
+
 - **A Starred view in the Gallery.** A star is a bookmark — the higher-level
   favourite — and it lives on the clip rather than in a folder, so there was no
   way to see them together. The *★ Starred* chip beside All Favourites lists every

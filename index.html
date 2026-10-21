@@ -475,11 +475,37 @@
   .shead{grid-column:1/-1;color:var(--muted);font-size:12px;font-weight:600;
     text-transform:uppercase;letter-spacing:.6px;margin:14px 0 2px}
   .shead:first-child{margin-top:0}
-  .confirm{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:60;
+  /* Above the viewer (70) and the tile menu (60), because a confirmation can be
+     raised from inside either of them -- trashing from the full-screen viewer put
+     the dialog behind it, so the viewer was all you could see. */
+  .confirm{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:90;
     display:flex;align-items:center;justify-content:center;padding:20px}
   .confirm .box{background:var(--panel-2);border:1px solid var(--line-2);
     border-radius:14px;padding:22px;max-width:420px;width:100%}
   .confirm .box p{margin:0 0 6px;font-size:14.5px;line-height:1.45}
+  /* ---- selection mode ---- */
+  .selbar{
+    position:fixed;left:50%;transform:translateX(-50%);
+    bottom:calc(env(safe-area-inset-bottom) + 12px);z-index:80;
+    display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+    background:var(--panel-2);border:1px solid var(--line-2);border-radius:14px;
+    padding:8px 10px;box-shadow:0 18px 44px rgba(0,0,0,.6);
+    max-width:min(94vw,780px)
+  }
+  .selbar b{font-size:12.5px;margin-right:4px}
+  .selbar button{white-space:nowrap}
+  /* While picking, a tile's own buttons would fight the tap: every tap means
+     select, so they are hidden rather than left there to be hit by accident. */
+  #profileGrid.selmode .ptile .acts,
+  #profileGrid.selmode .ptile .acts-right{display:none}
+  #profileGrid.selmode .ptile{cursor:pointer}
+  #profileGrid.selmode .ptile.sel{outline:3px solid var(--accent);outline-offset:-3px}
+  #profileGrid.selmode .ptile.sel::after{
+    content:"✓";position:absolute;top:6px;right:6px;z-index:5;
+    width:24px;height:24px;border-radius:50%;background:var(--accent);
+    color:#1a0f08;display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:14px
+  }
   .confirm .box .why{color:var(--muted);font-size:12.5px;margin-bottom:18px}
   .confirm .row{display:flex;gap:8px;justify-content:flex-end}
   .sortgroup{display:inline-flex;gap:4px;margin-left:4px}
@@ -3511,6 +3537,7 @@ async function renderAllSection(section){
     };
     bar.appendChild(play);
   }
+  bar.appendChild(selButton());
   host.innerHTML = "";
   host.appendChild(bar);
 
@@ -4698,6 +4725,7 @@ function drawPhotos(username, sec){
   back.textContent = "← All profiles";
   back.onclick = () => { gProfile = null; gPlatform = "instagram"; renderGallery(); };
   bar.appendChild(back);
+  bar.appendChild(selButton());
 
   const counts = {main: sec.main.length, favorites: sec.favorites.length, trash: sec.trash.length};
   // "All" is main + favourites, since a favourited post stays visible in All.
@@ -5609,6 +5637,213 @@ function confirmTrash(username, names, onDone){
   document.body.appendChild(wrap);
   go.focus();
 }
+
+// ---------------------------------------------------------------------------
+// Selection mode
+//
+// Clearing a folder one confirmation at a time is no way to do it, so this is a
+// mode: tap tiles to pick them, act on the lot, leave. It is entered by a button
+// or by holding a tile, and left by Done or Escape -- deliberately explicit,
+// because a tap that sometimes opens the viewer and sometimes selects would be
+// worse than either.
+//
+// The picking is one listener on the grid in the capture phase, so it gets the
+// click before the tile's own handler and can stop it. That is what makes this
+// work across the profile view and the cross-profile views without teaching both
+// tile builders about selection.
+// ---------------------------------------------------------------------------
+let selMode = false;
+const selPicked = new Map();      // key -> {profile, platform, section, file}
+
+function selKey(profile, platform, section, file){
+  return [profile, platform, section, file].join("|");
+}
+
+// Which account a tile belongs to: the open profile, or the label the
+// cross-profile views put on every tile.
+function tileUser(tile){
+  if(gProfile) return gProfile;
+  const tag = tile.querySelector(".ptile-user");
+  return tag ? tag.textContent.trim() : "";
+}
+
+function tileItem(tile){
+  const file = tile.dataset.post;
+  const who = tileUser(tile);
+  if(!file || !who) return null;
+  return {profile: who, platform: tile.dataset.platform || gPlatform || "instagram",
+          section: tile.dataset.section || "main", file};
+}
+
+function paintSelTiles(){
+  const grid = $("profileGrid");
+  if(!grid) return;
+  for(const tile of grid.querySelectorAll(".ptile")){
+    const it = tileItem(tile);
+    const on = !!(it && selPicked.has(selKey(it.profile, it.platform, it.section, it.file)));
+    tile.classList.toggle("sel", on);
+  }
+}
+
+function toggleTile(tile){
+  const it = tileItem(tile);
+  if(!it){ return; }
+  const k = selKey(it.profile, it.platform, it.section, it.file);
+  if(selPicked.has(k)) selPicked.delete(k);
+  else selPicked.set(k, it);
+  tile.classList.toggle("sel", selPicked.has(k));
+  paintSelBar();
+}
+
+async function runBulk(action){
+  if(!selPicked.size){ toast("Pick something first"); return; }
+  const items = [...selPicked.values()].map(v => ({
+    profile: v.profile, platform: v.platform, section: v.section, file: v.file}));
+  const r = await post("/api/gallery/bulk", {action, items});
+  if(!r || !r.ok){ toast((r && r.error) || "Could not do that"); return; }
+  toast(`${r.done} done${r.skipped ? `, ${r.skipped} skipped` : ""}`);
+  selPicked.clear();
+  // Redraw whatever view this is, so the grid shows what is left.
+  if(gAll === "starred" || gAll === "favorites" || gAll === "trash") renderAllSection(gAll);
+  else if(gAll === "timeline") renderTimeline();
+  else if(gProfile) renderPhotos(gProfile, gPlatform);
+  else renderGallery();
+  paintSelBar();
+}
+
+function paintSelBar(){
+  let bar = document.getElementById("selBar");
+  if(!selMode){
+    if(bar) bar.remove();
+    return;
+  }
+  if(!bar){
+    bar = document.createElement("div");
+    bar.id = "selBar";
+    bar.className = "selbar";
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = "";
+  const n = document.createElement("b");
+  n.textContent = selPicked.size ? `${selPicked.size} selected` : "Tap tiles to pick";
+  bar.appendChild(n);
+  const mk = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.className = "small";
+    b.textContent = label;
+    if(title) b.title = title;
+    b.onclick = fn;
+    return b;
+  };
+  // Only what makes sense where you are: restoring from the trash view, and not
+  // trashing things that are already trashed.
+  const inTrash = (gFilter === "trash" || gAll === "trash");
+  const inFav = (gFilter === "favorites" || gAll === "favorites");
+  if(inTrash){
+    bar.appendChild(mk("↩ Restore", "Move these back to the main folder",
+                        () => runBulk("main")));
+  } else {
+    bar.appendChild(mk("★ Star", "Bookmark these (videos only)",
+                       () => runBulk("star")));
+    bar.appendChild(mk("♥ Like", "Like these (videos only)",
+                       () => runBulk("like")));
+    // In the favourites view the useful direction is the other one, or there is
+    // no way back out of a batch favouriting.
+    if(inFav){
+      bar.appendChild(mk("↩ Un-favourite", "Move these back to the main folder",
+                         () => runBulk("main")));
+    } else {
+      bar.appendChild(mk("♥ Favourite", "Move these into the favourites folder",
+                         () => runBulk("favorites")));
+    }
+    bar.appendChild(mk("🗑 Trash", "Move these to the trash", () => runBulk("trash")));
+  }
+  const grid = $("profileGrid");
+  const tiles = grid ? grid.querySelectorAll(".ptile").length : 0;
+  bar.appendChild(mk(selPicked.size >= tiles && tiles ? "None" : "All",
+    "Pick everything on screen",
+    () => {
+      const all = selPicked.size >= tiles && tiles;
+      selPicked.clear();
+      if(!all && grid) grid.querySelectorAll(".ptile").forEach(t => {
+        const it = tileItem(t);
+        if(it) selPicked.set(selKey(it.profile, it.platform, it.section, it.file), it);
+      });
+      paintSelTiles();
+      paintSelBar();
+    }));
+  bar.appendChild(mk("Done", "Leave selection mode (Esc)", () => setSelMode(false)));
+}
+
+function setSelMode(on){
+  selMode = !!on;
+  if(!selMode) selPicked.clear();
+  const grid = $("profileGrid");
+  if(grid) grid.classList.toggle("selmode", selMode);
+  paintSelTiles();
+  paintSelBar();
+}
+
+// The entry point in both bars.
+function selButton(){
+  const b = document.createElement("button");
+  b.className = "small";
+  b.textContent = "☑ Select";
+  b.title = "Pick several and act on them at once";
+  b.style.marginLeft = "9px";
+  // Exempt from the "a click outside a tile leaves the mode" rule, or the button
+  // would clear the selection a moment before toggling itself.
+  b.dataset.keepsel = "1";
+  b.onclick = () => setSelMode(!selMode);
+  return b;
+}
+
+// One listener, capture phase: it runs before the tile's own click handler and
+// stops it, so a tap picks instead of opening the viewer.
+document.addEventListener("click", (e) => {
+  if(!selMode) return;
+  const tile = e.target.closest ? e.target.closest("#profileGrid .ptile") : null;
+  if(tile){
+    e.preventDefault();
+    e.stopPropagation();
+    toggleTile(tile);
+    return;
+  }
+  // A click anywhere else leaves the mode, which is the quick way out on a
+  // phone. The controls that belong to the mode itself are exempt.
+  if(e.target.closest && !e.target.closest("#selBar") && !e.target.closest("[data-keepsel]")){
+    setSelMode(false);
+  }
+}, true);
+
+// Hold a tile to start picking, which is how a phone user will reach for it.
+let selHold = null;
+document.addEventListener("touchstart", (e) => {
+  if(selMode || !e.touches || e.touches.length !== 1) return;
+  const tile = e.target.closest ? e.target.closest("#profileGrid .ptile") : null;
+  if(!tile) return;
+  const at = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+  selHold = setTimeout(() => {
+    selHold = null;
+    setSelMode(true);
+    toggleTile(tile);
+  }, 500);
+}, {passive: true});
+document.addEventListener("touchmove", (e) => {
+  if(!selHold || !e.touches || !e.touches.length) return;
+  const t = e.touches[0];
+  if(Math.abs(t.clientX - selHold.x) > 12 || Math.abs(t.clientY - selHold.y) > 12){
+    clearTimeout(selHold);      // a scroll, not a hold
+    selHold = null;
+  }
+}, {passive: true});
+document.addEventListener("touchend", () => {
+  if(selHold){ clearTimeout(selHold); selHold = null; }
+}, {passive: true});
+
+document.addEventListener("keydown", (e) => {
+  if(e.key === "Escape" && selMode) setSelMode(false);
+});
 
 // Which tab the app opens on.
 //
