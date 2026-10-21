@@ -2509,6 +2509,11 @@ class Engine:
         self.worker_tt: threading.Thread | None = None
         self.current: dict[str, str | None] = {"instagram": None, "tiktok": None}
         self.cancel_current: dict[str, bool] = {"instagram": False, "tiktok": False}
+        # A pause that has to stop a profile mid-download. `cancel_current` makes
+        # the worker abandon the run; this flag is what tells it to put the job
+        # back in the queue instead of marking it cancelled. Transient: a pause
+        # is not persisted (see `pause`).
+        self.pause_current: dict[str, bool] = {"instagram": False, "tiktok": False}
         self.paused = False          # Instagram: user pause, or a 429
         self.tt_paused = False       # TikTok: user pause only
         # Set while a platform is refusing to start work because a drive is
@@ -3383,18 +3388,31 @@ class Engine:
                 "waiting": waiting}
 
     def pause(self, platform: str = "instagram") -> None:
-        """Pause one platform's worker.
+        """Pause one platform's worker, stopping its profile mid-download.
 
         Instagram and TikTok pause separately. Stopping Instagram to sit out a
         block has no bearing on yt-dlp, so it must not stop it too. "all" pauses
         both, for callers that want the whole app quiet.
+
+        The profile downloading right now is stopped rather than waited out:
+        sitting out a block for another twenty minutes while a run finishes is
+        not what "pause" means. The interrupted profile goes back to the front
+        of its platform's queue and restarts on resume. Nothing is lost --
+        instaloader writes media to `<name>.temp` and only renames it into place
+        when the file is complete, and yt-dlp keeps `.part` files, so a killed
+        run leaves no half-file for the next run to mistake for a finished one.
+
+        Not persisted: a service restart resumes downloading (see `_load_state`).
         """
         platform = (platform or "instagram").strip().lower()
         if platform in ("instagram", "all"):
             self.paused = True
             self._limit_paused = False  # a user pause must never auto-clear
+            self._interrupt_running("instagram")
         if platform in ("tiktok", "all"):
             self.tt_paused = True
+            self._interrupt_running("tiktok")
+        self.save_state()
 
     def resume(self, platform: str = "instagram") -> None:
         """Resume one platform. Instagram's resume also clears any rate-limit
@@ -3895,6 +3913,45 @@ class Engine:
             except Exception:
                 pass
 
+    def _interrupt_running(self, platform: str) -> None:
+        """Stop one platform's in-flight download, keeping the job in the queue.
+
+        Sets the cancel flag so the worker abandons this run, plus `pause_current`
+        so the worker's cleanup puts the job back in the queue instead of marking
+        it cancelled. The actual re-queue happens in `_run`'s `finally`, which is
+        the one place every exit path passes through -- including an attempt that
+        is sitting in a retry backoff with no child process to kill.
+        """
+        if not self.current.get(platform):
+            return  # nothing running: the pause just holds the next job back
+        with self.lock:
+            self.pause_current[platform] = True
+            self.cancel_current[platform] = True
+        self._terminate_proc(platform)
+
+    def _requeue_paused(self, platform: str, job: Job) -> bool:
+        """Put a profile that was paused mid-download back at the front of its queue.
+
+        Called from the worker's cleanup, which is the one path every exit
+        passes through. A pause is not a failed attempt, so `attempts` resets --
+        otherwise a few pauses would exhaust `max_attempts` and the job would be
+        written off as a throttle. Returns True when it re-queued the job.
+        """
+        with self.lock:
+            paused_mid = self.pause_current[platform]
+            self.pause_current[platform] = False
+            if not paused_mid or job.status not in ("running", "retrying"):
+                return False
+            if job.id in self.pending:
+                self.pending.remove(job.id)
+            self.pending.insert(0, job.id)
+            job.status = "queued"
+            job.finished_at = None
+            job.attempts = 0
+            job.error = ""
+            job.message = "paused mid-profile — restarts on resume"
+            return True
+
     def _set(self, job: Job, **kw) -> None:
         with self.lock:
             for k, v in kw.items():
@@ -4083,6 +4140,9 @@ class Engine:
                 with self.lock:
                     self.current[platform] = None
                     self.cancel_current[platform] = False
+                # Paused mid-profile? Then the job goes back in the queue rather
+                # than being written off as cancelled.
+                self._requeue_paused(platform, job)
                 self._set(job, last_run_seconds=round(time.time() - t0, 1))
                 self.save_state()
 
@@ -4250,6 +4310,9 @@ class Engine:
             return
 
         if self.cancel_current["tiktok"]:
+            if self.pause_current["tiktok"]:
+                # Paused, not cancelled: _run's finally re-queues this job.
+                return
             self._set(job, status="cancelled", finished_at=time.time(), message="cancelled")
             return
         if self.stop_requested:
@@ -4307,6 +4370,10 @@ class Engine:
             outcome = self._exec(job, cmd, target_dir)
 
             if self.cancel_current["instagram"]:
+                if self.pause_current["instagram"]:
+                    # A pause, not a cancel: leave the status alone so _run's
+                    # finally puts this job back in the queue.
+                    return
                 self._set(job, status="cancelled", finished_at=time.time(), message="cancelled")
                 return
             if outcome in ("ok", "ok_warned"):

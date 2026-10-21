@@ -1559,7 +1559,7 @@ function renderLight(st){
   if(run){
     if(cur){
       run.textContent = "Pause"; run.className = "small";
-      run.title = "Pause after the current profile finishes";
+      run.title = "Pause — stops the profile downloading now";
     } else if(paused){
       run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
       run.className = "small primary";
@@ -1839,7 +1839,7 @@ function render(st){
   if(st.current){
     run.textContent = "Pause";
     run.className = "small";
-    run.title = "Pause after the current profile finishes";
+    run.title = "Pause — stops the profile downloading now";
   } else if(paused){
     run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
     run.className = "small primary";
@@ -2772,7 +2772,7 @@ $("runBtn").onclick = async () => {
   const p = activePlatform;
   const label = p === "tiktok" ? "TikTok" : "Instagram";
   const cur = platCurrent(st, p);
-  if(cur){ await post("/api/pause",{platform: p}); toast(`Pausing ${label} after this profile`); }
+  if(cur){ await post("/api/pause",{platform: p}); toast(`Paused ${label} — stopped ${cur}, it restarts on resume`); }
   else if(platPaused(st, p)){ await post("/api/resume",{platform: p}); toast(`Resumed ${label}`); }
   else {
     const r = await post("/api/start",{platform: p});

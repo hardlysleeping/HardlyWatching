@@ -5,7 +5,26 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Sessions can be locked.** A flagged account could be picked up again with one
+  click, and a service restart put it straight back to work. Every session now has
+  a **Lock** button: the lock is saved in `state.json`, a locked session is never
+  auto-chosen and never used for a download, and picking it is refused until you
+  press **Unlock**. Locking the session in use drops it so the engine falls back to
+  another saved one instead of stalling. If every session is locked, the Instagram
+  worker holds and the queue says so rather than quietly downloading anonymously.
+
 ### Changed
+
+- **Pause stops the profile downloading now, not after it.** Pressing Pause kills
+  the running `instaloader`/`yt-dlp` process for that platform and puts the
+  interrupted profile back at the **front** of its queue, where it restarts on
+  resume. Previously a long run had to finish first, so sitting out a block could
+  take another twenty minutes. Nothing is half-written — instaloader writes media
+  to a `.temp` file and renames it into place only when complete, and yt-dlp keeps
+  `.part` files — so the next run re-fetches cleanly. A pause is still not
+  persisted: restarting the service resumes downloading (lock the session instead).
 
 - **One paste box for both platforms.** The Instagram and TikTok tabs each had
   their own box, so a mixed list meant two pastes on two tabs. There is now a

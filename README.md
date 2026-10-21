@@ -205,6 +205,18 @@ The sub-tabs split which queue you are *looking at*; the workers run regardless.
 Start, Pause and Resume act on the platform on screen, so pausing Instagram to
 sit out a block leaves TikTok downloading.
 
+Pause stops the profile downloading right now instead of waiting for it to
+finish. The interrupted profile goes back to the **front** of that platform's
+queue—ahead of the profiles behind it—and restarts from the beginning when you
+resume. Nothing is half-written: instaloader saves media to a `.temp` file and
+only renames it into place once the file is complete, and yt-dlp keeps `.part`
+files, so the next run picks up cleanly. A killed run can leave a `.temp` file
+behind, which the next run overwrites.
+
+A pause is **not** saved: restarting the service (or rebooting) resumes
+downloading. If you want a brake that survives a restart, lock the session you
+want held back.
+
 Re-running a profile does not re-download it. instaloader's `--fast-update` stops
 at the first file it already has, and `--latest-stamps` records what has been
 archived **outside** the media folder — so moving the archive to another drive
@@ -605,12 +617,20 @@ switch whenever you like:
 
 - **Use** — makes that session the one downloads run as. Anything already queued
   continues with the new account from the next profile.
+- **Lock** — stops that account being used for downloads, and it stays locked
+  when you close the app or restart the service. Nothing is used until you press
+  **Unlock**. Locking the account in use hands downloads to another saved
+  session, so the queue keeps moving.
 - **✕** — deletes a saved session. Nothing else is touched.
 - **Refresh** — re-checks each session, so one that expired shows as incomplete
   rather than failing a download later.
 
 Useful when one account gets rate-limited: switch to another and keep going, while
-the first one recovers.
+the first one recovers. If Instagram has flagged an account for bot activity,
+**Lock** it rather than just switching away — that is the difference between "not
+using it right now" and "will not use it until I say so". The lock is this app's
+own brake: the login itself still works everywhere else, and deleting the session
+with **✕** still removes it.
 
 ### Moving a session to another machine
 
