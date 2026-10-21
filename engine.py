@@ -976,7 +976,23 @@ def _media_info(folder: Path, name: str) -> dict:
 
 # instaloader names a carousel's parts `<stamp>_UTC_1.jpg`, `_2.jpg`, ...
 # A single-item post has no numeric suffix at all. This matches both.
+#
+# The stamp is also matched WITHOUT the extension on purpose. A carousel can mix
+# photos and videos, and instaloader numbers every part in one sequence whatever
+# its type: a 20-part post is `_1.jpg ... _16.jpg, _17.mp4 ... _20.mp4`. Grouping
+# on (stamp, extension) split those into two posts -- the photos and the videos --
+# which is why a carousel looked like one item, or like "the rest of" a post
+# appearing separately. 1,939 posts in a real archive were split this way.
 POST_RE = re.compile(r"^(?P<stamp>.+?_UTC)(?:_(?P<part>\d+))?\.(?P<ext>[A-Za-z0-9]+)$")
+
+# A file with no instaloader stamp: a phone upload, a saved image, a profile
+# picture. `base_2.jpg` may be the second part of `base.jpg`, but `base` alone
+# cannot join it on the strength of a shared prefix -- `IMG_0860.JPG` and
+# `IMG_0885.JPG` are two different photos that happen to start with IMG. So a
+# run only counts as a carousel when the bare file exists and the numbered ones
+# are exactly 2, 3, 4 ... with nothing missing and nothing extra.
+NUMTAIL_RE = re.compile(r"^(?P<base>.+?)_(?P<part>\d+)\.(?P<ext>[A-Za-z0-9]+)$")
+PLAIN_RE = re.compile(r"^(?P<base>.+?)\.(?P<ext>[A-Za-z0-9]+)$")
 
 
 def _post_key(name: str) -> tuple[str, int]:
@@ -985,6 +1001,64 @@ def _post_key(name: str) -> tuple[str, int]:
     if not m:
         return (name, 1)
     return (m.group("stamp"), int(m.group("part") or 1))
+
+
+def group_into_posts(names: list[str]) -> dict[str, list[tuple[int, str]]]:
+    """Group media filenames into posts: {title: [(part, filename), ...]}.
+
+    Two rules, and the order matters.
+
+    1. An instaloader stamp is authoritative. Every file sharing `<...>_UTC` is
+       one post, even when its parts mix `.jpg` and `.mp4`, because instaloader
+       numbers them in a single sequence across both.
+
+    2. Anything unstamped is grouped only when the parts really are a run: the
+       bare `base.ext` must exist and the numbered files must be 2, 3, 4 ...
+       with no gap. Files that only share a prefix (`IMG_0860`, `IMG_0885`)
+       deliberately stay separate -- merging those would invent posts that were
+       never posts.
+    """
+    posts: dict[str, list[tuple[int, str]]] = {}
+    unstamped: list[str] = []
+
+    for name in names:
+        m = POST_RE.match(name)
+        if m:
+            posts.setdefault(m.group("stamp"), []).append(
+                (int(m.group("part") or 1), name))
+        else:
+            unstamped.append(name)
+
+    # base -> {"bare": filename|None, "parts": {n: filename}}
+    cand: dict[tuple[str, str], dict] = {}
+    for name in unstamped:
+        m = NUMTAIL_RE.match(name)
+        if m:
+            key = (m.group("base"), m.group("ext").lower())
+            cand.setdefault(key, {"bare": None, "parts": {}})
+            cand[key]["parts"][int(m.group("part"))] = name
+        else:
+            m2 = PLAIN_RE.match(name)
+            key = ((m2.group("base"), m2.group("ext").lower()) if m2 else (name, ""))
+            cand.setdefault(key, {"bare": None, "parts": {}})
+            if cand[key]["bare"] is None:
+                cand[key]["bare"] = name
+
+    for (base, _ext), d in cand.items():
+        nums = sorted(d["parts"])
+        complete = (d["bare"] is not None
+                    and nums == list(range(2, len(nums) + 2)))
+        if complete:
+            posts[base] = [(1, d["bare"])] + [(n, d["parts"][n]) for n in nums]
+        else:
+            # Not a run: every file stands on its own, titled by its own name so
+            # the grid never shows thirty tiles all labelled "IMG".
+            if d["bare"] is not None:
+                posts[base] = [(1, d["bare"])]
+            for n in nums:
+                posts[d["parts"][n]] = [(1, d["parts"][n])]
+
+    return posts
 
 
 def _resolve(p: Path) -> Path | None:
@@ -1155,11 +1229,14 @@ def gallery_posts(self, username: str, section: str = "main",
             hit.sort(key=lambda p: p["ts"])
             return hit
 
-    for name in names:
-        info = _media_info(folder, name)
-        stamp_name, part = _post_key(name)
-        info["part"] = part
-        grouped.setdefault(stamp_name, []).append(info)
+    # Group filenames first (see group_into_posts), then describe each file. The
+    # grouping is by post, not by extension, so a carousel that mixes photos and
+    # videos stays one post -- it used to split into two.
+    for stamp_name, parts in group_into_posts(names).items():
+        for part, name in parts:
+            info = _media_info(folder, name)
+            info["part"] = part
+            grouped.setdefault(stamp_name, []).append(info)
 
     posts = []
     for stamp_name, items in grouped.items():

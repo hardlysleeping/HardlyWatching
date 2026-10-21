@@ -33,6 +33,16 @@ versioning is [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **Carousels that mix photos and videos were split into separate posts.** Parts
+  are numbered in one sequence across both types, so grouping them per file
+  extension broke a twenty-part post into two — a carousel looked like a single
+  item, with the remaining parts appearing as unrelated tiles. 1,939 posts in a
+  real archive were affected, across 19,010 files. Parts are now grouped by their
+  instaloader stamp regardless of extension.
+- **Files with no instaloader stamp no longer merge on a shared prefix.** They
+  join a post only when the unnumbered file exists and the numbered ones run
+  2, 3, 4 with no gap; otherwise each keeps its own name, so thirty tiles no
+  longer all read "IMG".
 - **`install-service.sh` picked an interpreter that might not have the app's
   dependencies**, and its comment claimed "the app is stdlib-only" — untrue since
   it needs Pillow for thumbnails and pillow-heif for a phone's HEIC photos. It

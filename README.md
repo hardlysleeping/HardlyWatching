@@ -269,6 +269,20 @@ familiar rung — 540, 720 or 1080 — rather than a pixel number.
 
 ---
 
+### Posts that mix photos and videos
+
+Instagram carousels often mix the two, and instaloader numbers every part in one
+sequence whatever its type: a twenty-part post is `_1.jpg ... _16.jpg` then
+`_17.mp4 ... _20.mp4`. Those parts belong to **one** post and are shown as one
+tile with a `⧉ n` badge. Grouping them per file type split such a post in two,
+which made a carousel look like a single image with the rest of it appearing
+separately.
+
+Files with no instaloader stamp — a phone upload, a saved image — are only
+grouped when they really are parts: the unnumbered file must exist and the
+numbered ones must run 2, 3, 4 with nothing missing. `IMG_0860.JPG` and
+`IMG_0885.JPG` share a prefix but are different photos, so they stay separate.
+
 ## Shorts
 
 **Shorts** is a tab in the header, next to Download and Gallery — a phone-shaped,
