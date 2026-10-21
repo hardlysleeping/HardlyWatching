@@ -5,7 +5,15 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
+### Fixed
+
+- **Clearing a tombstone now sticks.** It removed the placeholder but left the
+  name in the folder's `.insta-index.json`, so the next gallery load compared the
+  index against the folder, saw a file it remembered but could not find, and
+  concluded it had been deleted outside the app — writing the placeholder
+  straight back and re-recording the tombstone. "Post will re-download" was
+  untrue in exactly the case the feature exists for. The index entry is dropped
+  too now, which is what makes the clear hold.
 
 ### Added
 

@@ -1865,6 +1865,21 @@ def remove_tombstone(self, username: str, name: str,
             placeholder.unlink()
     except OSError as e:
         return False, f"could not remove placeholder: {e}"
+    # Drop the name from the remembered index too.
+    #
+    # Without this the clear undoes itself: reconcile_deletions compares that
+    # index against the folder, sees a file it remembers and cannot find, and
+    # concludes someone deleted it outside the app -- so it writes the placeholder
+    # straight back and re-records the tombstone. The very next gallery load did
+    # it, which made "post will re-download" untrue in exactly the case the
+    # feature exists for. Removing the entry first is what makes the clear hold.
+    try:
+        index = _read_index(root_real)
+        media = [m for m in (index.get("media") or []) if m != name]
+        if media != (index.get("media") or []):
+            _write_index(root_real, {"media": media})
+    except OSError:
+        pass
     self.save_state()
     return True, "tombstone cleared; post will re-download"
 
