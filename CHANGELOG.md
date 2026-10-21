@@ -30,6 +30,18 @@ versioning is [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **TikTok no longer waits four minutes between profiles.** Its gap was set to
+  240s — twice Instagram's — which turned a few hundred queued profiles into
+  about a day of mostly waiting. yt-dlp only reads a public page per profile:
+  there is no session and no request budget it shares, so the long pause bought
+  nothing. The default is now 15 seconds.
+- **The between-profile gap is no longer invisible.** The countdown read
+  Instagram's field only, so on the TikTok tab a gap showed as "working" with
+  nothing counting down — a queue that was simply pacing looked stuck. It now
+  reads the platform you are actually looking at.
+- **Start now cuts the gap short.** Pressing Start on a tab drops that
+  platform's remaining pause and begins the next profile at once, instead of
+  appearing to do nothing for up to four minutes.
 - **Uploaded videos now reach the Shorts feed.** A video you uploaded has no
   instaloader sidecar, so its reel flag was unknown and the feed left it out —
   148 uploads were excluded this way. Where the sidecar is absent the video's

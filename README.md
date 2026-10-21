@@ -627,6 +627,14 @@ Worth knowing: the downloads folder is often called `instagram` because that is
 instaloader's own default name. Renaming it is fine — use **Change…** on the
 Downloads folder card.
 
+### Pacing
+
+Each platform waits its own gap between profiles, since they share nothing:
+Instagram's is the long one (it is the one that gets rate-limited), TikTok's is
+short because yt-dlp only reads a public page. The gap is shown as a live
+countdown on whichever tab you are looking at, and **pressing Start cuts it
+short** for that platform so the next profile begins at once.
+
 ### Disk space
 
 Free space for every archive folder is shown in the header, and the app watches

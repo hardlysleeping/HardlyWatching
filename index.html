@@ -1854,7 +1854,11 @@ function render(st){
   //   rate_limit  -> Instagram told us to back off (usually 15 min)
   //   paused      -> waiting on a human, no deadline to count
   const nowSec = $("nowSection");
-  const wait = st.wait || {};
+  // Per platform, not st.wait: that field is Instagram's alone, so on the
+  // TikTok tab a gap showed as "working" and nothing counted down -- which is
+  // exactly why a paused queue looked like a stuck one.
+  const want = (typeof activePlatform === "string" && activePlatform) || "instagram";
+  const wait = (st.waits && st.waits[want]) || st.wait || {};
   const waiting = (!current.length && wait.remaining > 0);
   if(current.length || waiting){
     nowSec.style.display = "block";

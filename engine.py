@@ -2311,7 +2311,11 @@ class Settings:
     # TikTok profile stall the Instagram queue (and the reverse), so the two
     # tools pace themselves independently -- but the same default, because the
     # reason for the gap (not looking automated) applies to both.
-    between_tiktok: int = BETWEEN_PROFILES_SECONDS
+    # TikTok's gap is its own and much shorter than Instagram's. yt-dlp only
+    # reads a public page per profile: there is no session, no request budget
+    # shared with anything, and no 429s of its own, so the long Instagram pause
+    # buys nothing here and turned 300 profiles into a day of waiting.
+    between_tiktok: int = 15
 
     # yt-dlp options. Stored as a flat dict so the settings panel can treat them
     # like any other row, and validated on load by TikTokSettings itself.
@@ -2489,6 +2493,7 @@ class Engine:
         # platform so an Instagram gap and a TikTok gap can run at once; the UI
         # counts down from wait_until so the number it shows is the real one.
         self.wait_started: dict[str, float] = {"instagram": 0.0, "tiktok": 0.0}
+        self._skip_gap: dict[str, bool] = {"instagram": False, "tiktok": False}
         self.wait_until: dict[str, float] = {"instagram": 0.0, "tiktok": 0.0}
         self._load_state()
 
@@ -3362,6 +3367,10 @@ class Engine:
         else:
             self.paused = False
             self._limit_paused = False
+        # Pressing Start means "go now", so cut short any routine gap this
+        # platform is sitting out. Without this the button did nothing at all
+        # for up to four minutes, which reads as the app being stuck.
+        self.skip_pacing(platform)
         self.save_state()
         self.start()
         return {"ok": True, "platform": platform}
@@ -3818,6 +3827,16 @@ class Engine:
                     return True
             return False
 
+    def skip_pacing(self, platform: str = "instagram") -> None:
+        """End this platform's between-profiles gap immediately.
+
+        Called when the user presses Start on that tab: waiting out a routine
+        gap while the button plainly does nothing is indistinguishable from the
+        app being stuck, which is exactly how it read.
+        """
+        with self.lock:
+            self._skip_gap[platform] = True
+
     def _pacing_delay(self, platform: str) -> int:
         """The voluntary gap this platform takes before its next profile."""
         if platform == "tiktok":
@@ -3988,6 +4007,13 @@ class Engine:
                     self.wait_until[platform] = self.wait_started[platform] + delay
                 waited = 0
                 while waited < delay:
+                    # Start pressed on this tab: drop the rest of the gap. The
+                    # wait is voluntary pacing, not a limit we must respect, so
+                    # the user can always cut it short.
+                    if self._skip_gap.get(platform):
+                        with self.lock:
+                            self._skip_gap[platform] = False
+                        break
                     if self.stop_requested or self.cancel_current[platform]:
                         break
                     if not ig and self.tt_paused:
