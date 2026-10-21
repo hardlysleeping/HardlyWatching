@@ -843,6 +843,13 @@ class Handler(BaseHTTPRequestHandler):
             # Surface the on-disk listing cache so its state is inspectable
             # rather than a silent performance mystery.
             snap["cache"] = _cache.stats()
+            # Whether TikTok has a session of its own, and which of the two the
+            # next download will use. This was invisible before, which is how it
+            # came to look like TikTok simply had no session.
+            try:
+                snap["tiktok_session"] = get_engine().tiktok_session_state()
+            except Exception as e:
+                snap["tiktok_session"] = {"held": False, "error": str(e)}
             # What the automatic retry sweep is waiting on, so a red card can
             # say "retrying in 40 min" instead of looking abandoned.
             try:
@@ -1387,6 +1394,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "scope": "clip",
                                    "weight": db.set_weight(path, action)})
             return self._json({"ok": False, "error": "unknown action"})
+
+        if p == "/api/tiktok/session/capture":
+            # Copy the browser's TikTok login into a session the app keeps, so a
+            # download stops depending on the browser still being signed in.
+            return self._json(get_engine().capture_tiktok_session(
+                str(body.get("browser") or "")))
+
+        if p == "/api/tiktok/session/forget":
+            return self._json(get_engine().forget_tiktok_session())
 
         if p == "/api/tiktok/cookies-from-browser":
             # Do not lowercase here: a Firefox-fork spec carries a profile PATH

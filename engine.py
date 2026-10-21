@@ -3599,6 +3599,70 @@ class Engine:
     def tiktok_browsers(self) -> list[str]:
         return find_tiktok_browsers()
 
+    def tiktok_cookie_file(self) -> Path:
+        """Where the app keeps its own TikTok session."""
+        return STATE_FILE.parent / "tiktok-cookies.txt"
+
+    def tiktok_session_state(self) -> dict:
+        """Whether TikTok has a session of its own, and what is in it."""
+        import tiktok_engine as _tt
+        path = str(self.settings.tiktok.get("cookies_file") or "")
+        st = _tt.cookie_jar_state(path)
+        st["browser"] = str(self.settings.tiktok.get("cookies_from_browser") or "")
+        # Say plainly which of the two the next download will use, because that
+        # is the thing that was invisible before.
+        st["using"] = "app" if st.get("held") else ("browser" if st["browser"] else "none")
+        return st
+
+    def capture_tiktok_session(self, browser: str = "") -> dict:
+        """Copy a browser's TikTok login into a session the app keeps itself.
+
+        Instagram has had its own session files all along; TikTok only ever had a
+        pointer at a browser profile, re-read on every run. That is not a session
+        the app holds: it lasts as long as the browser stays signed in and its
+        profile directory stays where it was, and nothing here could say whether
+        it was there at all.
+        """
+        import tiktok_engine as _tt
+        spec = (browser or "").strip()
+        if not spec:
+            spec = str(self.settings.tiktok.get("cookies_from_browser") or "").strip()
+        if not spec or not _tt.cookies_db_for_spec(spec):
+            # Pick a browser that actually has a login to copy, rather than the
+            # configured one, which may be a browser we cannot read.
+            found = ""
+            for cand in self.tiktok_browsers():
+                if _tt.cookies_db_for_spec(cand):
+                    found = cand
+                    break
+            spec = found or spec
+        if not spec:
+            return {"ok": False,
+                    "error": "No browser with a TikTok login was found. Sign in to "
+                             "TikTok in Firefox or Zen, then try again."}
+        out = self.tiktok_cookie_file()
+        result = _tt.capture_cookies(spec, out)
+        if not result.get("ok"):
+            return result
+        with self.lock:
+            # Kept as the fallback for browsers whose cookies cannot be copied.
+            self.settings.tiktok["cookies_from_browser"] = spec
+            self.settings.tiktok["cookies_file"] = str(out)
+        self.save_state()
+        return {"ok": True, "captured": result.get("cookies"),
+                "login": result.get("login"), **self.tiktok_session_state()}
+
+    def forget_tiktok_session(self) -> dict:
+        """Drop the held session, going back to reading the browser."""
+        with self.lock:
+            self.settings.tiktok["cookies_file"] = ""
+        self.save_state()
+        try:
+            self.tiktok_cookie_file().unlink()
+        except OSError:
+            pass
+        return {"ok": True, **self.tiktok_session_state()}
+
     def set_tiktok_cookies_browser(self, browser: str) -> dict:
         """Set tiktok.cookies_from_browser. Empty string clears it.
 
@@ -4256,6 +4320,13 @@ class Engine:
         saved = getattr(job, "settings", None) or {}
         tt_opts = saved.get("tiktok") if isinstance(saved, dict) else None
         ttset = tt.TikTokSettings.from_dict(tt_opts or self.settings.tiktok)
+        # The held session is a credential, not a per-job preference, so it
+        # applies to every job. A job queued before the session existed carries
+        # its own tiktok settings without this key, and from_dict copies only the
+        # keys that are there -- without this line those jobs would keep reading
+        # the browser and quietly ignore the session the app holds.
+        if not ttset.cookies_file:
+            ttset.cookies_file = str(self.settings.tiktok.get("cookies_file") or "")
         cmd = tt.build_download_cmd(job.username, target_dir, archive, count,
                                     settings=ttset)
         self._log(job, f"$ {' '.join(cmd)}")

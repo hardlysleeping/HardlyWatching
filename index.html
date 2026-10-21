@@ -725,16 +725,19 @@ some.profile
         <div class="hint" id="ttPath" style="margin-top:10px"></div>
       </div>
       <div class="card" style="margin-top:12px">
-        <h3 style="margin-top:0">TikTok login (private accounts)</h3>
+        <h3 style="margin-top:0">TikTok session (private accounts)</h3>
         <p class="hint" style="margin-top:0">
-          Private TikTok profiles only download if you are logged in. Pull the
-          login straight from a browser that is signed into TikTok. Public
-          profiles need none of this.
+          Private TikTok profiles only download if you are logged in. Take the
+          login from a browser that is signed into TikTok and the app keeps its
+          own copy of it, the way Instagram has its own sessions — so a download
+          does not depend on that browser staying signed in. Public profiles need
+          none of this.
         </p>
         <div class="row" style="margin-top:10px;gap:8px">
-          <button class="small" id="ttCookiesBtn">Pull cookies from browser</button>
-          <span class="hint" id="ttCookiesStatus" style="align-self:center"></span>
+          <button class="small primary" id="ttSessionBtn">Save session from browser</button>
+          <button class="small" id="ttSessionForget" style="display:none">Forget session</button>
         </div>
+        <div class="hint" id="ttSessionState" style="margin-top:9px">checking…</div>
       </div>
 
   </div><!-- /ttPane -->
@@ -929,6 +932,30 @@ async function loadSessions(){
   renderSessions(st.sessions||[], st.active_session, st.session_ok, st.session_username);
   const br = await post("/api/session/browsers", {});
   renderBrowsers(br.browsers||[]);
+}
+
+// What the TikTok side will actually use for the next download.
+//
+// Read from the server rather than remembered here, so the line cannot go on
+// claiming a session is held after the file has gone.
+function renderTiktokSession(s){
+  const el = $("ttSessionState"), forget = $("ttSessionForget");
+  if(!el) return;
+  if(forget) forget.style.display = (s && s.held) ? "" : "none";
+  if(!s){ el.textContent = "—"; return; }
+  if(!s.held){
+    el.textContent = s.browser
+      ? "No session of its own — reading the browser each run "
+        + `(${s.browser.split(":").pop().split("/").pop()}). Public profiles work without it.`
+      : "No session, and no browser login found. Public profiles work without one.";
+    return;
+  }
+  const when = s.saved ? new Date(s.saved*1000).toLocaleString() : "unknown";
+  const login = s.login
+    ? `${s.login} login cookie${s.login===1?"":"s"}`
+    : "no login cookies — this will not unlock private profiles";
+  el.innerHTML = `Held by the app: <b>${login}</b> of ${s.cookies} cookies, `
+    + `saved ${esc(when)}. Downloads use this, not the browser.`;
 }
 
 function renderSessions(sessions, active, ok, username){
@@ -1878,16 +1905,10 @@ function render(st){
   } else cb.style.display = "none";
 
   if(!settings) fillSettings(st.settings||{});
-  // Show which browser the TikTok cookies come from without making the user
-  // press the button to find out. Blank is a real answer: public profiles work
-  // with no cookies at all.
-  {
-    const cs = $("ttCookiesStatus");
-    if(cs && cs.textContent === ""){
-      const spec = ((st.settings||{}).tiktok||{}).cookies_from_browser || "";
-      cs.textContent = spec ? `Using ${cookieLabel(spec)}` : "Not using browser cookies";
-    }
-  }
+  // Painted from every poll, not only when the session panel is opened: the
+  // TikTok session line has to reflect the file on disk, and it has to be right
+  // on the tab you are looking at rather than only after a trip to settings.
+  renderTiktokSession(st.tiktok_session);
 
   // Split the jobs into four groups:
   //   1. what's downloading right now  (pinned, full width)
@@ -3194,26 +3215,43 @@ $("ttCheckBtn").onclick = async () => {
 // A cookie spec can be "firefox:/home/you/.zen/abc.Default (release)", which is
 // the value yt-dlp needs but an unreadable thing to show next to a button. Say
 // which browser it came from instead.
-function cookieLabel(spec){
-  if(!spec) return "none";
-  const [head, tail] = String(spec).split(/:(.*)/s);
-  if(head !== "firefox") return head.charAt(0).toUpperCase() + head.slice(1);
-  const p = (tail || "").toLowerCase();
-  if(p.includes(".zen")) return "Zen";
-  if(p.includes(".librewolf")) return "LibreWolf";
-  return "Firefox";
-}
 
-$("ttCookiesBtn").onclick = async () => {
-  const st = $("ttCookiesStatus");
-  if(st) st.textContent = "Checking browsers…";
+// Take the browser's TikTok login and keep it as the app's own session.
+//
+// This replaces a button that only pointed yt-dlp at a browser profile. That
+// left TikTok with nothing of its own: the login existed only inside the
+// browser, so signing out there silently ended it, and nothing in the app could
+// report whether a session was there at all.
+$("ttSessionBtn").onclick = async () => {
+  const el = $("ttSessionState"), btn = $("ttSessionBtn");
+  const was = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  if(el) el.textContent = "Reading the browser’s TikTok login…";
   try{
-    const r = await post("/api/tiktok/cookies-from-browser", {});
-    if(!r.ok){ if(st) st.textContent = r.error || "No browser found"; toast(r.error || "No browser found"); return; }
-    if(st) st.textContent = `Using ${cookieLabel(r.browser)}`;
-    toast(`TikTok cookies: ${cookieLabel(r.browser)}`);
+    const r = await post("/api/tiktok/session/capture", {});
+    if(!r.ok){
+      if(el) el.textContent = r.error || "Could not save a session";
+      toast(r.error || "Could not save a session");
+      return;
+    }
+    toast(`TikTok session saved — ${r.login} login cookie${r.login===1?"":"s"} of ${r.cookies}`);
     tick();
-  }catch(e){ if(st) st.textContent = "Error"; toast("Could not pull cookies"); }
+  }catch(e){
+    if(el) el.textContent = "Error: " + e.message;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = was;
+  }
+};
+
+$("ttSessionForget").onclick = async () => {
+  if(!confirm("Forget the saved TikTok session?\n\nPrivate profiles will stop "
+    + "downloading until you save it again. Nothing else is affected.")) return;
+  const r = await post("/api/tiktok/session/forget", {});
+  if(!r || r.ok === false){ toast((r && r.error) || "Could not forget it"); return; }
+  toast("Session forgotten — reading the browser again");
+  tick();
 };
 
 function buildAllBar(profileCount){

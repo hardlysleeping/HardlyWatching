@@ -7,6 +7,17 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **TikTok has a session of its own.** Instagram always kept session files; the
+  TikTok side only ever held a pointer at a browser profile, re-read on every
+  run. That is not a session the app has -- it lasts exactly as long as that
+  browser stays signed in and its profile directory stays put, and nothing could
+  report whether it was there at all. **Save session from browser** copies the
+  login into `tiktok-cookies.txt` under the config directory (mode 0600, it is a
+  credential) and downloads use that jar; the browser becomes the fallback for
+  browsers whose cookies cannot be copied. The card shows what is held -- how many
+  login cookies out of how many, and when it was saved -- so "is there a session"
+  is answerable, and **Forget session** drops it.
+
 - **Sessions can be locked.** A flagged account could be picked up again with one
   click, and a service restart put it straight back to work. Every session now has
   a **Lock** button: the lock is saved in `state.json`, a locked session is never

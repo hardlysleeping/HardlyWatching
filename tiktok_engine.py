@@ -64,6 +64,7 @@ class TikTokSettings:
     fragment_retries: int = 10           # --fragment-retries
     limit_rate: str = ""                 # --limit-rate, e.g. "5M"
     cookies_from_browser: str = ""       # --cookies-from-browser
+    cookies_file: str = ""               # --cookies, a session the app holds
     proxy: str = ""                      # --proxy
 
     # -- date window
@@ -242,6 +243,17 @@ def build_download_cmd(handle: str, dest: Path, archive: Path,
                        settings: TikTokSettings | None = None) -> list[str]:
     s = settings or TikTokSettings()
     cmd = _base_download_cmd(handle, dest, archive, count, s)
+    # A jar the app holds comes first, and the browser is only a fallback.
+    #
+    # Reading the browser every run is not a session the app has: it lasts exactly
+    # as long as the browser stays signed in and its profile directory stays put,
+    # and nothing in the app can say whether it is there. A stored jar is the
+    # app's own, so a download does not depend on the browser at all.
+    jar = (s.cookies_file or "").strip()
+    if jar and Path(jar).is_file():
+        cmd += ['--cookies', jar]
+        cmd.append(profile_url(handle))
+        return cmd
     spec = (s.cookies_from_browser or "").strip()
     if spec:
         # Same idea as the Instagram side: reuse a browser login rather than
@@ -256,6 +268,126 @@ def build_download_cmd(handle: str, dest: Path, archive: Path,
             cmd += ['--cookies-from-browser', spec]
     cmd.append(profile_url(handle))
     return cmd
+
+
+# Cookie names that carry an actual TikTok login. A jar full of tracking cookies
+# downloads nothing that needs a session, so these are what get counted and
+# reported -- "30 cookies" says nothing on its own.
+LOGIN_COOKIE_NAMES = {"sessionid", "sid_tt", "sessionid_ss", "sid_guard",
+                      "uid_tt", "uid_tt_ss", "passport_csrf_token"}
+COOKIE_DOMAIN = "tiktok.com"
+
+
+def cookies_db_for_spec(spec: str) -> Path | None:
+    """The cookies.sqlite behind a --cookies-from-browser spec, or None.
+
+    Only the Firefox-family path form ("firefox:/path/to/profile") is readable
+    here, which is what this app stores for Firefox, Zen and LibreWolf. The other
+    browsers keep their cookies somewhere else entirely, so for those the browser
+    is still read directly at run time.
+    """
+    head, sep, tail = (spec or "").partition(":")
+    if not sep or head.strip().lower() != "firefox" or not tail:
+        return None
+    db = Path(tail) / "cookies.sqlite"
+    return db if db.is_file() else None
+
+
+def capture_cookies(spec: str, out: Path, domain: str = COOKIE_DOMAIN) -> dict:
+    """Write `out` as a Netscape cookie jar holding the browser's cookies.
+
+    Netscape format is what `yt-dlp --cookies` reads, and it is the point of the
+    exercise: a copy the app holds, so a download does not depend on the browser
+    still being signed in, still installed, or on the profile directory still
+    being where it was.
+
+    Session cookies (expiry 0) are written as 0, which is how the format says
+    "no expiry" -- dropping them would drop the login these exist to keep.
+    """
+    import sqlite3
+    db = cookies_db_for_spec(spec)
+    if db is None:
+        return {"ok": False,
+                "error": "This browser's cookies cannot be copied. Use the "
+                         "browser session instead, or sign in to TikTok in "
+                         "Firefox or Zen."}
+    try:
+        conn = sqlite3.connect(f"file:{db}?immutable=1", uri=True)
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(moz_cookies)")}
+            if not cols:
+                raise RuntimeError("not a Firefox cookie database")
+            domain_col = "baseDomain" if "baseDomain" in cols else "host"
+            rows = conn.execute(
+                f"SELECT host, path, isSecure, expiry, name, value "
+                f"FROM moz_cookies WHERE {domain_col} LIKE ?",
+                (f"%{domain}%",)).fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # Latest row wins for a repeated name, since an old copy of a session cookie
+    # would otherwise overwrite the live one.
+    jar: dict[tuple, tuple] = {}
+    login = 0
+    for host, path, secure, expiry, name, value in rows:
+        if not value:
+            continue
+        host = host or f".{domain}"
+        if not host.startswith("."):
+            host = "." + host.lstrip(".")
+        jar[(host, path or "/", name)] = (host, path or "/", bool(secure),
+                                          int(expiry or 0), name, value)
+        if name in LOGIN_COOKIE_NAMES:
+            login += 1
+
+    if not jar:
+        return {"ok": False,
+                "error": f"No {domain} cookies found in that browser. Sign in "
+                          f"to TikTok there first."}
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["# Netscape HTTP Cookie File",
+             "# Written by HardlyWatching. Edit by hand and yt-dlp may refuse it.",
+             ""]
+    for host, path, secure, expiry, name, value in jar.values():
+        lines.append("	".join([host, "TRUE", path, "TRUE" if secure else "FALSE",
+                                str(expiry), name, value]))
+    # Trailing newline required: yt-dlp rejects a jar whose last line is cut short.
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        out.chmod(0o600)      # a session cookie is a credential
+    except OSError:
+        pass
+    return {"ok": True, "path": str(out), "cookies": len(jar), "login": login}
+
+
+def cookie_jar_state(path: str) -> dict:
+    """What a held cookie jar contains, for showing in the UI.
+
+    Read back from the file rather than remembered, so the display cannot drift
+    from what yt-dlp will actually be given.
+    """
+    p = Path(path) if path else None
+    if not p or not p.is_file():
+        return {"held": False}
+    try:
+        cookies = login = 0
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            cookies += 1
+            if parts[5] in LOGIN_COOKIE_NAMES:
+                login += 1
+        st = p.stat()
+        return {"held": True, "path": str(p), "cookies": cookies, "login": login,
+                "saved": int(st.st_mtime), "bytes": st.st_size}
+    except OSError as e:
+        return {"held": False, "error": str(e)}
 
 
 def cookie_spec_problem(spec: str) -> str:

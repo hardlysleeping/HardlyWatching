@@ -312,6 +312,14 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**TikTok's session.** Private TikTok profiles need a login. **Save session from
+browser** takes it from a browser signed into TikTok and keeps the app's own copy
+in `tiktok-cookies.txt` (mode 0600), the way Instagram keeps its sessions -- so a
+download does not depend on that browser staying signed in or its profile
+directory staying put. The card reports how many login cookies are held and when
+they were saved; **Forget session** returns to reading the browser each run, which
+is the fallback for browsers whose cookies cannot be copied.
+
 **From the queue to a profile's files.** Clicking the picture on a queue card
 opens that profile's gallery straight away, and every card carries a **Gallery**
 button next to Open for the same thing — TikTok entries have no picture, so the
