@@ -445,8 +445,11 @@ static clips 0.000–1.9.
 ## Shorts
 
 **Shorts** is a tab in the header, next to Download and Gallery — a phone-shaped,
-full-screen feed of downloaded videos. Swipe or use the arrow keys. Each clip
-has **like**, **trash**, **download**, **more** and **less**.
+full-screen feed of downloaded videos. Swipe up and down or use the arrow keys.
+Each clip has **mute**, **like**, **star**, **download**, **trash**, **more** and
+**less**, as icons alone — the words are still there as tooltips. A swipe **left or
+right** shows or hides those controls: they start visible, nothing hides them on
+their own, and a refill leaves them as you left them.
 
 On a desktop there is a **seek bar** under the clip, and **← / →** jump five
 seconds. Every clip loops, so without those there is no way back to the start.
@@ -480,7 +483,8 @@ It is deliberately random with repetition, so the same clip can come back.
 **More** and **less** change how often a **profile** reappears rather than
 hiding anything: judge the person, not the one clip. One video landing well
 means you want more from them, and every clip they posted follows.
-**Favourites** filters to liked clips.
+The topbar's **★** filters the feed to the clips you have **starred** (a like is
+a reaction, a star is a bookmark — they are independent).
 
 The order is reshuffled each time you reload the page or scroll back to the top,
 so the feed does not start the same way twice. Switching tabs, backgrounding the
@@ -575,11 +579,27 @@ archiving is wise.
 ## The gallery
 
 - **Profiles** — pick a person, see their posts as tiles. Videos play on hover.
-- **♥ All Favourites** — everything you starred, across every profile, with a
-  full-screen swipe view.
+- **♥ All Favourites** — every post you moved into the **favourites folder**,
+  across every profile, with a full-screen swipe view. This is a folder, not a
+  flag: favouriting moves the file.
+- **★ Starred** — every clip you **starred**, newest star first. A star is a
+  bookmark recorded against the clip and moves nothing, which is why it is a
+  separate view from All Favourites.
 - **🗑 All Trash** — everything you set aside, with delete-for-good.
 - **🕒 Timeline** — every post from every profile in one chronological stream,
   grouped by month, with a favourites-only filter.
+
+**Picking several at once.** **☑ Select** in the gallery bar — or holding a tile
+on a phone — turns tapping into picking: tap as many tiles as you like and then
+**★ Star**, **♥ Like**, **♥ Favourite** or **🗑 Trash** the whole lot in one go.
+The trash view offers **↩ Restore** instead, and the favourites view offers
+**↩ Un-favourite**, so a batch can always be undone the same way it was done.
+**Done**, **Esc**, or a tap outside leaves the mode. A tap picks instead of
+opening the viewer, and the tile's own buttons step aside while you are picking.
+
+The **queue** and **finished** lists each have their search box **above** the
+list it filters, with the paging controls below — so the box is where you are
+looking rather than below everything you want to filter.
 
 On a tile: **♥** favourite, **⤢** open bigger, **🗑** trash. In the enlarged view:
 **♡/♥**, **⤓** download (videos), **🗑**, and **‹ ›** to step through posts. On
@@ -600,8 +620,14 @@ Tile images **fill in as you download**, not all at once:
   asked for once and not retried on every repaint.
 
 Instagram profile pictures are saved by instaloader as part of the profile
-(`--no-profile-pic` turns that off). TikTok has no equivalent picture file, so
-its cards show the platform label instead of an avatar.
+(`--no-profile-pic` turns that off). TikTok has no equivalent file — yt-dlp is
+never asked for one — so those pictures are fetched separately from the account's
+own page and kept in the cache (`~/.cache/hardlywatching/avatars`), never in the
+profile folder: anything in a profile folder is scanned as gallery media, and a
+picture there would appear as an extra post. `tools/tiktok_avatars.py` fills them
+in for profiles already downloaded, and each TikTok download fetches its own.
+Where there is no picture — an account that no longer exists, or one that has
+never been downloaded — the card shows the platform label instead.
 
 Video thumbnails inside the gallery are generated from the video itself by the
 browser, so they also appear as the file is available — a tile with no preview

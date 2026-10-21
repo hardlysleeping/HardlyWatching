@@ -5,40 +5,15 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
+## [0.2.0] — 2026-10-21
 
+### Added
 - **Selection mode in the gallery.** *☑ Select* (or holding a tile) turns tapping
   into picking: choose as many tiles as you like and then Star, Like, Favourite,
   Trash them — or Restore from the trash view, or Un-favourite from the favourites
   view — in one go. Done, Escape, or a tap outside leaves it. Trashing from the
   full-screen viewer no longer opens a hidden dialog: the confirmation was at
   z-index 60, below the viewer at 70, so the viewer was all you could see.
-
-### Fixed
-
-- **A Starred view in the Gallery.** A star is a bookmark — the higher-level
-  favourite — and it lives on the clip rather than in a folder, so there was no
-  way to see them together. The *★ Starred* chip beside All Favourites lists every
-  starred clip across the archive, newest star first. `starred_at` is recorded when
-  you star something, because `first_seen` is a sync stamp that every row in a pass
-  shares and ordering a bookmarks view by it means nothing.
-- **Swipe left or right in Shorts to show or hide the controls.** They start
-  visible and nothing hides them on their own: no timer, and a refill does not pop
-  them back after you have swiped them away. Either direction toggles — the rail is
-  on the right edge where a thumb already is, and one specific direction on a
-  control that does not slide would be a rule to remember rather than a gesture.
-  The tap that ends a swipe is swallowed, so it does not also pause the clip.
-
-### Changed
-
-- **The search box sits above the queue and finished lists.** It was at the bottom
-  of the pager, so a long queue had to be scrolled past before you could type in
-  it. The paging controls stay at the bottom; a search with no matches keeps its
-  box on screen, because hiding the box would strand the filter with no way to
-  clear it.
-
-### Added
-
 - **"All" can mean a slice at a time.** A TikTok profile set to *all* can now
   fetch 25 videos a turn and then go to the back of the queue, so the next profile
   gets a turn and this one comes round again instead of holding the queue until it
@@ -46,100 +21,6 @@ versioning is [SemVer](https://semver.org/).
   turn size beside it. Off by default, and it only changes what *all* means: a
   profile given an explicit number still fetches that many and finishes. Each turn
   picks up where the last one stopped rather than re-reading the same videos.
-
-### Fixed
-
-- **The queue list was rebuilt twice on every poll, forever.** `paintPagedQueue`
-  drew the rows once without their queue positions and then immediately drew them
-  again with them — two different strings, so the "nothing changed, leave the DOM
-  alone" guard never caught it and every card was thrown away and recreated every
-  1.2s, even with nothing running. Measured: 2 mutations per poll, ~13 over eight
-  idle seconds; now 0.
-- **A change to one card no longer rebuilds the whole list.** Replacing the
-  container's innerHTML costs the open log panels and the menus, and on a touch
-  screen it costs the scroll: replacing the element a gesture started on cancels
-  that scroll. Only the rows whose text actually moved are replaced now — measured
-  by moving one job's counters and repainting: 1 row replaced, 9 kept their DOM
-  nodes.
-- **A repaint no longer lands mid-scroll.** Held off for a moment while the page
-  has been scrolled or touched, and retried on the next poll.
-
-- **TikTok profile pictures.** A TikTok archive held none at all — yt-dlp is never
-  asked for one, so all 402 profiles had nothing but videos. The account's own
-  page carries the picture in its rehydration blob and one plain GET returns it,
-  so `tools/tiktok_avatars.py` fetches them, paced, and each profile's download
-  now fetches its own. They are cached rather than written into the profile
-  folder: the gallery scans every picture in a folder as media, so a file put
-  there appears as an extra post, and an avatar is derived from a URL rather than
-  archive content.
-
-- **Accounts that are the same person show as one card.** An identical handle on
-  both sites is folded into a single entry automatically, and any two accounts can
-  be merged by hand for burners and finstas. Gallery view only: the folders, the
-  jobs and the downloads are untouched. Opening a merged card shows the posts from
-  every account in it, each still knowing which profile and platform it came from,
-  so favouriting, moving or trashing acts on the folder the file is really in.
-- **Splitting, which stays split.** A merged card offers a way to say "these are
-  different people". That drops the merge and remembers the handle, so the
-  automatic same-name rule leaves it alone from then on — an automatic rule that
-  silently undoes a decision is worse than having no rule.
-- **A profile picture in the viewer.** Tapping it opens that person's gallery, and
-  going back to Shorts returns to the same clip and, from then on, shows only that
-  person. The viewer is an iframe, so the tap is sent to the app as a message
-  rather than a navigation, which is what keeps the sitting intact.
-
-### Fixed
-
-- **`PRIMARY` is a reserved word in SQLite**, so the column named that made every
-  request fail with a syntax error while the service still reported itself as
-  running. The column is `parent` now. Tables are also created before columns are
-  migrated, since adding a column to a table that does not exist yet fails on a
-  fresh install.
-
-- **Shorts has stars, separate from likes.** A star is a bookmark -- the thing you
-  want to find again -- and a like is a reaction, so they are different columns
-  and neither implies the other: a clip can be liked, starred, both or neither.
-  The star sits in the rail beside the heart (gold, against the heart's pink, so
-  they do not read as one control in two states) and the topbar filter is now the
-  star: filled while you are looking at starred clips only.
-  `starred` is a new column; existing likes are untouched and stay likes.
-
-### Changed
-
-- **The button labels are gone** from the Shorts rail. Each action is the icon
-  alone, with the words kept as tooltips and labels for screen readers, so
-  hovering or long-pressing still says what it does. The topbar filter reads as a
-  star rather than the word "Favourites". The skip buttons keep their number --
-  that is the step you set by tapping three times, not a name for the button.
-
-- **Shorts for one person.** Opening the Shorts tab while a profile is open in
-  the Gallery shows only that person's clips. The filter travels in the player's
-  URL, which the app sets when the tab opens and reloads when the open profile
-  changes, so what is on screen and what is filtered cannot disagree; the count
-  line reads "1 / 8 · only @someone" so a filtered feed is never mistaken for a
-  small archive. Returning to the profile list goes back to the whole feed.
-  Reaching it: open someone in the Gallery, then tap Shorts.
-
-### Fixed
-
-- **The Shorts feed stops getting slower the longer you scroll.** Every refill
-  emptied the feed and recreated every clip element, so everything already loaded
-  was thrown away and had to be fetched and decoded again — including the clip in
-  view — and since the list only grows, each refill cost more than the last. Only
-  the unseen tail is replaced now, so buffered clips survive a refill.
-- **Clips are fetched before you reach them.** Every clip was created with
-  `preload="none"` and only the one in view was told to load, so each swipe was a
-  cold fetch and decode. The next two are now given their source while the
-  current one plays, and the two behind are kept ready for a scroll back. Outside
-  three clips either way the source is released, which keeps a long sitting from
-  holding a whole session of decoded video.
-- **A clip scrolled past no longer becomes unplayable.** The source was removed
-  once a clip was more than three screens away and nothing ever put it back, so
-  scrolling up to something you had passed left a dead player. The source is
-  restored when the clip is in range again.
-
-### Added
-
 - **Pause works between profiles now.** The gap between profiles was the one
   moment the button could not stop anything. Two copies of the run button's logic
   had drifted apart: the main poll asked whether `st.current` was set, and that
@@ -149,9 +30,6 @@ versioning is [SemVer](https://semver.org/).
   skips the gap and begins the next download. Pressing Pause during pacing made
   it download sooner. Both now share one painter, and a pacing gap counts as
   working, so the button offers Pause and actually pauses.
-
-### Added
-
 - **TikTok has a session of its own.** Instagram always kept session files; the
   TikTok side only ever held a pointer at a browser profile, re-read on every
   run. That is not a session the app has -- it lasts exactly as long as that
@@ -162,7 +40,6 @@ versioning is [SemVer](https://semver.org/).
   browsers whose cookies cannot be copied. The card shows what is held -- how many
   login cookies out of how many, and when it was saved -- so "is there a session"
   is answerable, and **Forget session** drops it.
-
 - **Sessions can be locked.** A flagged account could be picked up again with one
   click, and a service restart put it straight back to work. Every session now has
   a **Lock** button: the lock is saved in `state.json`, a locked session is never
@@ -170,83 +47,11 @@ versioning is [SemVer](https://semver.org/).
   press **Unlock**. Locking the session in use drops it so the engine falls back to
   another saved one instead of stalling. If every session is locked, the Instagram
   worker holds and the queue says so rather than quietly downloading anonymously.
-
-### Added
-
 - **Opening a profile's gallery from its queue entry.** The picture on a card is
   clickable and opens that profile's gallery directly, and every card has a
   **Gallery** button beside Open — which matters for TikTok entries, since they
   have no picture to click. Neither route goes via the gallery's profile list, so
   it is one click from the queue to the files.
-
-### Changed
-
-- **The Shorts feed no longer belongs to whoever has the most videos.** A
-  profile's share of the feed was proportional to its clip count, which is not a
-  judgement about the person, just about how many files they happen to have: of
-  484 profiles, the top ten took 63% of the feed and the 378 with five clips or
-  fewer took under 6% between them. Each clip is now scaled by
-  `1 / count ** 0.5` (`ALGO_CLIP_BALANCE`), so a profile's share follows the
-  square root of its clip count. Measured on the real archive: the small profiles
-  go from 5.9% of the feed to 38.3%, the top ten from 63.5% to 24.5%, and the
-  profiles seen in a long run from 340 to 483 of 484. The constant is one number:
-  0 restores the old behaviour, 1 gives every profile a flat equal share.
-
-- **Pause stops the profile downloading now, not after it.** Pressing Pause kills
-  the running `instaloader`/`yt-dlp` process for that platform and puts the
-  interrupted profile back at the **front** of its queue, where it restarts on
-  resume. Previously a long run had to finish first, so sitting out a block could
-  take another twenty minutes. Nothing is half-written — instaloader writes media
-  to a `.temp` file and renames it into place only when complete, and yt-dlp keeps
-  `.part` files — so the next run re-fetches cleanly. A pause you press is now
-  persisted too: a service restart, deploy or reboot comes back paused instead of
-  silently resuming, and only **Resume** starts it again. A rate-limit pause is
-  tracked separately and still clears itself when its cooldown expires.
-
-- **One paste box for both platforms.** The Instagram and TikTok tabs each had
-  their own box, so a mixed list meant two pastes on two tabs. There is now a
-  single box at the top of the tab, with the Instagram/TikTok buttons sitting
-  under it, and a mixed paste of Instagram and TikTok links goes in at once, one
-  per line.
-
-  Each line is routed by what it points at: an `instagram.com` link is an
-  Instagram profile, a `tiktok.com` link is a TikTok one. A bare name has no
-  domain to read and the same handle can be two different people on the two
-  sites, so it follows the tab you are on rather than being guessed at. The
-  TikTok grab-count select moved into the same box (it applies to TikTok lines
-  only), and the "Add to queue" button now reports both counts.
-
-### Fixed
-
-- **The app now opens on the tab it was asked for.** The `?tab=` handler was
-  nested inside `showPlatform()` by mistake, which broke it twice: it never ran at
-  load, so an installed phone app (whose start URL is `/?tab=shorts`) opened on
-  Download instead of Shorts; and clicking the Instagram/TikTok sub-tab ran it
-  late, throwing you onto Shorts mid-use. It is now a single top-level call at the
-  end of the script. Shorts lands with the whole app around it — the tabs and the
-  menu are there, so leaving it is a tap rather than a back button.
-
-### Changed
-
-- **A TikTok profile opens straight away.** TikTok offers no profile embed, so
-  the in-app panel could only say "there is nothing to show here" and ask for a
-  second click on the link inside it — a click and a scroll to reach a page whose
-  address we already had. Clicking a TikTok profile (its name, or the TikTok
-  button in the menu) now opens it on tiktok.com immediately. Instagram keeps the
-  panel, because its embed does show something.
-
-### Fixed
-
-- **Clearing a tombstone now sticks.** It removed the placeholder but left the
-  name in the folder's `.insta-index.json`, so the next gallery load compared the
-  index against the folder, saw a file it remembered but could not find, and
-  concluded it had been deleted outside the app — writing the placeholder
-  straight back and re-recording the tombstone. "Post will re-download" was
-  untrue in exactly the case the feature exists for. The index entry is dropped
-  too now, which is what makes the clear hold.
-
-### Added
-
 - **"+5 all" on the Finished list** (TikTok tab), which raises every finished
   TikTok profile's grab-count by 5 and puts them back in the queue in one go.
   Profiles sit at the same low count by default, so raising them one card at a
@@ -285,9 +90,196 @@ versioning is [SemVer](https://semver.org/).
   previews). It also writes the unit's `PATH`, which it previously omitted, so
   re-running it no longer produces a unit that cannot find `instaloader` or
   `yt-dlp`.
+- **Disk space in the header, with a stop before the drive fills.** Every archive
+  folder's free space and percentage used is shown at the top of every tab, amber
+  from 90% and red at 95%. At 95% nothing new starts and a run that crosses the
+  limit is halted mid-way — enforced as a reserve checked before a job begins, so
+  a download only starts when at least 5% (or 2 GB) of the volume is free. This
+  is not a failure: the job goes back to the front of its queue, is not marked
+  failed, and resumes by itself once space is freed. Each folder is judged against
+  its own drive, and an unplugged drive counts as absent rather than full. The
+  banner names the folder, the numbers, and what to do about it.
+- **Shorts is a tab.** Download / Gallery / Shorts, swapped to like the others,
+  in a phone-shaped column. `/shorts` still works on its own for the installed
+  phone app.
+- **Start the platform you are looking at.** The start button follows the
+  Instagram/TikTok sub-tab: on TikTok it is **Start TikTok** and starts that
+  queue, so it no longer looks like it only ever starts Instagram.
+- **A seek bar in Shorts on desktop**, plus ← / → to jump 5 seconds. Each clip
+  loops, so without it there was no way to go back.
+- **"More / less often" applies to the profile**, not the single clip: one video
+  landing well means you want more from that person, and every clip they posted
+  follows. Both are clamped so a profile cannot dominate or vanish.
+- **Start on login** is a toggle in settings rather than something you have to
+  remember. It reads and sets the systemd unit, so the terminal and the app
+  never disagree.
+
+### Changed
+- **The search box sits above the queue and finished lists.** It was at the bottom
+  of the pager, so a long queue had to be scrolled past before you could type in
+  it. The paging controls stay at the bottom; a search with no matches keeps its
+  box on screen, because hiding the box would strand the filter with no way to
+  clear it.
+- **The button labels are gone** from the Shorts rail. Each action is the icon
+  alone, with the words kept as tooltips and labels for screen readers, so
+  hovering or long-pressing still says what it does. The topbar filter reads as a
+  star rather than the word "Favourites". The skip buttons keep their number --
+  that is the step you set by tapping three times, not a name for the button.
+- **Shorts for one person.** Opening the Shorts tab while a profile is open in
+  the Gallery shows only that person's clips. The filter travels in the player's
+  URL, which the app sets when the tab opens and reloads when the open profile
+  changes, so what is on screen and what is filtered cannot disagree; the count
+  line reads "1 / 8 · only @someone" so a filtered feed is never mistaken for a
+  small archive. Returning to the profile list goes back to the whole feed.
+  Reaching it: open someone in the Gallery, then tap Shorts.
+- **The Shorts feed no longer belongs to whoever has the most videos.** A
+  profile's share of the feed was proportional to its clip count, which is not a
+  judgement about the person, just about how many files they happen to have: of
+  484 profiles, the top ten took 63% of the feed and the 378 with five clips or
+  fewer took under 6% between them. Each clip is now scaled by
+  `1 / count ** 0.5` (`ALGO_CLIP_BALANCE`), so a profile's share follows the
+  square root of its clip count. Measured on the real archive: the small profiles
+  go from 5.9% of the feed to 38.3%, the top ten from 63.5% to 24.5%, and the
+  profiles seen in a long run from 340 to 483 of 484. The constant is one number:
+  0 restores the old behaviour, 1 gives every profile a flat equal share.
+- **Pause stops the profile downloading now, not after it.** Pressing Pause kills
+  the running `instaloader`/`yt-dlp` process for that platform and puts the
+  interrupted profile back at the **front** of its queue, where it restarts on
+  resume. Previously a long run had to finish first, so sitting out a block could
+  take another twenty minutes. Nothing is half-written — instaloader writes media
+  to a `.temp` file and renames it into place only when complete, and yt-dlp keeps
+  `.part` files — so the next run re-fetches cleanly. A pause you press is now
+  persisted too: a service restart, deploy or reboot comes back paused instead of
+  silently resuming, and only **Resume** starts it again. A rate-limit pause is
+  tracked separately and still clears itself when its cooldown expires.
+- **One paste box for both platforms.** The Instagram and TikTok tabs each had
+  their own box, so a mixed list meant two pastes on two tabs. There is now a
+  single box at the top of the tab, with the Instagram/TikTok buttons sitting
+  under it, and a mixed paste of Instagram and TikTok links goes in at once, one
+  per line.
+- **A TikTok profile opens straight away.** TikTok offers no profile embed, so
+  the in-app panel could only say "there is nothing to show here" and ask for a
+  second click on the link inside it — a click and a scroll to reach a page whose
+  address we already had. Clicking a TikTok profile (its name, or the TikTok
+  button in the menu) now opens it on tiktok.com immediately. Instagram keeps the
+  panel, because its embed does show something.
+- **TikTok archives moved out of the Instagram folder.** They lived in
+  `<downloads>/tiktok/<handle>/`, which made TikTok look like a sub-folder of
+  Instagram — the downloads folder is named after instaloader, so nesting TikTok
+  inside it read as "TikTok is part of Instagram". TikTok now sits **beside** the
+  downloads folder, `<downloads>/../tiktok/<handle>/`, as a peer. Existing
+  archives are read from either location, so a backup or a second drive in the
+  old shape still works, and the move itself is a folder rename rather than a copy.
+- **The TikTok location rule is defined in exactly one place.** It had been
+  written out separately in the gallery's profile scan, and that copy kept
+  looking in the old spot — TikTok profiles vanished from the Gallery while the
+  queue, the shorts feed and the files on disk were all fine. One guard comes
+  with it: if the downloads folder *is* a drive's mount point the sibling would
+  land on a different disk, so TikTok stays inside it there. Checked at runtime,
+  not hardcoded.
+- **Instagram and TikTok download independently.** They were sharing one worker,
+  one queue position and one pause flag, so a TikTok video sat behind hundreds
+  of Instagram profiles and an Instagram rate-limit pause stopped TikTok too.
+  They use different programs against different servers with separate rate
+  limits, so there was nothing to serialise: each platform now has its own
+  worker, queue, pause, cooldown and pacing timer, and one download per platform
+  runs at a time. Measured: a two-second TikTok download and a two-second
+  Instagram download overlap by the full two seconds.
+- **Start, Pause and Resume act on the platform on screen.** Pausing Instagram
+  to sit out a block no longer stops yt-dlp, and the TikTok tab no longer shows
+  Instagram's cooling-down countdown. "Start TikTok" simply starts the TikTok
+  queue rather than reordering the shared one.
 
 ### Fixed
-
+- **A Starred view in the Gallery.** A star is a bookmark — the higher-level
+  favourite — and it lives on the clip rather than in a folder, so there was no
+  way to see them together. The *★ Starred* chip beside All Favourites lists every
+  starred clip across the archive, newest star first. `starred_at` is recorded when
+  you star something, because `first_seen` is a sync stamp that every row in a pass
+  shares and ordering a bookmarks view by it means nothing.
+- **Swipe left or right in Shorts to show or hide the controls.** They start
+  visible and nothing hides them on their own: no timer, and a refill does not pop
+  them back after you have swiped them away. Either direction toggles — the rail is
+  on the right edge where a thumb already is, and one specific direction on a
+  control that does not slide would be a rule to remember rather than a gesture.
+  The tap that ends a swipe is swallowed, so it does not also pause the clip.
+- **The queue list was rebuilt twice on every poll, forever.** `paintPagedQueue`
+  drew the rows once without their queue positions and then immediately drew them
+  again with them — two different strings, so the "nothing changed, leave the DOM
+  alone" guard never caught it and every card was thrown away and recreated every
+  1.2s, even with nothing running. Measured: 2 mutations per poll, ~13 over eight
+  idle seconds; now 0.
+- **A change to one card no longer rebuilds the whole list.** Replacing the
+  container's innerHTML costs the open log panels and the menus, and on a touch
+  screen it costs the scroll: replacing the element a gesture started on cancels
+  that scroll. Only the rows whose text actually moved are replaced now — measured
+  by moving one job's counters and repainting: 1 row replaced, 9 kept their DOM
+  nodes.
+- **A repaint no longer lands mid-scroll.** Held off for a moment while the page
+  has been scrolled or touched, and retried on the next poll.
+- **TikTok profile pictures.** A TikTok archive held none at all — yt-dlp is never
+  asked for one, so all 402 profiles had nothing but videos. The account's own
+  page carries the picture in its rehydration blob and one plain GET returns it,
+  so `tools/tiktok_avatars.py` fetches them, paced, and each profile's download
+  now fetches its own. They are cached rather than written into the profile
+  folder: the gallery scans every picture in a folder as media, so a file put
+  there appears as an extra post, and an avatar is derived from a URL rather than
+  archive content.
+- **Accounts that are the same person show as one card.** An identical handle on
+  both sites is folded into a single entry automatically, and any two accounts can
+  be merged by hand for burners and finstas. Gallery view only: the folders, the
+  jobs and the downloads are untouched. Opening a merged card shows the posts from
+  every account in it, each still knowing which profile and platform it came from,
+  so favouriting, moving or trashing acts on the folder the file is really in.
+- **Splitting, which stays split.** A merged card offers a way to say "these are
+  different people". That drops the merge and remembers the handle, so the
+  automatic same-name rule leaves it alone from then on — an automatic rule that
+  silently undoes a decision is worse than having no rule.
+- **A profile picture in the viewer.** Tapping it opens that person's gallery, and
+  going back to Shorts returns to the same clip and, from then on, shows only that
+  person. The viewer is an iframe, so the tap is sent to the app as a message
+  rather than a navigation, which is what keeps the sitting intact.
+- **`PRIMARY` is a reserved word in SQLite**, so the column named that made every
+  request fail with a syntax error while the service still reported itself as
+  running. The column is `parent` now. Tables are also created before columns are
+  migrated, since adding a column to a table that does not exist yet fails on a
+  fresh install.
+- **Shorts has stars, separate from likes.** A star is a bookmark -- the thing you
+  want to find again -- and a like is a reaction, so they are different columns
+  and neither implies the other: a clip can be liked, starred, both or neither.
+  The star sits in the rail beside the heart (gold, against the heart's pink, so
+  they do not read as one control in two states) and the topbar filter is now the
+  star: filled while you are looking at starred clips only.
+  `starred` is a new column; existing likes are untouched and stay likes.
+- **The Shorts feed stops getting slower the longer you scroll.** Every refill
+  emptied the feed and recreated every clip element, so everything already loaded
+  was thrown away and had to be fetched and decoded again — including the clip in
+  view — and since the list only grows, each refill cost more than the last. Only
+  the unseen tail is replaced now, so buffered clips survive a refill.
+- **Clips are fetched before you reach them.** Every clip was created with
+  `preload="none"` and only the one in view was told to load, so each swipe was a
+  cold fetch and decode. The next two are now given their source while the
+  current one plays, and the two behind are kept ready for a scroll back. Outside
+  three clips either way the source is released, which keeps a long sitting from
+  holding a whole session of decoded video.
+- **A clip scrolled past no longer becomes unplayable.** The source was removed
+  once a clip was more than three screens away and nothing ever put it back, so
+  scrolling up to something you had passed left a dead player. The source is
+  restored when the clip is in range again.
+- **The app now opens on the tab it was asked for.** The `?tab=` handler was
+  nested inside `showPlatform()` by mistake, which broke it twice: it never ran at
+  load, so an installed phone app (whose start URL is `/?tab=shorts`) opened on
+  Download instead of Shorts; and clicking the Instagram/TikTok sub-tab ran it
+  late, throwing you onto Shorts mid-use. It is now a single top-level call at the
+  end of the script. Shorts lands with the whole app around it — the tabs and the
+  menu are there, so leaving it is a tap rather than a back button.
+- **Clearing a tombstone now sticks.** It removed the placeholder but left the
+  name in the folder's `.insta-index.json`, so the next gallery load compared the
+  index against the folder, saw a file it remembered but could not find, and
+  concluded it had been deleted outside the app — writing the placeholder
+  straight back and re-recording the tombstone. "Post will re-download" was
+  untrue in exactly the case the feature exists for. The index entry is dropped
+  too now, which is what makes the clear hold.
 - **TikTok no longer waits four minutes between profiles.** Its gap was set to
   240s — twice Instagram's — which turned a few hundred queued profiles into
   about a day of mostly waiting. yt-dlp only reads a public page per profile:
@@ -339,64 +331,6 @@ versioning is [SemVer](https://semver.org/).
   platform's rows underneath the results — on the TikTok tab, searching "stories"
   listed Instagram-only options as though they applied. Both filters now resolve
   in one place, so the two axes cannot disagree.
-
-### Changed
-
-- **TikTok archives moved out of the Instagram folder.** They lived in
-  `<downloads>/tiktok/<handle>/`, which made TikTok look like a sub-folder of
-  Instagram — the downloads folder is named after instaloader, so nesting TikTok
-  inside it read as "TikTok is part of Instagram". TikTok now sits **beside** the
-  downloads folder, `<downloads>/../tiktok/<handle>/`, as a peer. Existing
-  archives are read from either location, so a backup or a second drive in the
-  old shape still works, and the move itself is a folder rename rather than a copy.
-- **The TikTok location rule is defined in exactly one place.** It had been
-  written out separately in the gallery's profile scan, and that copy kept
-  looking in the old spot — TikTok profiles vanished from the Gallery while the
-  queue, the shorts feed and the files on disk were all fine. One guard comes
-  with it: if the downloads folder *is* a drive's mount point the sibling would
-  land on a different disk, so TikTok stays inside it there. Checked at runtime,
-  not hardcoded.
-- **Instagram and TikTok download independently.** They were sharing one worker,
-  one queue position and one pause flag, so a TikTok video sat behind hundreds
-  of Instagram profiles and an Instagram rate-limit pause stopped TikTok too.
-  They use different programs against different servers with separate rate
-  limits, so there was nothing to serialise: each platform now has its own
-  worker, queue, pause, cooldown and pacing timer, and one download per platform
-  runs at a time. Measured: a two-second TikTok download and a two-second
-  Instagram download overlap by the full two seconds.
-- **Start, Pause and Resume act on the platform on screen.** Pausing Instagram
-  to sit out a block no longer stops yt-dlp, and the TikTok tab no longer shows
-  Instagram's cooling-down countdown. "Start TikTok" simply starts the TikTok
-  queue rather than reordering the shared one.
-
-### Added
-
-- **Disk space in the header, with a stop before the drive fills.** Every archive
-  folder's free space and percentage used is shown at the top of every tab, amber
-  from 90% and red at 95%. At 95% nothing new starts and a run that crosses the
-  limit is halted mid-way — enforced as a reserve checked before a job begins, so
-  a download only starts when at least 5% (or 2 GB) of the volume is free. This
-  is not a failure: the job goes back to the front of its queue, is not marked
-  failed, and resumes by itself once space is freed. Each folder is judged against
-  its own drive, and an unplugged drive counts as absent rather than full. The
-  banner names the folder, the numbers, and what to do about it.
-- **Shorts is a tab.** Download / Gallery / Shorts, swapped to like the others,
-  in a phone-shaped column. `/shorts` still works on its own for the installed
-  phone app.
-- **Start the platform you are looking at.** The start button follows the
-  Instagram/TikTok sub-tab: on TikTok it is **Start TikTok** and starts that
-  queue, so it no longer looks like it only ever starts Instagram.
-- **A seek bar in Shorts on desktop**, plus ← / → to jump 5 seconds. Each clip
-  loops, so without it there was no way to go back.
-- **"More / less often" applies to the profile**, not the single clip: one video
-  landing well means you want more from that person, and every clip they posted
-  follows. Both are clamped so a profile cannot dominate or vanish.
-- **Start on login** is a toggle in settings rather than something you have to
-  remember. It reads and sets the systemd unit, so the terminal and the app
-  never disagree.
-
-### Fixed
-
 - **Start on the TikTok tab looked like it only ever downloaded Instagram.** It
   picked whatever was next in the shared queue; it now prioritises the platform
   on screen.
@@ -449,7 +383,6 @@ versioning is [SemVer](https://semver.org/).
   at download time rather than failing the job, and a profile path is no longer
   lowercased (`Default` was being written as `default`, which matches nothing on
   Linux).
-
 ## [0.1.0] — 2026-10-20
 
 First tagged release. Everything below is usable and tested against a real
