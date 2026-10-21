@@ -298,6 +298,12 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Shorts, as both.** Shorts is a tab in the app and `/shorts` still stands alone
+for the installed phone copy. An installed app launches at `/?tab=shorts`, which
+opens on Shorts *inside* the full app: the tabs and the menu are there, so
+leaving Shorts is a tap on Gallery or Download rather than a back button a
+standalone window does not have.
+
 **Opening a profile.** Instagram opens an embed in the page. TikTok has no
 profile embed, so a TikTok profile opens on tiktok.com straight away rather than
 showing a panel that could only say there was nothing to show.

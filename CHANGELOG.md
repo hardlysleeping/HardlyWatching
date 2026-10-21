@@ -5,6 +5,16 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The app now opens on the tab it was asked for.** The `?tab=` handler was
+  nested inside `showPlatform()` by mistake, which broke it twice: it never ran at
+  load, so an installed phone app (whose start URL is `/?tab=shorts`) opened on
+  Download instead of Shorts; and clicking the Instagram/TikTok sub-tab ran it
+  late, throwing you onto Shorts mid-use. It is now a single top-level call at the
+  end of the script. Shorts lands with the whole app around it — the tabs and the
+  menu are there, so leaving it is a tap rather than a back button.
+
 ### Changed
 
 - **A TikTok profile opens straight away.** TikTok offers no profile embed, so

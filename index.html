@@ -2988,17 +2988,8 @@ function showPlatform(which){
       box.value = "";
     }
   }
-  // Keep the header consistent with the tab + platform in one place.
-  // An installed phone app opens /?tab=shorts so it lands on Shorts, while still
-// being the whole app: the tabs and the menu are there, so leaving Shorts is a
-// tap on Gallery or Download rather than reaching for a back button that a
-// standalone window does not have. Any other ?tab= value is honoured the same
-// way, and anything unrecognised falls through to Download.
-(function(){
-  const want = (new URLSearchParams(location.search).get("tab") || "").toLowerCase();
-  if(want === "shorts" || want === "gallery") showTab(want);
-  else paintHeader("queue");
-})();
+  // Switching platform changes the name in the header, so repaint it.
+  paintHeader("queue");
   // The queue below the paste box belongs to the selected platform, so it has
   // to be redrawn immediately rather than waiting for the next poll.
   if(lastQueueRender) render(lastQueueRender);
@@ -5354,6 +5345,25 @@ function confirmTrash(username, names, onDone){
   document.body.appendChild(wrap);
   go.focus();
 }
+
+// Which tab the app opens on.
+//
+// An installed phone app launches at /?tab=shorts so it lands on Shorts while
+// still BEING the whole app -- the tabs and the menu are there, so leaving
+// Shorts is a tap on Gallery or Download rather than reaching for a back
+// button a standalone window does not have. That is the whole point of it, and
+// it has to run once at load.
+//
+// It used to sit inside showPlatform() by mistake, which broke it twice over:
+// the boot never happened (so the installed app opened on Download), and
+// clicking the Instagram/TikTok sub-tab ran it late and threw you onto Shorts
+// mid-use. Top level, once, at the end of the script so showTab and paintHeader
+// are defined by the time it runs.
+(function(){
+  const want = (new URLSearchParams(location.search).get("tab") || "").toLowerCase();
+  if(want === "shorts" || want === "gallery") showTab(want);
+  else paintHeader("queue");
+})();
 
 </script>
 </body>
