@@ -1234,6 +1234,11 @@ const SPEC = [
   {k:"between_profiles", l:"Seconds between profiles", d:"600 = 10 min. Longer is much safer", t:"num", flag:"(app)"},
   {k:"between_tiktok", l:"Seconds between TikTok profiles", d:"own timer, so TikTok pacing can't stall Instagram. 600 = 10 min", t:"num", flag:"(app)"},
   {group:"TikTok (yt-dlp)"},
+  // Queue behaviour rather than a format option, but it belongs here: this is
+  // where "videos per profile" lives, which is the setting it changes the meaning
+  // of.
+  {k:"tiktok.chunk_all", l:"\"All\" a slice at a time", d:"while a profile is set to all, fetch 25 videos a turn, then send it to the back of the queue so the next profile gets a turn. Off = all means the whole profile in one go.", t:"bool", flag:"--max-downloads", dotted:true},
+  {k:"tiktok.chunk_size", l:"Videos a turn", d:"how many each turn fetches while the slice toggle above is on", t:"num", flag:"--max-downloads", dotted:true},
   {k:"tiktok.quality", l:"Video quality", d:"TikTok rung: 540, 720 or 1080. 0 = best available", t:"num", flag:"-f", dotted:true},
   {k:"tiktok.merge_container", l:"Merge into", d:"--merge-output-format", t:"str", flag:"--merge-output-format", dotted:true},
   {k:"tiktok.recode", l:"Re-encode to", d:"--recode-video, blank = never re-encode", t:"str", flag:"--recode-video", dotted:true},

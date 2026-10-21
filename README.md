@@ -324,6 +324,12 @@ account's own page and kept in the cache (`~/.cache/hardlywatching/avatars`);
 TikTok download fetches its own. Not in the profile folder on purpose — anything
 in there is scanned as gallery media and would show up as an extra post.
 
+**A profile set to "all" can be taken a slice at a time.** With *"All" a slice at
+a time* on (Settings → TikTok), a profile set to all fetches 25 videos and then
+goes to the back of the queue: the next profile gets a turn, and this one returns
+for another slice. A profile given an explicit number is unaffected, and a turn
+that fetches fewer than its allowance means the profile is finished.
+
 **One card per person.** An identical handle on Instagram and TikTok is folded
 into a single gallery card automatically, and any two accounts can be merged by
 hand — which is the burner/finsta case, where the handles differ. This is gallery

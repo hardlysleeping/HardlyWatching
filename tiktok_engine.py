@@ -71,6 +71,10 @@ class TikTokSettings:
     date_after: str = ""                 # --dateafter YYYYMMDD
     date_before: str = ""                # --datebefore YYYYMMDD
 
+    # -- how "all" behaves in the queue (see build_download_cmd)
+    chunk_all: bool = False              # all = a slice per turn, then requeue
+    chunk_size: int = 25                 # --max-downloads, when the above is on
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -211,6 +215,16 @@ def _base_download_cmd(handle: str, dest: Path, archive: Path, count: int,
 
     if count and count > 0:
         cmd += ['--playlist-end', str(count)]
+    elif s.chunk_all:
+        # "All" -- a slice at a time.
+        #
+        # --playlist-end would be the wrong flag for this. It means "the first N of
+        # the list", so a second turn would look at the same N, find every one of
+        # them already in the archive and download nothing: the profile would sit
+        # at the back of the queue accomplishing nothing, forever. --max-downloads
+        # counts videos actually fetched, so with the archive recording what came
+        # before, each turn carries on further down the list instead.
+        cmd += ['--max-downloads', str(max(1, int(s.chunk_size or 25)))]
     return cmd
 
 

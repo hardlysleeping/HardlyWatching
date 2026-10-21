@@ -5,6 +5,16 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **"All" can mean a slice at a time.** A TikTok profile set to *all* can now
+  fetch 25 videos a turn and then go to the back of the queue, so the next profile
+  gets a turn and this one comes round again instead of holding the queue until it
+  is finished. Settings → TikTok (yt-dlp) → *"All" a slice at a time*, with the
+  turn size beside it. Off by default, and it only changes what *all* means: a
+  profile given an explicit number still fetches that many and finishes. Each turn
+  picks up where the last one stopped rather than re-reading the same videos.
+
 ### Fixed
 
 - **The queue list was rebuilt twice on every poll, forever.** `paintPagedQueue`

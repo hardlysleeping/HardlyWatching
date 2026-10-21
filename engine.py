@@ -4545,6 +4545,15 @@ class Engine:
         # the browser and quietly ignore the session the app holds.
         if not ttset.cookies_file:
             ttset.cookies_file = str(self.settings.tiktok.get("cookies_file") or "")
+
+        # "All" can be made to mean "a slice per turn". Only when the profile is
+        # actually set to all: a profile given an explicit number already fetches
+        # that many and then finishes normally. `chunk` is this run's allowance --
+        # zero means the run is a whole profile in one go, as it always was.
+        chunk = 0
+        if count <= 0 and getattr(ttset, "chunk_all", False):
+            chunk = max(1, int(getattr(ttset, "chunk_size", 25) or 25))
+
         cmd = tt.build_download_cmd(job.username, target_dir, archive, count,
                                     settings=ttset)
         self._log(job, f"$ {' '.join(cmd)}")
@@ -4650,6 +4659,23 @@ class Engine:
             # not a success. Usually means the profile is private or empty.
             self._set(job, status="failed", finished_at=time.time(),
                       message="no videos downloaded")
+            return
+
+        if chunk and downloaded >= chunk:
+            # This turn used its whole allowance, so there is probably more to
+            # come. Rather than sitting here until the profile is finished, it
+            # goes to the BACK of the queue: the next profile gets a turn, and
+            # this one comes round again. The next turn picks up where this one
+            # stopped because yt-dlp's archive is what --max-downloads reads --
+            # nothing already fetched is fetched twice.
+            with self.lock:
+                if job.id in self.pending:
+                    self.pending.remove(job.id)
+                self.pending.append(job.id)
+            self._set(job, status="queued", finished_at=None, attempts=0,
+                      posts=files, total_files=files, total_bytes=total_bytes,
+                      error="", message=f"{downloaded} this turn — back of the queue")
+            self.save_state()
             return
 
         self._set(job, status="done", finished_at=time.time(),
