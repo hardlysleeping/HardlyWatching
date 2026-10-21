@@ -1470,8 +1470,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(get_engine().capture_tiktok_session(
                 str(body.get("browser") or "")))
 
+        if p == "/api/tiktok/sessions":
+            # The TikTok half of the Sessions panel: what the app holds, which of
+            # them the next download uses, and where a new one could come from.
+            return self._json({
+                "sessions": get_engine().tiktok_sessions(),
+                "state": get_engine().tiktok_session_state(),
+                "browsers": get_engine().tiktok_browser_sources(),
+            })
         if p == "/api/tiktok/session/forget":
-            return self._json(get_engine().forget_tiktok_session())
+            # No ref = the session in use, which is what the TikTok card's
+            # button sends.
+            return self._json(get_engine().forget_tiktok_session(
+                str(body.get("ref") or "")))
+        if p == "/api/tiktok/session/select":
+            return self._json(get_engine().set_tiktok_session(
+                str(body.get("ref") or "")))
+        if p == "/api/tiktok/session/rename":
+            return self._json(get_engine().rename_tiktok_session(
+                str(body.get("ref") or ""), str(body.get("label") or "")))
 
         if p == "/api/tiktok/cookies-from-browser":
             # Do not lowercase here: a Firefox-fork spec carries a profile PATH

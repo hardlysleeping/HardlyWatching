@@ -661,11 +661,12 @@
 
   <div class="composer" id="sessPanel" style="display:none">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <b style="font-size:14px">Instagram sessions</b>
-      <span class="hint">Pick which account downloads use.</span>
+      <b style="font-size:14px" id="sessTitle">Instagram sessions</b>
+      <span class="hint" id="sessHint">Pick which account downloads use.</span>
       <button class="small" id="refreshSess" style="margin-left:auto">Refresh</button>
       <button class="small" id="sessPanelClose">Close</button>
     </div>
+    <div id="sessIg">
     <div id="sessList" style="margin-top:11px"></div>
     <div style="margin-top:13px;border-top:1px solid var(--line);padding-top:12px">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -694,6 +695,28 @@
     <div class="hint" style="margin-top:11px">
       Note: if a session was created with an incomplete login it can look fine but fail
       with 401. Grabbing from your browser avoids that.
+    </div>
+    </div><!-- /sessIg -->
+
+    <!-- The TikTok half. It shows the same list-and-Use shape the Instagram
+         side has, because TikTok now keeps a copy of each login it takes rather
+         than a single slot that the next capture overwrote. -->
+    <div id="sessTt" style="display:none">
+      <div class="hint" id="sessTtState" style="margin-top:2px">checking…</div>
+      <div id="sessTtList" style="margin-top:11px"></div>
+      <div style="margin-top:13px;border-top:1px solid var(--line);padding-top:12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <b style="font-size:13.5px">Take a login from a browser</b>
+          <span class="hint">Keeps its own copy of it.</span>
+          <button class="small primary" id="sessTtGrab" style="margin-left:auto">Save a new session</button>
+        </div>
+        <div id="sessTtBrowsers" style="margin-top:10px"></div>
+      </div>
+      <div class="hint" style="margin-top:11px">
+        Each capture is kept as its own session, so you can hold one per account
+        and swap between them here. Private TikTok profiles need a session;
+        public ones download without one.
+      </div>
     </div>
   </div>
 
@@ -1000,7 +1023,10 @@ function renderTiktokSession(s){
   const login = s.login
     ? `${s.login} login cookie${s.login===1?"":"s"}`
     : "no login cookies — this will not unlock private profiles";
-  el.innerHTML = `Held by the app: <b>${login}</b> of ${s.cookies} cookies, `
+  // Named, when we know which one it is: with more than one saved session the
+  // card has to say which is in use, and the Sessions panel is where they swap.
+  const which = s.label && s.label !== "TikTok session" ? ` <b>${esc(s.label)}</b>` : "";
+  el.innerHTML = `Held by the app${which}: <b>${login}</b> of ${s.cookies} cookies, `
     + `saved ${esc(when)}. Downloads use this, not the browser.`;
 }
 
@@ -1056,6 +1082,131 @@ function renderSessions(sessions, active, ok, username){
   });
 }
 
+/* ---------- the TikTok half of the session panel ---------- */
+
+// Which platform's sessions this panel is showing.
+//
+// It was Instagram-only and opened the same list whichever tab you were on, so
+// on the TikTok tab you were offered Instagram accounts to switch between while
+// TikTok's own session had no list at all -- one slot, which the next capture
+// overwrote.
+function paintSessionPanel(){
+  const tt = activePlatform === "tiktok";
+  const title = $("sessTitle"), hint = $("sessHint");
+  if(title) title.textContent = tt ? "TikTok sessions" : "Instagram sessions";
+  if(hint) hint.textContent = tt
+    ? "Pick which login TikTok downloads use."
+    : "Pick which account downloads use.";
+  const ig = $("sessIg"), box = $("sessTt");
+  if(ig) ig.style.display = tt ? "none" : "";
+  if(box) box.style.display = tt ? "" : "none";
+  if(tt) loadTiktokSessions();
+}
+
+async function loadTiktokSessions(){
+  const r = await post("/api/tiktok/sessions", {});
+  renderTiktokSessions(r.sessions||[], r.state||{}, r.browsers||[]);
+}
+
+// The saved TikTok sessions, one row each, with the one downloads use marked.
+//
+// Rows are labelled by the browser the login came from, because TikTok's cookie
+// jar carries no user name: nothing here can work out which account a session
+// belongs to without asking the site. The ✎ is how two sessions taken from the
+// same browser stay tellable apart.
+function renderTiktokSessions(rows, state, browsers){
+  const el = $("sessTtList"), stateEl = $("sessTtState");
+  if(!el) return;
+  const short = (spec) => esc(String(spec||"").split(":").pop().split("/").pop());
+  if(stateEl){
+    if(!rows.length){
+      stateEl.innerHTML = state && state.browser
+        ? "Nothing saved yet — downloads read the browser each run "
+          + "(" + esc(state.browser_label || short(state.browser)) + "). Public profiles work without a session."
+        : "Nothing saved yet, and no browser login found. Public profiles work without one.";
+    } else {
+      const active = rows.find(r=>r.active);
+      stateEl.innerHTML = "Saved sessions: <b>" + rows.length + "</b>. Downloads use "
+        + "<b>" + esc(active ? active.label : "the browser") + "</b>.";
+    }
+  }
+  if(!rows.length){
+    el.innerHTML = '<div class="hint">No TikTok session saved yet.</div>';
+  } else {
+    el.innerHTML = rows.map(s=>{
+      const when = s.saved ? new Date(s.saved*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "";
+      const login = s.login
+        ? s.login + " login cookie" + (s.login===1?"":"s") + ", " + s.cookies + " cookies"
+        : s.cookies + " cookies, no login cookies — this one will not unlock private profiles";
+      const from = s.source ? " · from " + esc(s.source_label || short(s.source)) : "";
+      return `<div class="card" style="padding:10px 12px">
+        <div class="num-badge">${s.active?"✓":""}</div>
+        <div>
+          <div class="top"><span class="name">${esc(s.label)}</span>
+            ${s.active?'<span class="pill running">in use</span>':""}</div>
+          <div class="meta">${esc(login)}${when?" · saved "+esc(when):""}${from}</div>
+        </div>
+        <div class="actions">
+          <button class="small" data-usett="${esc(s.ref)}" ${s.active?"disabled":'title="Use this login for TikTok downloads"'}>Use</button>
+          <button class="small" data-renamett="${esc(s.ref)}" title="Name this session, for example after the account it is for">✎</button>
+          <button class="small danger" data-deltt="${esc(s.ref)}" title="Delete this saved session">✕</button>
+        </div>
+      </div>`;
+    }).join("");
+  }
+  const bel = $("sessTtBrowsers");
+  if(bel){
+    bel.innerHTML = browsers.length
+      ? browsers.map(b=>`<div class="card" style="padding:9px 12px">
+          <div class="num-badge"></div>
+          <div><div class="top"><span class="name">${esc(b.label || b.spec)}</span></div>
+            <div class="meta">signed in to TikTok in this browser profile</div></div>
+          <div class="actions"><button class="small" data-grabtt="${esc(b.spec)}">Save a copy</button></div>
+        </div>`).join("")
+      : '<div class="hint">No browser with a TikTok login found. Sign in to TikTok in Zen or Firefox to have one to copy.</div>';
+  }
+
+  const done = (msg) => { toast(msg); loadTiktokSessions(); tick(); };
+  el.querySelectorAll("[data-usett]").forEach(b=>b.onclick=async()=>{
+    const r = await post("/api/tiktok/session/select",{ref:b.dataset.usett});
+    if(!r.ok){ showErr(r.error||"Could not switch session"); return; }
+    done("TikTok downloads will use this session");
+  });
+  el.querySelectorAll("[data-renamett]").forEach(b=>b.onclick=async()=>{
+    const row = rows.find(r=>r.ref===b.dataset.renamett) || {};
+    const label = prompt("Name this session (for example the account it is for):", row.label||"");
+    if(label===null) return;
+    await post("/api/tiktok/session/rename",{ref:b.dataset.renamett, label});
+    done("Renamed");
+  });
+  el.querySelectorAll("[data-deltt]").forEach(b=>b.onclick=async()=>{
+    const row = rows.find(r=>r.ref===b.dataset.deltt) || {};
+    const msg = "Delete the saved TikTok session \u201c" + (row.label||b.dataset.deltt) + "\u201d?"
+      + (row.active ? " Downloads go back to reading the browser." : "");
+    if(!confirm(msg)) return;
+    const r = await post("/api/tiktok/session/forget",{ref:b.dataset.deltt});
+    if(!r.ok){ showErr(r.error||"Could not delete it"); return; }
+    done("Deleted");
+  });
+  if(bel) bel.querySelectorAll("[data-grabtt]").forEach(b=>b.onclick=async()=>{
+    b.disabled = true; const was = b.textContent; b.textContent = "Copying…";
+    const r = await post("/api/tiktok/session/capture",{browser:b.dataset.grabtt});
+    if(!r.ok){ b.disabled=false; b.textContent=was; showErr(r.error||"Could not copy that login"); return; }
+    done("Saved " + (r.captured||0) + " cookies as a new session");
+  });
+}
+
+// The panel's own button: take a copy from whichever browser has a login.
+$("sessTtGrab").onclick = async () => {
+  const b = $("sessTtGrab");
+  b.disabled = true; const was = b.textContent; b.textContent = "Copying…";
+  const r = await post("/api/tiktok/session/capture",{});
+  b.disabled = false; b.textContent = was;
+  if(!r.ok){ showErr(r.error||"No browser with a TikTok login was found"); return; }
+  toast("Saved " + (r.captured||0) + " cookies as a new session");
+  loadTiktokSessions(); tick();
+};
+
 function renderBrowsers(list){
   const el = $("browserList");
   if(!list.length){ el.innerHTML = '<div class="hint">No Firefox/Zen cookie stores found on this machine.</div>'; return; }
@@ -1088,7 +1239,7 @@ $("sessBtn").onclick = () => {
   const p = $("sessPanel");
   const show = p.style.display === "none";
   p.style.display = show ? "block" : "none";
-  if(show) loadSessions();
+  if(show){ loadSessions(); paintSessionPanel(); }
 };
 $("sessPanelClose").onclick = () => { $("sessPanel").style.display = "none"; };
 $("grabBtn").onclick = async () => {
@@ -3252,6 +3403,9 @@ function showPlatform(which){
   // Settings that only make sense for one platform (IG posts/stories/reels
   // vs TikTok yt-dlp options) should not be visible on the other tab.
   applySettingsPlatform(ig ? "ig" : "tiktok");
+  // The Sessions panel is per platform too, so an open one follows the tab
+  // instead of going on offering the other platform's accounts.
+  if($("sessPanel").style.display !== "none") paintSessionPanel();
 }
 $("subIg").onclick = () => showPlatform("ig");
 $("subTt").onclick = () => showPlatform("tt");

@@ -115,6 +115,12 @@ versioning is [SemVer](https://semver.org/).
   never disagree.
 
 ### Changed
+- **The Sessions panel follows the platform tab, and TikTok can hold more than one
+  login.** TikTok had a single session slot, so saving a second account silently
+  destroyed the first, and the panel opened the Instagram account list whichever tab
+  you were on. TikTok now keeps each captured login as its own session with
+  **Use** / **✎** / **✕** like the Instagram side: swap between accounts, name them,
+  and delete one without disturbing the session in use.
 - **The search box sits above the queue and finished lists.** It was at the bottom
   of the pager, so a long queue had to be scrolled past before you could type in
   it. The paging controls stay at the bottom; a search with no matches keeps its

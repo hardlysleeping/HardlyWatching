@@ -82,9 +82,10 @@ It is a separate tab in the header, and can be installed to a phone home screen.
 
 ![The shorts feed on a phone-sized screen](docs/shorts.png)
 
-**Sessions** — every saved Instagram login in one list, with the one in use marked.
-Switch accounts with one click, or grab a login out of your browser so you never
-type a password here.
+**Sessions** — every saved login for the platform you are on, in one list, with the
+one in use marked. Instagram's accounts and TikTok's logins are separate lists,
+because they are separate things: switch between them with one click, or grab a
+login out of your browser so you never type a password here.
 
 ![The sessions panel: three saved sessions with Use buttons, one marked in use, plus grab-from-browser and log-in options](docs/sessions-panel.png)
 
@@ -371,13 +372,15 @@ the process and putting it back at the front of its queue. It also works between
 profiles: during the pacing gap the button still offers Pause, and pressing it
 drops the rest of that gap and holds until you resume.
 
-**TikTok's session.** Private TikTok profiles need a login. **Save session from
-browser** takes it from a browser signed into TikTok and keeps the app's own copy
-in `tiktok-cookies.txt` (mode 0600), the way Instagram keeps its sessions -- so a
-download does not depend on that browser staying signed in or its profile
-directory staying put. The card reports how many login cookies are held and when
-they were saved; **Forget session** returns to reading the browser each run, which
-is the fallback for browsers whose cookies cannot be copied.
+**TikTok's session.** Private TikTok profiles need a login. **Save a new session**
+takes it from a browser signed into TikTok and keeps the app's own copy (mode
+0600), the way Instagram keeps its sessions -- so a download does not depend on
+that browser staying signed in or its profile directory staying put. Each capture
+is kept as its own session rather than replacing the last one, so you can hold one
+per account and swap between them in **Sessions** on the TikTok tab. The card
+reports how many login cookies the session in use holds and when it was saved;
+**Forget session** drops it and returns to reading the browser each run, which is
+the fallback for browsers whose cookies cannot be copied.
 
 **From the queue to a profile's files.** Clicking the picture on a queue card
 opens that profile's gallery straight away, and every card carries a **Gallery**
@@ -702,9 +705,10 @@ the other platform's rows reappear.
 Instaloader talks to Instagram through a saved login ("session"). This app manages
 those for you, so you never paste a password into it.
 
-Click **Sessions** to open the panel. Every saved login is listed with the account
-name, whether it still works, and when it was saved. The one currently in use is
-marked **in use**.
+Click **Sessions** to open the panel. It shows the platform you are on: Instagram's
+saved logins on the Instagram tab, TikTok's on the TikTok tab. Every saved login is
+listed with the account name where there is one, whether it still works, and when
+it was saved. The one currently in use is marked **in use**.
 
 ### Grabbing a login from your browser
 
@@ -745,6 +749,22 @@ the first one recovers. If Instagram has flagged an account for bot activity,
 using it right now" and "will not use it until I say so". The lock is this app's
 own brake: the login itself still works everywhere else, and deleting the session
 with **✕** still removes it.
+
+### TikTok sessions
+
+TikTok's half of the same panel: the logins the app holds, with the one downloads
+use marked, and the same **Use** / **✕** shape as the Instagram side plus **✎**.
+
+TikTok's cookies carry no user name, so nothing here can label a session after the
+account it belongs to. A new one is named after the browser its login came from
+(something like "Zen (Default)"); **✎** renames it, and naming them after the accounts is
+what makes the list readable.
+
+**Save a new session** copies a browser's TikTok login. Each capture becomes its
+own session instead of overwriting the previous one — sign in to the other account
+in the browser, press it again, and rename the result. Deleting a session you are
+not using leaves the active one alone; only the one in use falls back to reading
+the browser when it goes.
 
 ### Moving a session to another machine
 

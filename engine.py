@@ -468,6 +468,58 @@ def find_browser_sessions() -> list[dict]:
     return out
 
 
+def browser_name_for_spec(spec: str) -> str:
+    """A readable name for a cookie spec, judged from the profile path.
+
+    yt-dlp calls every Firefox-family browser "firefox", so the spec on its own
+    cannot say which one it is -- the profile path usually can, because the
+    flatpak app id or the profile folder carries the browser's name.
+    """
+    s = (spec or "").lower()
+    if not s:
+        return ""
+    for needle, name in (("zen_browser", "Zen"), ("zen/", "Zen"),
+                         ("librewolf", "LibreWolf"), ("waterfox", "Waterfox"),
+                         ("mullvad", "Mullvad"), ("firefox", "Firefox")):
+        if needle in s:
+            return name
+    return "Browser"
+
+
+def tiktok_source_label(spec: str) -> str:
+    """A readable name for where a login came from: "Zen (Default)".
+
+    The profile folder is kept because two profiles of one browser are two
+    different logins, and "(release)" and friends are noise in a label.
+    """
+    spec = str(spec or "").strip()
+    if not spec:
+        return ""
+    browser = browser_name_for_spec(spec)
+    profile = spec.split(":")[-1].rstrip("/").split("/")[-1]
+    profile = re.sub(r"\s*\([^)]*\)\s*$", "", profile).strip()
+    if not profile:
+        return browser or "Browser"
+    return f"{browser or 'Browser'} ({profile})"
+
+
+def tiktok_session_label(spec: str, taken: set[str] | None = None) -> str:
+    """Default label for a held TikTok session.
+
+    TikTok's cookie jar holds no user name, so nothing here can name a session
+    after the account it belongs to. It is labelled by where the login came
+    from, and the name can be changed in Sessions -- a list of sessions you
+    cannot tell apart is not one you can swap between.
+    """
+    base = browser_name_for_spec(spec) or "TikTok session"
+    taken = taken or set()
+    label, n = base, 2
+    while label in taken:
+        label = f"{base} {n}"
+        n += 1
+    return label
+
+
 def find_tiktok_browsers() -> list[str]:
     """yt-dlp cookie specs for browsers that have a TikTok cookie store.
 
@@ -3864,6 +3916,124 @@ class Engine:
         """Where the app keeps its own TikTok session."""
         return STATE_FILE.parent / "tiktok-cookies.txt"
 
+    def tiktok_session_files(self) -> list[Path]:
+        """Every TikTok session the app holds.
+
+        The first one keeps the plain `tiktok-cookies.txt` name, so an install
+        that already had one carries on working, and later ones are named
+        `tiktok-cookies-<slug>.txt`. Instagram has always kept several sessions
+        side by side; TikTok had a single slot, so signing in as anyone else
+        silently destroyed the login you had.
+        """
+        try:
+            files = [p for p in STATE_FILE.parent.glob("tiktok-cookies*.txt")
+                     if p.is_file()]
+        except OSError:
+            return []
+        # The plain name first, then name order, so the list does not reshuffle
+        # itself as sessions come and go.
+        files.sort(key=lambda p: (p.name != "tiktok-cookies.txt", p.name))
+        return files
+
+    def _tiktok_session_map(self, key: str) -> dict:
+        """A {file name: something} map out of settings, or an empty one."""
+        value = self.settings.tiktok.get(key)
+        return dict(value) if isinstance(value, dict) else {}
+
+    def _save_tiktok_session_map(self, key: str, value: dict) -> None:
+        with self.lock:
+            self.settings.tiktok[key] = value
+
+    def tiktok_sessions(self) -> list[dict]:
+        """The held TikTok sessions, one row each, with the one in use marked."""
+        import tiktok_engine as _tt
+        active = Path(str(self.settings.tiktok.get("cookies_file") or "")).name
+        labels = self._tiktok_session_map("session_labels")
+        sources = self._tiktok_session_map("session_sources")
+        rows = []
+        for f in self.tiktok_session_files():
+            try:
+                st = _tt.cookie_jar_state(str(f))
+            except Exception as e:
+                st = {"error": f"{type(e).__name__}: {e}"}
+            try:
+                size = f.stat().st_size
+            except OSError:
+                size = 0
+            source = str(sources.get(f.name) or "")
+            rows.append({
+                "source_label": tiktok_source_label(source),
+                # Ref is the file name: it is what the API takes back, and it
+                # resolves only against files we already know about.
+                "ref": f.name,
+                "label": str(labels.get(f.name)
+                             or tiktok_session_label(source) or f.name),
+                "source": source,
+                "active": f.name == active,
+                "cookies": st.get("cookies", 0),
+                "login": st.get("login", 0),
+                "saved": st.get("saved", 0),
+                "bytes": st.get("bytes", size),
+                "error": st.get("error", ""),
+            })
+        return rows
+
+    def _new_tiktok_session_path(self, spec: str) -> Path:
+        """A file name for a new session, named after where its login came from."""
+        slug = re.sub(r"[^a-z0-9]+", "-", browser_name_for_spec(spec).lower()).strip("-")
+        if slug in ("", "browser"):
+            slug = "session"
+        out = STATE_FILE.parent / f"tiktok-cookies-{slug}.txt"
+        n = 2
+        while out.exists():
+            out = STATE_FILE.parent / f"tiktok-cookies-{slug}-{n}.txt"
+            n += 1
+        return out
+
+    def _tiktok_session_path(self, ref: str) -> Path | None:
+        """Resolve a session ref to one of the files we actually hold.
+
+        Matched against the known files rather than joined onto a directory, so
+        a ref that arrives from the browser can never name something outside
+        the session folder.
+        """
+        name = Path(str(ref or "")).name
+        if not name:
+            return None
+        for f in self.tiktok_session_files():
+            if f.name == name:
+                return f
+        return None
+
+    def set_tiktok_session(self, ref: str) -> dict:
+        """Switch which saved TikTok session downloads use.
+
+        Takes effect from the next TikTok job: the path is read when the
+        download command is built, which is how the Instagram switch works too.
+        """
+        path = self._tiktok_session_path(ref)
+        if path is None:
+            return {"ok": False, "error": "No such saved TikTok session."}
+        with self.lock:
+            self.settings.tiktok["cookies_file"] = str(path)
+        self.save_state()
+        return {"ok": True, "ref": path.name, **self.tiktok_session_state()}
+
+    def rename_tiktok_session(self, ref: str, label: str) -> dict:
+        """Give a saved session a name. Empty puts the default back."""
+        path = self._tiktok_session_path(ref)
+        if path is None:
+            return {"ok": False, "error": "No such saved TikTok session."}
+        label = " ".join(str(label or "").split())[:40]
+        labels = self._tiktok_session_map("session_labels")
+        if label:
+            labels[path.name] = label
+        else:
+            labels.pop(path.name, None)
+        self._save_tiktok_session_map("session_labels", labels)
+        self.save_state()
+        return {"ok": True, "sessions": self.tiktok_sessions()}
+
     def tiktok_session_state(self) -> dict:
         """Whether TikTok has a session of its own, and what is in it."""
         import tiktok_engine as _tt
@@ -3873,7 +4043,23 @@ class Engine:
         # Say plainly which of the two the next download will use, because that
         # is the thing that was invisible before.
         st["using"] = "app" if st.get("held") else ("browser" if st["browser"] else "none")
+        # Which of the saved sessions it is. The path alone is hidden inside the
+        # config folder, so the panel names the file it is using.
+        st["ref"] = Path(str(self.settings.tiktok.get("cookies_file") or "")).name
+        labels = self._tiktok_session_map("session_labels")
+        sources = self._tiktok_session_map("session_sources")
+        st["label"] = str(labels.get(st["ref"])
+                          or tiktok_session_label(str(sources.get(st["ref"]) or ""))
+                          or st["ref"])
+        # Where that login came from, in words, so the panel does not have to
+        # show a profile directory path as if it were a name.
+        st["browser_label"] = tiktok_source_label(str(st.get("browser") or ""))
         return st
+
+    def tiktok_browser_sources(self) -> list[dict]:
+        """Browsers with a TikTok login, each with a name to show for it."""
+        return [{"spec": spec, "label": tiktok_source_label(spec)}
+                for spec in self.tiktok_browsers()]
 
     def capture_tiktok_session(self, browser: str = "") -> dict:
         """Copy a browser's TikTok login into a session the app keeps itself.
@@ -3901,28 +4087,73 @@ class Engine:
             return {"ok": False,
                     "error": "No browser with a TikTok login was found. Sign in to "
                              "TikTok in Firefox or Zen, then try again."}
+        # A second capture gets a file of its own rather than replacing the
+        # first one: keeping a login per account and swapping between them is
+        # the point. The first keeps the plain name, so an install that already
+        # had a session is unchanged.
         out = self.tiktok_cookie_file()
+        if out.is_file():
+            out = self._new_tiktok_session_path(spec)
         result = _tt.capture_cookies(spec, out)
         if not result.get("ok"):
             return result
+        labels = self._tiktok_session_map("session_labels")
+        sources = self._tiktok_session_map("session_sources")
+        labels.setdefault(out.name, tiktok_session_label(spec, set(labels.values())))
+        sources[out.name] = spec
         with self.lock:
             # Kept as the fallback for browsers whose cookies cannot be copied.
             self.settings.tiktok["cookies_from_browser"] = spec
             self.settings.tiktok["cookies_file"] = str(out)
+            self.settings.tiktok["session_labels"] = labels
+            self.settings.tiktok["session_sources"] = sources
         self.save_state()
         return {"ok": True, "captured": result.get("cookies"),
-                "login": result.get("login"), **self.tiktok_session_state()}
+                "login": result.get("login"), "ref": out.name,
+                **self.tiktok_session_state()}
 
-    def forget_tiktok_session(self) -> dict:
-        """Drop the held session, going back to reading the browser."""
+    def forget_tiktok_session(self, ref: str = "") -> dict:
+        """Delete a saved session, going back to reading the browser.
+
+        With no ref: the one downloads are using. Deleting a session that is not
+        in use deliberately leaves the active one alone -- throwing away a login
+        you are not using should not stop the queue.
+        """
+        targets: list[Path] = []
+        if ref:
+            found = self._tiktok_session_path(ref)
+            if found is None:
+                return {"ok": False, "error": "No such saved TikTok session.",
+                        **self.tiktok_session_state()}
+            targets = [found]
+        else:
+            active = str(self.settings.tiktok.get("cookies_file") or "")
+            if active:
+                targets = [p for p in [Path(active)] if p.is_file()]
+            else:
+                targets = self.tiktok_session_files()[:1]
+        if not targets:
+            return {"ok": True, **self.tiktok_session_state()}
+
+        names = {p.name for p in targets}
+        for p in targets:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        labels = self._tiktok_session_map("session_labels")
+        sources = self._tiktok_session_map("session_sources")
+        for n in names:
+            labels.pop(n, None)
+            sources.pop(n, None)
         with self.lock:
-            self.settings.tiktok["cookies_file"] = ""
+            if Path(str(self.settings.tiktok.get("cookies_file") or "")).name in names:
+                self.settings.tiktok["cookies_file"] = ""
+            self.settings.tiktok["session_labels"] = labels
+            self.settings.tiktok["session_sources"] = sources
         self.save_state()
-        try:
-            self.tiktok_cookie_file().unlink()
-        except OSError:
-            pass
-        return {"ok": True, **self.tiktok_session_state()}
+        return {"ok": True, "forgotten": sorted(names),
+                "sessions": self.tiktok_sessions(), **self.tiktok_session_state()}
 
     def set_tiktok_cookies_browser(self, browser: str) -> dict:
         """Set tiktok.cookies_from_browser. Empty string clears it.
