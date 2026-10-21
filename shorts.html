@@ -765,10 +765,36 @@ $("lessBtn").onclick = async () => {
 $("dlBtn").onclick = () => {
   const c = currentData();
   if(!c) return;
-  // Straight to the file; the browser handles the save dialog.
+  const name = String(c.path).split("/").pop();
+  // An <a download> click is not safe here. In a browser it opens the save
+  // sheet, but in a standalone PWA -- which is how this runs on a phone -- it
+  // navigates the window to the video file, and a standalone window has no back
+  // button, no tabs and no address bar. The app was gone and the only way out
+  // was to force-quit it.
+  //
+  // So: only hand it to the browser when the click cannot take the page away.
+  // `display-mode: standalone` is the reliable test on iOS, and the window is
+  // otherwise checked for a back button by whether it was opened by script.
+  const standalone = window.matchMedia("(display-mode: standalone)").matches
+                  || window.navigator.standalone === true;
+  if(standalone){
+    // Save by hand, into a new window: the window can be closed, so nothing is
+    // trapped, and iOS still offers its share/save sheet for the file.
+    const w = window.open(c.url, "_blank");
+    if(w){
+      toast("Opened in a new window — long-press to save, then close it");
+    }else{
+      toast("Saving — check Files");
+      const a = document.createElement("a");
+      a.href = c.url; a.download = name; a.target = "_blank";
+      a.rel = "noopener";
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    return;
+  }
   const a = document.createElement("a");
   a.href = c.url;
-  a.download = String(c.path).split("/").pop();
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();

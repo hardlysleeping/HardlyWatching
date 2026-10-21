@@ -298,6 +298,15 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Deleting.** The panel has **Delete videos** (removes the videos, keeps the
+still images — one picture instead of a 30-second clip of one picture) and
+**Delete both**. Each row in the findings list also has its own pair of buttons,
+so one clip you want gone does not need the batch. Deleted files go to the
+desktop trash, so a mistake is recoverable, and a 0-byte placeholder is left in
+each one's place because instaloader treats "the file exists" as "already
+downloaded" — without it the next run fetches the clip again and the deletion
+undoes itself.
+
 **From the command line**, the same work:
 
 ```sh

@@ -15,6 +15,9 @@ versioning is [SemVer](https://semver.org/).
   Stop button, since decoding a whole archive takes far longer than a request
   can wait, and it offers to write the images from what it already found rather
   than decoding everything twice.
+- **Deleting still videos**, per row or in bulk, keeping or removing the still
+  image. Files go to the desktop trash so a mistake is recoverable, and each
+  leaves a 0-byte placeholder so instaloader does not fetch it again.
 - **`tools/static_videos.py`**, which finds videos whose frames never change —
   the stories that are several seconds of one unchanging image. By default it
   only reports; `--convert` also writes a JPEG beside each clip, never replacing

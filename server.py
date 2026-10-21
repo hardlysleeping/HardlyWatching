@@ -233,6 +233,157 @@ def _static_write_from_findings() -> None:
             _static_job["done"] = True
 
 
+def _static_delete_videos(dry_run: bool = False) -> dict:
+    """Delete the video for every clip whose still image was written.
+
+    Only ever a clip with a written image, and only the video: the image stays,
+    and the sidecars stay so the post is not re-fetched. Nothing here guesses --
+    a clip with no image is left alone, even if it was flagged, because deleting
+    the video would then lose the content entirely.
+
+    Follows the trash flow's own rule for the same reason: a 0-byte placeholder
+    of the same name is left in the folder so instaloader's fast-update still
+    sees the post as downloaded. Without it the next scan of that profile would
+    pull the deleted video straight back down.
+    """
+    eng = get_engine()
+    with _static_lock:
+        rows = list(_static_job["found"])
+    doomed = [r for r in rows if r.get("image") and Path(r["path"]).is_file()]
+    freed = 0
+    removed, errors = [], []
+    for row in doomed:
+        fp = Path(row["path"])
+        try:
+            size = fp.stat().st_size
+        except OSError:
+            continue
+        if dry_run:
+            freed += size
+            removed.append(row["name"])
+            continue
+        try:
+            # Placeholder first, mirroring clear_trash: if the unlink then fails
+            # the post is still marked as having been fetched.
+            placeholder = fp.parent / fp.name
+            with open(placeholder, "wb"):
+                pass
+            fp.unlink()
+            freed += size
+            removed.append(row["name"])
+            with eng.lock:
+                eng.tombstones.append({
+                    "username": row["profile"], "name": row["name"],
+                    "at": time.time(),
+                    "platform": "tiktok" if "/tiktok/" in str(fp) else "instagram",
+                })
+        except OSError as e:
+            errors.append(f"{row['name']}: {e}")
+    if not dry_run and removed:
+        try:
+            eng.save_state()
+        except Exception:
+            pass
+        # The listing cache for those folders is stale now.
+        for folder in {str(Path(r["path"]).parent) for r in doomed}:
+            try:
+                _cache.drop(folder)
+                _media_cache_forget(Path(folder))
+            except Exception:
+                pass
+        _invalidate_scan()
+    return {"ok": True, "deleted": len(removed) if not dry_run else 0,
+            "would_delete": len(removed), "bytes": freed,
+            "names": removed[:50], "errors": errors[:20]}
+
+
+def _static_remove(paths: list[str], keep_image: bool) -> dict:
+    """Delete videos the scan found, leaving tombstones so they are not refetched.
+
+    Writes a 0-byte placeholder in place of each video first, exactly as the
+    trash flow does, because instaloader's fast-update treats 'the file exists'
+    as 'already downloaded'. Without it, the next run would fetch the clip again
+    and the deletion would silently undo itself.
+
+    `keep_image` decides the still: True removes only the video and keeps the
+    image beside it (the point of the feature -- you get one picture instead of a
+    30-second clip of one picture), False removes the image too.
+
+    Every path is checked before anything is removed: it must sit inside this
+    archive, must not be a symlink, and must be a video that the scan itself
+    reported. A path arriving from the browser is untrusted input, and this
+    deletes files.
+    """
+    eng = get_engine()
+    root = Path(eng.output_root).resolve()
+    with _static_lock:
+        known = {r["path"]: dict(r) for r in _static_job["found"]}
+    removed = kept_images = 0
+    errors: list[str] = []
+    freed = 0
+    for raw in paths:
+        try:
+            fp = Path(raw)
+            if str(fp) not in known:
+                errors.append(f"{fp.name}: not from the current scan")
+                continue
+            real = fp.resolve()
+            if not real.is_file():
+                continue
+            # Must be inside the archive, and not a symlink pointing elsewhere.
+            if root not in real.parents or fp.is_symlink():
+                errors.append(f"{fp.name}: outside the archive, skipped")
+                continue
+            profile_dir = real.parent
+            size = real.stat().st_size
+            # Record the tombstone BEFORE removing anything, so a failure part-way
+            # still leaves the post protected from a re-download.
+            with _static_lock:
+                eng.tombstones.append({
+                    "username": profile_dir.name, "name": real.name,
+                    "at": time.time(),
+                    "platform": "tiktok" if profile_dir.parent.name == "tiktok"
+                                else "instagram",
+                })
+                if len(eng.tombstones) > 5000:
+                    del eng.tombstones[:-5000]
+            import engine as _eng_mod
+            # The placeholder is written AFTER the trash call, not before. It has
+            # to be: the placeholder IS this path, so writing it first just meant
+            # the trash took it away again and the video came back on the next
+            # download run. Verified the hard way -- the file was gone entirely
+            # with the tombstone recorded, which is the one state that must not
+            # happen.
+            for sib in profile_dir.glob(f"{real.stem}.*"):
+                # Sidecars travel with their video, as in the trash flow.
+                if sib.is_file() and not sib.is_symlink() and sib.suffix in (".json", ".txt", ".xz"):
+                    _eng_mod._to_desktop_trash(sib)
+                elif (not keep_image and sib.is_file() and not sib.is_symlink()
+                      and sib.name.startswith(real.stem + "_still")):
+                    _eng_mod._to_desktop_trash(sib)
+            _eng_mod._to_desktop_trash(real)
+            # Re-create the 0-byte placeholder instaloader's fast-update checks:
+            # it treats 'the file exists' as 'already downloaded', so without this
+            # the clip is fetched again and the deletion undoes itself.
+            try:
+                if not real.exists():
+                    real.parent.mkdir(parents=True, exist_ok=True)
+                    real.write_bytes(b"")
+            except OSError as e:
+                errors.append(f"{fp.name}: removed but placeholder failed ({e})")
+            removed += 1
+            freed += size
+            if keep_image:
+                kept_images += 1
+        except OSError as e:
+            errors.append(f"{Path(raw).name}: {e}")
+    if removed:
+        eng.save_state()
+        _media_cache_forget(root)
+    return {"ok": True, "removed": removed, "images_kept": kept_images,
+            "bytes": freed, "errors": errors}
+
+
 def static_status() -> dict:
     """Snapshot of the static-video scan, for the UI to poll."""
     with _static_lock:
@@ -585,6 +736,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_file(HERE / "shorts.html")
         if p == "/shorts.webmanifest":
             return self._serve_file(HERE / "shorts.webmanifest")
+        if p == "/app.webmanifest":
+            # The maniest the installed phone app uses. It opens / and not
+            # /shorts: the standalone /shorts page has no tabs, so there was no
+            # way back out of it and nothing to swap to. Opening the app gives
+            # Shorts as a tab like Gallery, which is what was asked for.
+            return self._serve_file(HERE / "app.webmanifest")
         if p == "/api/autostart":
             # Read-only: whether the service starts itself at login.
             return self._json(autostart_state())
@@ -1252,6 +1409,29 @@ class Handler(BaseHTTPRequestHandler):
                              daemon=True, name="static-scan").start()
             return self._json({"ok": True, "scope": scope, "write": write,
                                "only_write": only_write})
+
+        if p == "/api/static/delete":
+            # Deleting is the one irreversible step, so it asks for a preview
+            # first unless the caller says it has already seen one.
+            dry = bool(body.get("preview"))
+            res = _static_delete_videos(dry_run=dry)
+            return self._json(res)
+
+        if p == "/api/static/remove":
+            # Delete the videos the scan found. Explicit permission gates the UI
+            # side; here the guard is that every path must be one this scan
+            # reported, inside our own archive.
+            paths = body.get("paths") or []
+            if not isinstance(paths, list) or not paths:
+                return self._json({"ok": False, "error": "no paths"})
+            if len(paths) > 2000:
+                return self._json({"ok": False, "error": "too many at once"})
+            keep = bool(body.get("keep_image"))
+            threading.Thread(
+                target=lambda: _static_remove([str(x) for x in paths], keep),
+                daemon=True, name="static-remove").start()
+            return self._json({"ok": True, "count": len(paths),
+                               "keep_image": keep})
 
         if p == "/api/static/cancel":
             with _static_lock:

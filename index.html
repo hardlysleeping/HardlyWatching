@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HardlyWatching</title>
+<!-- Installed phone app: opens the whole app, not the standalone /shorts page,
+     so Shorts is a tab you can swap away from and the menu is always there. -->
+<link rel="manifest" href="/app.webmanifest">
+<meta name="theme-color" content="#08080c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="HardlyWatching">
 <style>
   :root {
     --bg:#0b0d12; --panel:#14171f; --panel-2:#1b1f2a; --panel-3:#20242f;
@@ -2965,7 +2973,16 @@ function showPlatform(which){
     }
   }
   // Keep the header consistent with the tab + platform in one place.
-  paintHeader("queue");
+  // An installed phone app opens /?tab=shorts so it lands on Shorts, while still
+// being the whole app: the tabs and the menu are there, so leaving Shorts is a
+// tap on Gallery or Download rather than reaching for a back button that a
+// standalone window does not have. Any other ?tab= value is honoured the same
+// way, and anything unrecognised falls through to Download.
+(function(){
+  const want = (new URLSearchParams(location.search).get("tab") || "").toLowerCase();
+  if(want === "shorts" || want === "gallery") showTab(want);
+  else paintHeader("queue");
+})();
   // The queue below the paste box belongs to the selected platform, so it has
   // to be redrawn immediately rather than waiting for the next poll.
   if(lastQueueRender) render(lastQueueRender);
@@ -3972,6 +3989,8 @@ function openStaticPanel(){
       <button class="small" id="staticStories">Scan stories</button>
       <button class="small" id="staticAll">Scan all videos</button>
       <button class="small" id="staticWrite" style="display:none">Write still images</button>
+      <button class="small" id="staticDelVid" style="display:none">Delete videos</button>
+      <button class="small danger" id="staticDelBoth" style="display:none">Delete both</button>
       <button class="small danger" id="staticStop" style="display:none">Stop</button>
       <button class="small" id="staticClose">Close</button>
     </div>
@@ -3981,8 +4000,35 @@ function openStaticPanel(){
   $("staticStories").onclick = () => startStaticScan("stories");
   $("staticAll").onclick = () => startStaticScan("all");
   $("staticWrite").onclick = () => writeStaticImages();
+  $("staticDelVid").onclick = () => removeAllStatic(true);
+  $("staticDelBoth").onclick = () => removeAllStatic(false);
   $("staticStop").onclick = () => post("/api/static/cancel", {});
   refreshStatic();
+}
+
+async function removeStatic(paths, keepImage){
+  // keepImage: leave the still beside the video (one picture instead of a
+  // 30-second clip of one picture). Otherwise the image goes too.
+  const p = paths.length;
+  const what = keepImage
+    ? `Delete ${p} video${p===1?"":"s"} and keep the still image${p===1?"":"s"}?`
+    : `Delete ${p} video${p===1?"":"s"} AND the still image${p===1?"":"s"}?`;
+  if(!confirm(what + "\n\nA 0-byte placeholder is left behind so the post is "
+    + "not downloaded again. The files go to your desktop trash.")) return;
+  const r = await post("/api/static/remove", {paths, keep_image: keepImage});
+  if(!r.ok){ toast(r.error || "Could not delete"); return; }
+  toast(`Removing ${p}…`);
+  // Drop them from the list right away so the panel does not offer to delete
+  // something that is already gone.
+  setTimeout(refreshStatic, 1500);
+  setTimeout(refreshStatic, 4000);
+}
+
+async function removeAllStatic(keepImage){
+  const s = await (await fetch("/api/static")).json();
+  const paths = (s.found || []).map(r => r.path);
+  if(!paths.length){ toast("Nothing to delete"); return; }
+  removeStatic(paths, keepImage);
 }
 
 async function startStaticScan(scope){
@@ -4025,6 +4071,11 @@ async function refreshStatic(){
   // writing pass re-uses the findings rather than rescanning.
   $("staticWrite").style.display =
     (!running && s.found_count && !s.images) ? "" : "none";
+  // Deleting is offered whenever there is something found: it is the whole point
+  // of the scan, so it should not wait on the images having been written.
+  const canDelete = !running && s.found_count;
+  $("staticDelVid").style.display = canDelete ? "" : "none";
+  $("staticDelBoth").style.display = canDelete ? "" : "none";
 
   if(running){
     const pct = s.total ? Math.round(s.checked / s.total * 100) : 0;
@@ -4038,12 +4089,26 @@ async function refreshStatic(){
     note.textContent = `${s.found_count} still video${s.found_count===1?"":"s"}`
       + (s.bytes ? ` · ${fmtBytes(s.bytes)}` : "")
       + (s.images ? ` · ${s.images} image${s.images===1?"":"s"} written` : "");
-    const list = (s.found || []).slice(-12).map(r => {
-      const nm = r.image ? ` → ${r.image.split("/").pop()}` : "";
-      return `<div>${esc(r.profile)}/${esc(r.name)} <span class="hint">`
-        + `${r.seconds}s, diff ${r.mean_diff}</span>${esc(nm)}</div>`;
+    const rows = (s.found || []);
+    const list = rows.slice(-12).map(r => {
+      const nm = r.image ? ` · ${r.image.split("/").pop()}` : "";
+      // Each row can go on its own: one clip you want gone should not require
+      // deleting the batch.
+      return `<div style="display:flex;align-items:center;gap:8px">`
+        + `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">`
+        + `${esc(r.profile)}/${esc(r.name)}</span>`
+        + `<span class="hint">${r.seconds}s · ${fmtBytes(r.bytes)}</span>`
+        + `<button class="small" data-del="${esc(r.path)}">Delete video</button>`
+        + `<button class="small danger" data-delboth="${esc(r.path)}">Delete both</button>`
+        + `</div>`;
     }).join("");
     body.innerHTML = list || "Nothing found.";
+    body.querySelectorAll("[data-del]").forEach(b => {
+      b.onclick = () => removeStatic([b.dataset.del], true);
+    });
+    body.querySelectorAll("[data-delboth]").forEach(b => {
+      b.onclick = () => removeStatic([b.dataset.delboth], false);
+    });
     if(s.phase === "done") stopStaticPoll();
   } else {
     note.textContent = "Not scanned yet. Stories is quick; every video takes a while.";
