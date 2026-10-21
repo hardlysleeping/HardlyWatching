@@ -257,7 +257,7 @@ def _diagnose_file(f: Path, username: str) -> dict:
     return {"valid": True, "problem": ""}
 
 
-def session_diagnosis(active: str | None = None) -> dict:
+def session_diagnosis(active: str | None = None, locked=None) -> dict:
     """Inspect instaloader sessions without network access.
 
     `active` selects which session to treat as current (by username). When
@@ -266,8 +266,16 @@ def session_diagnosis(active: str | None = None) -> dict:
     A session file can exist yet be useless: instaloader writes one after a
     login that Instagram accepted but never issued a sessionid for (an
     unfinished checkpoint), which then fails every request with 401.
+
+    `locked` is the set of usernames the user has locked out (a flagged
+    account cooling off). A locked session is never auto-chosen and never
+    reported as usable, so the account cannot be put back to work by
+    restarting the app -- only by unlocking it.
     """
+    locked_set = {str(u).lower() for u in (locked or []) if u}
     sessions = list_sessions()
+    for s in sessions:
+        s["locked"] = s["username"].lower() in locked_set
     if not sessions:
         return {"present": False, "username": None, "valid": False,
                 "problem": "No instaloader session found. Log in with the button above.",
@@ -277,17 +285,26 @@ def session_diagnosis(active: str | None = None) -> dict:
     if active:
         chosen = next((s for s in sessions if s["username"] == active), None)
     if chosen is None:
-        chosen = next((s for s in sessions if s["valid"]), sessions[0])
+        # Prefer a valid unlocked session; failing that, the best unlocked one,
+        # so an incomplete login is reported as such rather than hidden behind a
+        # locked account. Only when every session is locked do we report a lock.
+        unlocked = [s for s in sessions if not s["locked"]]
+        chosen = next((s for s in unlocked if s["valid"]), None)
+        if chosen is None:
+            chosen = unlocked[0] if unlocked else sessions[0]
 
     problem = chosen["problem"]
-    if not chosen["valid"]:
+    if chosen["locked"]:
+        problem = (f"Locked for a cooldown: {chosen['username']} is not used for "
+                   f"downloads. Unlock it in Sessions to use it again.")
+    elif not chosen["valid"]:
         problem = (f"Login for {chosen['username']} is incomplete — Instagram issued no "
                    f"session token. Log in again with the button above.")
 
     return {
         "present": True,
         "username": chosen["username"],
-        "valid": chosen["valid"],
+        "valid": chosen["valid"] and not chosen["locked"],
         "problem": problem,
         "sessions": sessions,
     }
@@ -2501,6 +2518,10 @@ class Engine:
         self.stop_requested = False
         self.settings = Settings()
         self.active_session: str | None = None  # chosen instaloader session
+        # Sessions the user has locked out (a flagged account cooling off).
+        # Persisted, so a restart cannot quietly put that account back to work;
+        # only an explicit unlock does.
+        self.locked_sessions: list[str] = []
         self._proc: dict[str, subprocess.Popen | None] = {"instagram": None,
                                                           "tiktok": None}
         # Wall-clock time before which NO request may be made. Persisted, so
@@ -2604,6 +2625,7 @@ class Engine:
         try:
             self.settings = Settings.from_dict(d.get("settings", {}))
             self.active_session = d.get("active_session") or None
+            self.locked_sessions = [str(u) for u in (d.get("locked_sessions") or []) if u]
             self.cooldown_until = float(d.get("cooldown_until") or 0.0)
             self.consecutive_limits = int(d.get("consecutive_limits") or 0)
             if d.get("limit_paused"):
@@ -2652,6 +2674,7 @@ class Engine:
                 data = {
                     "settings": self.settings.to_dict(),
                     "active_session": self.active_session,
+                    "locked_sessions": list(self.locked_sessions),
                     "cooldown_until": self.cooldown_until,
                     "consecutive_limits": self.consecutive_limits,
                     "limit_paused": self._limit_paused,
@@ -3490,14 +3513,45 @@ class Engine:
     # ---------- snapshot ----------
 
     def session_username(self) -> str | None:
-        d = session_diagnosis(self.active_session)
+        d = session_diagnosis(self.active_session, self.locked_sessions)
         return d["username"] if d["valid"] else None
 
     def session_info(self) -> dict:
-        return session_diagnosis(self.active_session)
+        return session_diagnosis(self.active_session, self.locked_sessions)
 
     def list_sessions(self) -> list[dict]:
-        return list_sessions()
+        locked = {u.lower() for u in self.locked_sessions}
+        return [{**s, "locked": s["username"].lower() in locked}
+                for s in list_sessions()]
+
+    def lock_session(self, username: str) -> bool:
+        """Lock a session out of downloads until it is explicitly unlocked.
+
+        Persisted, so restarting the app does not put a flagged account back to
+        work. Locking the session in use drops it as the active one, so the
+        engine falls back to another usable session rather than stalling.
+        """
+        safe = clean_profile_name(username)
+        if not safe:
+            return False
+        with self.lock:
+            if safe.lower() not in {u.lower() for u in self.locked_sessions}:
+                self.locked_sessions.append(safe)
+            if (self.active_session or "").lower() == safe.lower():
+                self.active_session = None
+        self.save_state()
+        return True
+
+    def unlock_session(self, username: str) -> bool:
+        """Undo `lock_session`. The account is usable again from the next job."""
+        safe = clean_profile_name(username)
+        if not safe:
+            return False
+        with self.lock:
+            self.locked_sessions = [u for u in self.locked_sessions
+                                    if u.lower() != safe.lower()]
+        self.save_state()
+        return True
 
     def browser_sessions(self) -> list[dict]:
         """Instagram logins found in installed browsers (for the Grab panel)."""
@@ -3550,7 +3604,10 @@ class Engine:
 
         if res.get("ok"):
             with self.lock:
-                self.active_session = res["username"]
+                # A locked account is not auto-selected just because it was
+                # freshly grabbed: the lock is the point.
+                if res["username"].lower() not in {u.lower() for u in self.locked_sessions}:
+                    self.active_session = res["username"]
                 # a fresh session clears any stale auth cooldown
                 self.consecutive_limits = 0
             self.save_state()
@@ -3559,6 +3616,8 @@ class Engine:
 
     def set_session(self, username: str) -> bool:
         """Switch the instaloader session used for all downloads."""
+        if username.lower() in {u.lower() for u in self.locked_sessions}:
+            return False  # locked out; unlock it in Sessions first
         names = {s["username"] for s in list_sessions()}
         if username not in names:
             return False
@@ -3751,6 +3810,7 @@ class Engine:
             "session_problem": sess["problem"],
             "sessions": sess["sessions"],
             "active_session": self.active_session,
+            "locked_sessions": list(self.locked_sessions),
             "settings": self.settings.to_dict(),
             "cooldown_remaining": self.cooldown_remaining(),
             # Auto-check state, so the UI can show "last checked" and "next in"

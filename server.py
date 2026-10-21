@@ -1587,6 +1587,12 @@ class Handler(BaseHTTPRequestHandler):
             ok = get_engine().forget_session(str(body.get("username") or ""))
             return self._json({"ok": ok})
 
+        if p == "/api/session/lock":
+            return self._json({"ok": get_engine().lock_session(str(body.get("username") or ""))})
+
+        if p == "/api/session/unlock":
+            return self._json({"ok": get_engine().unlock_session(str(body.get("username") or ""))})
+
         if p == "/api/session/browsers":
             return self._json({"browsers": get_engine().browser_sessions()})
 

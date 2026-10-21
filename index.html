@@ -936,19 +936,28 @@ function renderSessions(sessions, active, ok, username){
   if(!sessions.length){ el.innerHTML = '<div class="hint">No instaloader sessions yet. Grab one from your browser below.</div>'; return; }
   el.innerHTML = sessions.map(s=>{
     const isActive = ok && s.username===username;
-    const badge = s.valid
-      ? '<span class="pill done">ready</span>'
-      : '<span class="pill failed" title="'+esc(s.problem||"")+'">incomplete</span>';
+    const isLocked = !!s.locked;
+    const badge = isLocked
+      ? '<span class="pill failed" title="Not used for downloads until you unlock it">locked</span>'
+      : s.valid
+        ? '<span class="pill done">ready</span>'
+        : '<span class="pill failed" title="'+esc(s.problem||"")+'">incomplete</span>';
     const when = s.mtime ? new Date(s.mtime*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "";
+    const meta = isLocked
+      ? "locked — not used for downloads. Unlock to use it again."
+      : esc(s.problem||"session ok");
     return `<div class="card" style="padding:10px 12px">
       <div class="num-badge">${isActive?"✓":""}</div>
       <div>
         <div class="top"><span class="name">${esc(s.username)}</span>${badge}
           ${isActive?'<span class="pill running">in use</span>':""}</div>
-        <div class="meta">${esc(s.problem||"session ok")}${when?" · saved "+esc(when):""}</div>
+        <div class="meta">${meta}${when?" · saved "+esc(when):""}</div>
       </div>
       <div class="actions">
-        <button class="small" data-usesess="${esc(s.username)}" ${isActive?"disabled":""}>Use</button>
+        <button class="small" data-usesess="${esc(s.username)}" ${(isActive||isLocked)?"disabled":"title=\"Use this account for downloads\""}>Use</button>
+        ${isLocked
+          ? `<button class="small" data-unlocksess="${esc(s.username)}" title="Allow this account to be used again">Unlock</button>`
+          : `<button class="small" data-locksess="${esc(s.username)}" title="Stop using this account for downloads (stays locked across restarts)">Lock</button>`}
         <button class="small danger" data-delsess="${esc(s.username)}" title="Delete this session file">✕</button>
       </div>
     </div>`;
@@ -956,6 +965,16 @@ function renderSessions(sessions, active, ok, username){
   el.querySelectorAll("[data-usesess]").forEach(b=>b.onclick=async()=>{
     await post("/api/session/select",{username:b.dataset.usesess});
     toast("Switched to "+b.dataset.usesess); loadSessions(); tick();
+  });
+  el.querySelectorAll("[data-locksess]").forEach(b=>b.onclick=async()=>{
+    const u = b.dataset.locksess;
+    await post("/api/session/lock",{username:u});
+    toast("Locked "+u+" — not used again until you unlock it"); loadSessions(); tick();
+  });
+  el.querySelectorAll("[data-unlocksess]").forEach(b=>b.onclick=async()=>{
+    const u = b.dataset.unlocksess;
+    await post("/api/session/unlock",{username:u});
+    toast("Unlocked "+u); loadSessions(); tick();
   });
   el.querySelectorAll("[data-delsess]").forEach(b=>b.onclick=async()=>{
     if(!confirm("Delete the saved session for "+b.dataset.delsess+"?")) return;
