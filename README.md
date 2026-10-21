@@ -298,6 +298,12 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Raising a whole list at once.** On the TikTok tab, **+5 all** in the Finished
+header adds 5 to every finished profile's grab-count and re-queues them, so a
+list sitting at "grab newest 5" becomes "grab newest 10" without a click per
+card. Profiles already set to grab everything are skipped, and none that are
+mid-download are touched.
+
 **Deleting.** The panel has **Delete videos** (removes the videos, keeps the
 still images — one picture instead of a 30-second clip of one picture) and
 **Delete both**. Each row in the findings list also has its own pair of buttons,

@@ -17,6 +17,11 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **"+5 all" on the Finished list** (TikTok tab), which raises every finished
+  TikTok profile's grab-count by 5 and puts them back in the queue in one go.
+  Profiles sit at the same low count by default, so raising them one card at a
+  time is hundreds of clicks for a single intention. A profile already asking for
+  its whole archive is left alone, and nothing mid-download is ever disturbed.
 - **A 🖼 Still videos button in the Gallery**, which finds the stories that are
   one unchanging image held for their whole length and can write a still image
   beside each one. Scanning runs as a background job with live progress and a

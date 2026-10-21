@@ -873,7 +873,9 @@ https://www.instagram.com/a.third.profile/"></textarea>
         <div id="doneSection" style="display:none">
           <div class="section-head"><h2>Finished</h2>
             <span class="hint" id="doneHint"></span>
-            <button class="small" id="clearFinishedBtn" style="margin-left:auto">Clear</button></div>
+            <button class="small" id="ttAllPlus" style="margin-left:auto;display:none"
+              title="Grab 5 more videos from every finished TikTok profile">+5 all</button>
+            <button class="small" id="clearFinishedBtn">Clear</button></div>
           <div id="doneList" class="list"></div>
           <div id="donePager" class="pager" style="display:none"></div>
         </div>
@@ -1925,6 +1927,15 @@ function render(st){
 
   // "Finished" section (right column)
   const doneSec = $("doneSection");
+  // "+5 all" belongs to the TikTok tab: it raises TikTok grab-counts, and a
+  // finished Instagram profile has no such count to raise.
+  const allPlus = $("ttAllPlus");
+  if(allPlus){
+    const tiktokDone = finished.some(j => (j.platform || "instagram") === "tiktok");
+    allPlus.style.display = (tt && tiktokDone) ? "" : "none";
+    allPlus.textContent = "+5 all";
+    allPlus.disabled = false;
+  }
   if(finished.length){
     doneSec.style.display = "block";
     paintPaged("done", finished, $("doneHint"), "done");
@@ -2723,6 +2734,8 @@ $("clearBtn").onclick = async () => {
   const r = await post("/api/clear-finished",{});
   toast(`Cleared ${r.removed} entries`); tick();
 };
+$("ttAllPlus").onclick = ttRaiseAll;
+
 $("clearFinishedBtn").onclick = async () => {
   const r = await post("/api/clear-finished",{});
   toast(`Cleared ${r.removed} entries`); tick();
@@ -4029,6 +4042,30 @@ async function removeAllStatic(keepImage){
   const paths = (s.found || []).map(r => r.path);
   if(!paths.length){ toast("Nothing to delete"); return; }
   removeStatic(paths, keepImage);
+}
+
+// "+5 all" on the Finished list: raise every finished TikTok profile by 5 and
+// put them back in the queue. They sit at the same low count by default, so
+// doing it one card at a time is hundreds of clicks for one intention.
+async function ttRaiseAll(){
+  const btn = $("ttAllPlus");
+  const n = (listData.done || []).filter(j =>
+    (j.platform || "instagram") === "tiktok").length;
+  if(!confirm(`Grab 5 more videos from every finished TikTok profile?\n\n`
+    + `This re-queues them and downloads the extra videos. Anything already `
+    + `saved is kept, so only the new ones are fetched.`)) return;
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "…";
+  let r;
+  try { r = await post("/api/tiktok/more_all", {add: 5, scope: "finished"}); }
+  catch(e){ r = {ok: false, error: "request failed"}; }
+  btn.disabled = false;
+  btn.textContent = was;
+  if(!r.ok){ toast(r.error || "Could not raise the counts"); return; }
+  toast(`+5 for ${r.changed} profile${r.changed===1?"":"s"}`
+    + (r.already_at_total ? ` · ${r.already_at_total} already had everything` : ""));
+  refresh();
 }
 
 async function startStaticScan(scope){

@@ -384,6 +384,49 @@ def _static_remove(paths: list[str], keep_image: bool) -> dict:
             "bytes": freed, "errors": errors}
 
 
+def _tt_raise_all(eng, step: int, scope: str = "finished") -> dict:
+    """Raise the grab-count of every finished TikTok profile by `step`.
+
+    One lock and one save for the whole batch, so the list cannot end up showing
+    some profiles raised and others not after a partial apply. A profile already
+    asking for its whole archive is left alone rather than queued for nothing.
+
+    Anything already downloaded is kept: yt-dlp's archive file records what was
+    fetched, so going 5 -> 10 pulls five more, not ten again.
+    """
+    touched = revived = at_total = 0
+    with eng.lock:
+        for job in eng.jobs.values():
+            if getattr(job, "platform", "") != "tiktok":
+                continue
+            if scope == "finished" and job.status not in (
+                    "done", "failed", "cancelled", "skipped"):
+                continue
+            current = int(getattr(job, "tiktok_count", 0) or 0)
+            total = int(getattr(job, "tiktok_total", 0) or 0)
+            new_count = (current or 0) + step
+            if total and new_count > total:
+                new_count = total        # more than exists simply means all of it
+            if new_count == current:
+                at_total += 1
+                continue
+            job.tiktok_count = new_count
+            if job.status in ("done", "failed", "cancelled", "skipped"):
+                job.status = "queued"
+                job.finished_at = None
+                job.error = ""
+                job.message = "queued for more videos"
+                job.fatal = False
+                revived += 1
+                if job.id in eng.pending:
+                    eng.pending.remove(job.id)
+                eng.pending.insert(0, job.id)
+            touched += 1
+    eng.save_state()
+    return {"ok": True, "changed": touched, "revived": revived,
+            "already_at_total": at_total, "add": step}
+
+
 def static_status() -> dict:
     """Snapshot of the static-video scan, for the UI to poll."""
     with _static_lock:
@@ -1213,6 +1256,19 @@ class Handler(BaseHTTPRequestHandler):
             eng.save_state()
             return self._json({"ok": True, "count": new_count, "total": job.tiktok_total,
                                "revived": revived, "username": job.username})
+
+        if p == "/api/tiktok/more_all":
+            # The same raise as one card's +5, applied to every finished TikTok
+            # profile at once. 325 of them sit at "grab newest 5", so bumping each
+            # by hand is 325 clicks for one intention.
+            step = abs(int(body.get("add") or 5))
+            scope = str(body.get("scope") or "finished")
+            if scope not in ("finished", "all"):
+                # Strict on purpose: any other value would fall through to "no
+                # status filter" and re-queue profiles that are mid-download.
+                return self._json({"ok": False, "error": "unknown scope"})
+            result = _tt_raise_all(get_engine(), step, scope)
+            return self._json(result)
 
         if p == "/api/shorts/feed":
             # Newest-first scan of what is actually on disk, synced into the
