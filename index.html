@@ -2309,6 +2309,12 @@ function cardHtml(j, pos, qpos){
       btns.push(`<button class="icon" data-down="${j.id}" title="Move down one">↓</button>`);
       btns.push(`<button class="icon" data-bottom="${j.id}" title="Move to the back (run last)">⤓</button>`);
     }
+    // Straight to this profile's media, without going via the gallery's profile
+    // list. Offered on every card on purpose: a TikTok entry has no picture to
+    // click, so the button is the only route for those.
+    btns.push(`<button class="small" data-galprofile="${esc(j.username)}"
+      data-platform="${esc(j.platform||"instagram")}"
+      title="Open ${esc(j.username)}'s gallery — the files already downloaded">Gallery</button>`);
     btns.push(`<button class="small" data-open="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}" title="Open the download folder">Open</button>`);
 
     // Secondary actions live behind one menu so the row stays readable.
@@ -2369,7 +2375,8 @@ function cardHtml(j, pos, qpos){
     const moreMenu = `<div class="menu" data-menu="${j.id}" style="display:none">${more.join("")}</div>`;
 
     return `<div class="card ${esc(j.status)}">
-      <div class="num-badge" style="gap:6px;display:flex;flex-direction:column;align-items:center">
+      <div class="num-badge" style="gap:6px;display:flex;flex-direction:column;align-items:center"
+           ${j.platform==="tiktok" ? "" : `data-galprofile="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}" title="Open ${esc(j.username)}'s gallery" style="gap:6px;display:flex;flex-direction:column;align-items:center;cursor:pointer"`}>
         ${pos?`<span style="font-size:11px">${pos}</span>`:""}${j.platform==="tiktok"?"":thumbHtml(j.username)}</div>
       <div>
         <div class="top">
@@ -2614,6 +2621,11 @@ function wireCards(container){
     else showErr(r.error || "Could not queue that");
     tick();
   }));
+  on("[data-galprofile]", b=>b.onclick=(e)=>{
+    // The picture sits inside the card, so stop the click going anywhere else.
+    e.stopPropagation();
+    openGalleryProfile(b.dataset.galprofile, b.dataset.platform);
+  });
   on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile, b.dataset.platform));
   // Same viewer, told which platform: the TikTok card must not open Instagram.
   on("[data-ttprofile]", b=>b.onclick=()=>openProfile(b.dataset.ttprofile, "tiktok"));
@@ -4171,7 +4183,7 @@ async function refreshStatic(){
 
 async function renderGallery(){
   const host = $("profileGrid");
-  if(gProfile) return renderPhotos(gProfile);
+  if(gProfile) return renderPhotos(gProfile, gPlatform);
   const mine = ++gReq;
   buildSortBtn();
   paintSortBtn();
@@ -4218,6 +4230,22 @@ async function renderGallery(){
   // undo what is typed in the box.
   wireProfileSearch();
   applyProfileSearch();
+}
+
+// Open one profile's gallery from the queue.
+//
+// showTab first, then set the profile: renderGallery() delegates to renderPhotos
+// whenever a profile is already open, so setting it first would fire a second
+// request for the same profile on the wrong platform before this one corrected
+// it. Both functions guard on a shared request counter, so the loser of any race
+// discards its own result instead of overwriting the newer one.
+function openGalleryProfile(username, platform){
+  if(!username) return;
+  showTab("gallery");
+  gAll = null;
+  gPlatform = platform || "instagram";
+  gProfile = username;
+  renderPhotos(username, gPlatform);
 }
 
 async function renderPhotos(username, platform){

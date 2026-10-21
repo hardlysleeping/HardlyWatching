@@ -312,6 +312,12 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**From the queue to a profile's files.** Clicking the picture on a queue card
+opens that profile's gallery straight away, and every card carries a **Gallery**
+button next to Open for the same thing — TikTok entries have no picture, so the
+button is their route. It skips the gallery's profile list rather than making you
+find the person again.
+
 **Which clips the feed picks.** The feed is weighted, newest-ignored-first, and
 balanced for how much each profile has: a profile's share follows the square root
 of its clip count (`ALGO_CLIP_BALANCE = 0.5`), so someone with five videos is not

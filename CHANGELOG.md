@@ -15,6 +15,14 @@ versioning is [SemVer](https://semver.org/).
   another saved one instead of stalling. If every session is locked, the Instagram
   worker holds and the queue says so rather than quietly downloading anonymously.
 
+### Added
+
+- **Opening a profile's gallery from its queue entry.** The picture on a card is
+  clickable and opens that profile's gallery directly, and every card has a
+  **Gallery** button beside Open — which matters for TikTok entries, since they
+  have no picture to click. Neither route goes via the gallery's profile list, so
+  it is one click from the queue to the files.
+
 ### Changed
 
 - **The Shorts feed no longer belongs to whoever has the most videos.** A
