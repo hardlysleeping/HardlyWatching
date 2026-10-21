@@ -203,6 +203,12 @@ versioning is [SemVer](https://semver.org/).
   phone keeps the swipe and never gets a dead band down its edge.
 
 ### Fixed
+- **TikTok profile pictures now reach the queue cards.** They were being withheld
+  by a rule written when TikTok had no pictures at all, so the cache, the endpoint
+  and the gallery could all have them while the queue showed none. The one-time
+  probe that decides whether a profile has a picture is now keyed by platform as
+  well as name: one handle can be two accounts on two sites, and a verdict borrowed
+  from the other site's lookup is simply wrong.
 - **A Starred view in the Gallery.** A star is a bookmark — the higher-level
   favourite — and it lives on the clip rather than in a folder, so there was no
   way to see them together. The *★ Starred* chip beside All Favourites lists every

@@ -384,9 +384,9 @@ the fallback for browsers whose cookies cannot be copied.
 
 **From the queue to a profile's files.** Clicking the picture on a queue card
 opens that profile's gallery straight away, and every card carries a **Gallery**
-button next to Open for the same thing — TikTok entries have no picture, so the
-button is their route. It skips the gallery's profile list rather than making you
-find the person again.
+button next to Open for the same thing, so a card whose account has no picture is
+no harder to open. It skips the gallery's profile list rather than making you find
+the person again.
 
 **Which clips the feed picks.** The feed is weighted, newest-ignored-first, and
 balanced for how much each profile has: a profile's share follows the square root
@@ -635,6 +635,11 @@ own page and kept in the cache (`~/.cache/hardlywatching/avatars`), never in the
 profile folder: anything in a profile folder is scanned as gallery media, and a
 picture there would appear as an extra post. `tools/tiktok_avatars.py` fills them
 in for profiles already downloaded, and each TikTok download fetches its own.
+A handful of accounts have no picture of their own, and TikTok serves its generic
+grey silhouette for those; that is what the cache holds for them, which is exactly
+what the site shows. A card is drawn without a picture at all rather than with a
+blank circle, so the list never fills with empty rings.
+
 Where there is no picture — an account that no longer exists, or one that has
 never been downloaded — the card shows the platform label instead.
 

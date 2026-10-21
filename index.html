@@ -1317,17 +1317,24 @@ function thumbHtml(username, platform){
   const plat = platform || "instagram";
   const src = `/api/profile-pic?profile=${encodeURIComponent(username)}`
             + `&platform=${encodeURIComponent(plat)}`;
-  if(!hasThumb.has(username)){
-    // Probe once per username with a throwaway Image; cache the verdict.
-    if(!noThumb.has(username)){
+  // Keyed by platform AND name. One handle can be two accounts on two sites --
+  // a picture on one and none on the other -- so a verdict borrowed from the
+  // other platform's lookup is simply wrong.
+  const key = plat + ":" + username;
+  if(!hasThumb.has(key)){
+    // Probe once with a throwaway Image; cache the verdict so a profile without
+    // a picture never draws an empty circle.
+    if(!noThumb.has(key)){
       const probe = new Image();
-      probe.onload = () => { hasThumb.add(username); tick(); };
-      probe.onerror = () => { noThumb.add(username); };
+      probe.onload = () => { hasThumb.add(key); tick(); };
+      probe.onerror = () => { noThumb.add(key); };
       probe.src = src;
     }
     return "";
   }
-  return `<img class="thumb" alt="" src="${src}">`;
+  // Even a cached yes can go stale (the picture is deleted, the session cache
+  // expires), and a broken image icon is worse than no picture.
+  return `<img class="thumb" alt="" src="${src}" onerror="this.style.visibility='hidden'">`;
 }
 
 /* ---------- embedded profile viewer ---------- */
@@ -2687,7 +2694,7 @@ function cardHtml(j, pos, qpos){
     return `<div class="card ${esc(j.status)}">
       <div class="num-badge" style="gap:6px;display:flex;flex-direction:column;align-items:center"
            ${j.platform==="tiktok" ? "" : `data-galprofile="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}" title="Open ${esc(j.username)}'s gallery" style="gap:6px;display:flex;flex-direction:column;align-items:center;cursor:pointer"`}>
-        ${pos?`<span style="font-size:11px">${pos}</span>`:""}${j.platform==="tiktok"?"":thumbHtml(j.username)}</div>
+        ${pos?`<span style="font-size:11px">${pos}</span>`:""}${thumbHtml(j.username, j.platform)}</div>
       <div>
         <div class="top">
           <span class="name clickable" data-profile="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}"
