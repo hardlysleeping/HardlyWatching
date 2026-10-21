@@ -493,36 +493,61 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(snap)
         if p == "/api/profile-pic":
             from urllib.parse import parse_qs
+            import engine as _eng
             q = parse_qs(urlparse(self.path).query)
             name = clean_profile_name((q.get("profile") or [""])[0])
             if not name:
                 return self.send_error(400)
-            # Resolve across every root: this used to read output_root only, so
-            # changing the downloads folder made every older profile 404 here.
-            d = get_engine().root_for(name)
-            if d is None:
-                return self.send_error(404)
-            # instaloader names these <user>_<date>_UTC_profile_pic.<ext>, so
-            # that pattern is tried first when it exists.
-            hits = sorted(d.glob("*_profile_pic.*"),
-                          key=lambda x: x.stat().st_mtime, reverse=True)
-            if hits:
-                return self._serve_file(hits[0])
-            # A folder that did not come from instaloader -- your own uploaded
-            # photos -- has no such file, so fall back to the newest image in
-            # the folder. That is the "picture of them" a hand-made profile
-            # folder should show, instead of a broken avatar.
-            try:
-                imgs = [f for f in d.iterdir()
-                        if f.is_file()
-                        and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
-                        and f.stat().st_size > 0]
-            except OSError:
-                return self.send_error(404)
-            if not imgs:
-                return self.send_error(404)
-            imgs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-            return self._serve_file(imgs[0])
+            plat = (q.get("platform") or ["instagram"])[0]
+
+            # The platform asked for is tried first, then the other one.
+            #
+            # A handle is only a name -- nothing links a TikTok handle to an
+            # Instagram one -- but in practice the same person usually uses the
+            # same name on both, and a TikTok folder holds no avatar at all
+            # (yt-dlp is not asked to fetch one). So the other platform's archive
+            # is the best picture available, and showing it beats showing
+            # nothing. That is deliberate: it is what makes the same person's
+            # face appear on their TikTok tile.
+            eng = get_engine()
+            folders = []
+            for want in (plat, "instagram" if plat != "instagram" else "tiktok"):
+                try:
+                    d = eng.root_for(name, want)
+                except Exception:
+                    d = None
+                if d is not None and d not in folders:
+                    folders.append(d)
+
+            # A TikTok folder must not use the "newest image" fallback below: with
+            # --write-thumbnail on it fills with <id>.jpg video frames, and the
+            # newest of those is a frame of a video, not a picture of a person.
+            tt_roots = {str(x) for x in _eng.tiktok_roots(eng.output_root)}
+
+            for d in folders:
+                # instaloader names these <user>_<date>_UTC_profile_pic.<ext>, so
+                # that pattern is tried first when it exists.
+                hits = sorted(d.glob("*_profile_pic.*"),
+                              key=lambda x: x.stat().st_mtime, reverse=True)
+                if hits:
+                    return self._serve_file(hits[0])
+                if str(d) in tt_roots:
+                    continue
+                # A folder that did not come from instaloader -- your own uploaded
+                # photos -- has no such file, so fall back to the newest image in
+                # the folder. That is the "picture of them" a hand-made profile
+                # folder should show, instead of a broken avatar.
+                try:
+                    imgs = [f for f in d.iterdir()
+                            if f.is_file()
+                            and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
+                            and f.stat().st_size > 0]
+                except OSError:
+                    continue
+                if imgs:
+                    imgs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                    return self._serve_file(imgs[0])
+            return self.send_error(404)
         if p == "/api/health":
             return self._json({"ok": True})
         if p == "/api/job-log":
@@ -1015,7 +1040,8 @@ class Handler(BaseHTTPRequestHandler):
             # Drop a tombstone: removes the placeholder so the post is fetched
             # again on the next run.
             ok, msg = get_engine().remove_tombstone(
-                str(body.get("profile") or ""), str(body.get("file") or ""))
+                str(body.get("profile") or ""), str(body.get("file") or ""),
+                str(body.get("platform") or "instagram"))
             return self._json({"ok": ok, "message": msg})
 
         if p == "/api/roots/add":
@@ -1042,7 +1068,8 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = get_engine().move_media(
                 clean_profile_name(str(body.get("profile") or "")) or "",
                 str(body.get("file") or ""),
-                section)
+                section,
+                str(body.get("platform") or "instagram"))
             return self._json({"ok": ok, "message": msg})
 
         if p == "/api/clear-finished":

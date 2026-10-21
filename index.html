@@ -1012,24 +1012,31 @@ $("purgeRemoved").onclick = async () => {
 const hasThumb = new Set();
 const noThumb = new Set();
 
-function thumbHtml(username, nonce){
+/* `platform` must be passed: the avatar is looked up in that platform's folder.
+   Leaving it out sent TikTok profiles to the Instagram folder, so a handle
+   archived on both showed the wrong person's picture and a TikTok-only one
+   showed nothing. */
+function thumbHtml(username, platform){
+  const plat = platform || "instagram";
+  const src = `/api/profile-pic?profile=${encodeURIComponent(username)}`
+            + `&platform=${encodeURIComponent(plat)}`;
   if(!hasThumb.has(username)){
     // Probe once per username with a throwaway Image; cache the verdict.
     if(!noThumb.has(username)){
       const probe = new Image();
       probe.onload = () => { hasThumb.add(username); tick(); };
       probe.onerror = () => { noThumb.add(username); };
-      probe.src = `/api/profile-pic?profile=${encodeURIComponent(username)}`;
+      probe.src = src;
     }
     return "";
   }
-  return `<img class="thumb" alt=""
-    src="/api/profile-pic?profile=${encodeURIComponent(username)}">`;
+  return `<img class="thumb" alt="" src="${src}">`;
 }
 
 /* ---------- embedded profile viewer ---------- */
 
-function openProfile(username){
+function openProfile(username, platform){
+  const plat = platform || "instagram";
   const host = $("viewerHost");
   host.innerHTML = `<div class="viewer">
     <div class="viewer-head">
@@ -1578,7 +1585,10 @@ function paintTtPath(st){
   const roots = st.roots || [];
   const main = roots.find(r => r.receives) || roots[0];
   if(!main || !main.path){ el.innerHTML = ""; ttPathShown = ""; return; }
-  const full = main.path.replace(/\/+$/, "") + "/tiktok";
+  // Taken from the server, which resolves it. This used to be worked out here as
+  // "<downloads>/tiktok" -- correct until TikTok moved to sit beside the
+  // downloads folder, after which it printed a path that did not exist.
+  const full = st.tiktok_path || (main.path.replace(/\/+$/, "") + "/tiktok");
   if(full === ttPathShown) return;     // do not rebuild on every poll
   ttPathShown = full;
   el.innerHTML = `TikTok files go to <a href="#" id="ttOpenPath"
@@ -2476,7 +2486,7 @@ function wireCards(container){
     else showErr(r.error || "Could not queue that");
     tick();
   }));
-  on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile));
+  on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile, b.dataset.platform));
   // Opening a folder used to be silent: the file manager window is the only
   // feedback and it can open behind the browser.
   on("[data-open]", b=>b.onclick=()=>busy(b, async()=>{
@@ -3829,7 +3839,7 @@ async function renderGallery(){
   host.innerHTML = profiles.map(p => `
     <div class="pcard${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
       <img class="av" loading="lazy" alt=""
-           src="/api/profile-pic?profile=${encodeURIComponent(p.username)}"
+           src="/api/profile-pic?profile=${encodeURIComponent(p.username)}&platform=${encodeURIComponent(p.platform||"instagram")}"
            onerror="this.style.visibility='hidden'">
       ${p.downloading
         ? `<span class="livebadge" title="${esc(p.status)}${p.total_count?` — ${p.done_count}/${p.total_count} posts`:""}">● downloading</span>`
@@ -4388,8 +4398,12 @@ function pageGrid(grid, username, jobs){
 }
 
 
-async function movePhoto(username, name, section, quiet){
-  const r = await post("/api/gallery/move", {profile:username, file:name, section});
+async function movePhoto(username, name, section, quiet, platform){
+  // Default to the platform whose profile is open: every caller works on the
+  // profile currently on screen, and dropping this is what made the heart and
+  // trash buttons fail on every TikTok post.
+  const plat = platform || gPlatform || "instagram";
+  const r = await post("/api/gallery/move", {profile:username, file:name, section, platform:plat});
   if(!r.ok){
     toast(r.message || r.error || "Could not move that file");
     return false;

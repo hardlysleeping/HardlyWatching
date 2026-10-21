@@ -1049,6 +1049,27 @@ def tiktok_roots(root: Path) -> tuple[Path, ...]:
     return (nested,)
 
 
+def _platform_of_folder(folder: Path) -> str:
+    """Which platform a profile folder belongs to, from where it sits.
+
+    TikTok archives live under a `tiktok` directory, so the name of the folder
+    one (or two, for its own trash/ and favorites/ subfolders) levels up is the
+    whole answer. Deliberately bounded: matching "tiktok" anywhere in the path
+    would misfire on a drive that happens to be called tiktok-something.
+
+    Derived rather than threaded in, because the callers that record tombstones
+    only ever have the folder.
+    """
+    try:
+        f = Path(folder)
+    except Exception:
+        return "instagram"
+    for up in (f.parent, f.parent.parent):
+        if up.name == "tiktok":
+            return "tiktok"
+    return "instagram"
+
+
 def _existing_root(self, username: str, platform: str = "instagram") -> Path | None:
     """The archive root `username` already lives on, or None.
 
@@ -1396,6 +1417,10 @@ def reconcile_deletions(self, username: str) -> list[str]:
                     if (username, name) not in known:
                         self.tombstones.append({
                             "username": username, "name": name, "at": time.time(),
+                            # Which platform this belongs to. A handle can exist on
+                            # both, and matching is by (username, name), so without
+                            # this a TikTok delete could match an Instagram entry.
+                            "platform": _platform_of_folder(root),
                         })
                         added.append(name)
                 except OSError:
@@ -1573,9 +1598,13 @@ def clear_trash(self) -> tuple[int, list[str]]:
     removed = 0
     errors: list[str] = []
     with self.lock:
-        usernames = [j.username for j in self.jobs.values()]
-    for username in usernames:
-        root = self.root_for(username)
+        # Platform per job: the same handle can be archived on both, in different
+        # folders, so resolving without it looked only under Instagram and a
+        # TikTok profile's trash was never cleared at all.
+        targets = [(j.username, getattr(j, "platform", "instagram") or "instagram")
+                   for j in self.jobs.values()]
+    for username, platform in targets:
+        root = self.root_for(username, platform)
         if root is None:
             continue
         trash = root / TRASH_DIR
@@ -1603,6 +1632,7 @@ def clear_trash(self) -> tuple[int, list[str]]:
                         "username": username,
                         "name": name,
                         "at": time.time(),
+                        "platform": _platform_of_folder(root),
                     })
                     if len(self.tombstones) > 5000:
                         del self.tombstones[:-5000]
@@ -1638,12 +1668,17 @@ def list_tombstones(self) -> list[dict]:
         return list(reversed(self.tombstones))[-200:]
 
 
-def remove_tombstone(self, username: str, name: str) -> tuple[bool, str]:
+def remove_tombstone(self, username: str, name: str,
+                     platform: str = "instagram") -> tuple[bool, str]:
     """Undo a permanent delete: drop the placeholder so the post is fetched again.
 
     Removes the 0-byte placeholder from the profile's main folder and forgets
     the manifest entry. The media itself is already gone; the next run of that
     profile will re-download it.
+
+    `platform` decides which folder the placeholder is looked for in. Without it
+    a TikTok tombstone resolved to the Instagram folder, found no placeholder,
+    and still reported success -- so the post was never actually re-downloaded.
     """
     username = clean_profile_name(username) or ""
     if not username:
@@ -1652,14 +1687,18 @@ def remove_tombstone(self, username: str, name: str) -> tuple[bool, str]:
         return False, "bad filename"
     with self.lock:
         before = len(self.tombstones)
+        # Entries recorded before the platform was stored have none, so a missing
+        # one matches any platform; a recorded one has to agree.
         self.tombstones = [
             t for t in self.tombstones
-            if not (t.get("username") == username and t.get("name") == name)
+            if not (t.get("username") == username
+                    and t.get("name") == name
+                    and t.get("platform", platform) == platform)
         ]
         found = len(self.tombstones) != before
     if not found:
         return False, "no such tombstone"
-    root = self.root_for(username)
+    root = self.root_for(username, platform)
     try:
         root_real = root.resolve(strict=True) if root is not None else None
     except OSError:
@@ -2033,12 +2072,18 @@ def resolve_media(self, username: str, rel: str, section: str = "",
     return target_real
 
 
-def move_media(self, username: str, name: str, section: str) -> tuple[bool, str]:
+def move_media(self, username: str, name: str, section: str,
+               platform: str = "instagram") -> tuple[bool, str]:
     """Move one file between a profile's main folder, favorites/ and trash/.
 
     `section` is "main" (un-favourite / restore), "favorites", or "trash".
     Never deletes: trashing is a move into trash/, and restoring moves back.
     Returns (ok, message).
+
+    `platform` matters: the same handle can be archived on both Instagram and
+    TikTok, and the two live in different folders. Resolving without it sent
+    every TikTok favourite/trash to the Instagram folder, so the button failed
+    on every TikTok post.
     """
     if section not in ("main",) + SUBDIRS:
         return False, f"unknown section {section!r}"
@@ -2047,7 +2092,7 @@ def move_media(self, username: str, name: str, section: str) -> tuple[bool, str]
     if name != Path(name).name or Path(name).suffix.lower() not in GALLERY_EXTS:
         return False, "bad filename"
 
-    root = self.root_for(username)
+    root = self.root_for(username, platform)
     if root is None:
         return False, "profile folder missing"
     try:
@@ -3528,6 +3573,11 @@ class Engine:
             # explain why a queue is not moving.
             "disks": [r["disk"] for r in self.roots_status() if r["disk"]],
             "roots": self.roots_status(),
+            # Where TikTok files actually go. Sent from here rather than worked
+            # out again in the browser: a second copy of the location rule is
+            # what made TikTok profiles vanish from the Gallery after the folder
+            # moved, while everything else carried on working.
+            "tiktok_path": str(tiktok_roots(self.output_root)[0]),
             "disk_worst": self.disk_worst(),
             "disk_blocked": dict(self.disk_blocked),
             "limit_paused": self._limit_paused,
