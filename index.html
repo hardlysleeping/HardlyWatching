@@ -242,7 +242,7 @@
   .pill.cancelled{color:var(--muted)}
   /* Sub-tabs inside Download: one per platform. Same queue underneath, so
      switching is only about which import box you are typing into. */
-  .subtabs{display:flex;gap:6px;margin:2px 0 12px}
+  .subtabs{display:flex;gap:6px;margin:13px 0 12px}
   .subtab{border:1px solid var(--line);background:transparent;color:var(--muted);
     border-radius:999px;padding:5px 14px;font-size:12.5px;cursor:pointer;
     font-family:inherit;transition:color .12s,border-color .12s,background .12s}
@@ -653,13 +653,8 @@
     </div>
   </div>
 
-  <div class="subtabs">
-    <button class="subtab active" id="subIg">Instagram</button>
-    <button class="subtab" id="subTt">TikTok</button>
-  </div>
-
-  <!-- One paste box for both platforms, sitting above the sub-tabs so it is the
-       same box whichever tab you are on.
+  <!-- One paste box for both platforms, above the platform buttons so it is the
+       same box whichever tab you are on, with the tabs sitting under it.
        Each line is routed by what it POINTS AT: an instagram.com link is an
        Instagram profile, a tiktok.com link is a TikTok one, so a mixed list goes
        in as a single paste. A bare name has no domain to route on and the same
@@ -698,6 +693,11 @@ some.profile
     </div>
   </div>
 
+
+  <div class="subtabs">
+    <button class="subtab active" id="subIg">Instagram</button>
+    <button class="subtab" id="subTt">TikTok</button>
+  </div>
   <div id="ttPane" style="display:none">
       <div class="card">
         <h3 style="margin-top:0">TikTok notes</h3>

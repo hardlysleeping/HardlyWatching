@@ -9,8 +9,9 @@ versioning is [SemVer](https://semver.org/).
 
 - **One paste box for both platforms.** The Instagram and TikTok tabs each had
   their own box, so a mixed list meant two pastes on two tabs. There is now a
-  single box above the sub-tabs, on screen whichever tab you are on, and a mixed
-  paste of Instagram and TikTok links goes in at once, one per line.
+  single box at the top of the tab, with the Instagram/TikTok buttons sitting
+  under it, and a mixed paste of Instagram and TikTok links goes in at once, one
+  per line.
 
   Each line is routed by what it points at: an `instagram.com` link is an
   Instagram profile, a `tiktok.com` link is a TikTok one. A bare name has no

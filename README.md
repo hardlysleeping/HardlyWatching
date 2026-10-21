@@ -298,7 +298,7 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
-**Pasting.** One box handles both platforms. Instagram and TikTok links go in
+**Pasting.** One box handles both platforms, with the Instagram/TikTok buttons under it. Instagram and TikTok links go in
 together, one per line, and each is routed by its link; plain names follow the
 tab you are on, since a bare handle carries no way to tell the two apart. The
 TikTok videos-per-profile setting sits in the same box and applies to TikTok
