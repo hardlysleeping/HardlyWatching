@@ -232,6 +232,17 @@ const TOP = 8;            // clips fetched per batch (8, not 4: each batch is a
                           // every couple of swipes)
 const REFILL_AT = 3;      // fetch more when this many remain below the fold
 const MAX_EXCLUDE = 400;  // remember this many recently shown, then forget
+// How many clips to fetch in advance, and how many to keep loaded behind.
+//
+// Every clip used to be created with preload="none" and only the one in view was
+// told to load, so each swipe started a cold fetch and decode. Getting the next
+// couple in while the current one plays is what makes a flick land on a clip that
+// is already buffered.
+const PRELOAD_AHEAD = 2;
+const KEEP_BEHIND = 2;
+// Outside this many clips, release the source. Keeping a whole session decoded
+// is what makes a phone browser start refusing to play anything.
+const RELEASE_AT = 3;
 // Seconds a skip jumps. Step through these by tapping either skip button three
 // times: 5, then 10, then 15, then back to 5. Starts at the first, and resets on
 // reload -- it is part of the sitting, like the scroll position.
@@ -451,25 +462,21 @@ function placeQueue(){
   const tail = clips.slice(tailStart);
   const pool = shuffle(tail.concat(pending));
   clips = clips.slice(0, tailStart).concat(pool);
-  rebuildFeed();
+  // Replace only from `tailStart` on.
+  //
+  // This called rebuildFeed(), which empties the feed and recreates every clip.
+  // Everything already loaded was thrown away and had to be fetched and decoded
+  // again -- including the clip in view -- and the list only grows, so each
+  // refill cost more than the last. That is why the first few swipes were fine
+  // and it got slower the further you went.
+  //
+  // The clips being replaced are the ones below the clip in view: unseen, no
+  // media fetched yet, so dropping their elements costs nothing.
+  const els = [...feed.querySelectorAll(".clip")];
+  for(let n = tailStart; n < els.length; n++) els[n].remove();
+  for(let n = tailStart; n < clips.length; n++) feed.appendChild(clipEl(clips[n]));
 }
 
-// The feed DOM is rebuilt from `clips`, preserving the clip currently in view so
-// a reshuffle never yanks the video out from under the user.
-function rebuildFeed(){
-  const cur = currentData();
-  const keep = cur ? cur.path : null;
-  feed.innerHTML = "";
-  for(const c of clips) feed.appendChild(clipEl(c));
-  if(keep){
-    const el = [...feed.querySelectorAll(".clip")].find(k => k.dataset.path === keep);
-    if(el){
-      feed.scrollTop = el.offsetTop;
-      idx = clips.indexOf(cur);
-    }
-  }
-  playCurrent();
-}
 
 // Start a fresh session. Used on an explicit reload and when the user scrolls
 // back to the top, so the pool is re-drawn instead of continuing a fixed list.
@@ -503,10 +510,30 @@ function currentData(){
   return clips.find(c => c.path === el.dataset.path) || null;
 }
 
+// Give an element a source and get it fetching, without disturbing a clip that
+// is already loaded or playing.
+//
+// load() is only called when the element has nothing yet: on a clip that is
+// mid-playback it would restart it from the beginning.
+function prime(v, c){
+  if(!v.getAttribute("src")) v.src = c.url;
+  v.preload = "auto";
+  if(v.readyState === 0){ try{ v.load(); }catch(e){} }
+}
+
 function playCurrent(){
   fillRail();
-  for(const v of feed.querySelectorAll("video")){
-    if(v.closest(".clip") === current()){
+  const els = [...feed.querySelectorAll(".clip")];
+  const i = els.indexOf(current());
+  els.forEach((el, n) => {
+    const v = el.querySelector("video");
+    const c = clips[n];
+    if(!v || !c) return;
+    if(n === i){
+      // A clip that was released while scrolled away has no source any more, so
+      // it has to be given one before it can play. Nothing used to put it back,
+      // which left a dead player if you scrolled up to something you had passed.
+      prime(v, c);
       v.play().catch(() => {
         // Refused. With sound on this is the autoplay block (iOS especially),
         // so mute and retry rather than leave the clip frozen at 0:00 -- and
@@ -517,14 +544,23 @@ function playCurrent(){
           v.play().catch(()=>{});
         }
       });
-      if(v.preload === "none") v.preload = "auto";
-    }else{
-      v.pause();
-      // Free memory on a long scroll: unload clips far from view.
-      if(Math.abs(v.closest(".clip").offsetTop - feed.scrollTop) > window.innerHeight * 3)
-        v.removeAttribute("src");
+      return;
     }
-  }
+    v.pause();
+    const d = n - i;
+    if(d > 0 && d <= PRELOAD_AHEAD){
+      prime(v, c);               // coming up: fetch it now
+    } else if(d < 0 && d >= -KEEP_BEHIND){
+      prime(v, c);               // just behind: keep it ready for a scroll back
+    } else if(Math.abs(d) > RELEASE_AT){
+      // Far away in both directions: free the decoder. The source goes but the
+      // clip stays in the list, and prime() gives it back when it returns.
+      if(v.getAttribute("src")){
+        v.removeAttribute("src");
+        try{ v.load(); }catch(e){}
+      }
+    }
+  });
 }
 
 function fillRail(){

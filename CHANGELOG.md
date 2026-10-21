@@ -7,6 +7,24 @@ versioning is [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **The Shorts feed stops getting slower the longer you scroll.** Every refill
+  emptied the feed and recreated every clip element, so everything already loaded
+  was thrown away and had to be fetched and decoded again — including the clip in
+  view — and since the list only grows, each refill cost more than the last. Only
+  the unseen tail is replaced now, so buffered clips survive a refill.
+- **Clips are fetched before you reach them.** Every clip was created with
+  `preload="none"` and only the one in view was told to load, so each swipe was a
+  cold fetch and decode. The next two are now given their source while the
+  current one plays, and the two behind are kept ready for a scroll back. Outside
+  three clips either way the source is released, which keeps a long sitting from
+  holding a whole session of decoded video.
+- **A clip scrolled past no longer becomes unplayable.** The source was removed
+  once a clip was more than three screens away and nothing ever put it back, so
+  scrolling up to something you had passed left a dead player. The source is
+  restored when the clip is in range again.
+
+### Added
+
 - **Pause works between profiles now.** The gap between profiles was the one
   moment the button could not stop anything. Two copies of the run button's logic
   had drifted apart: the main poll asked whether `st.current` was set, and that

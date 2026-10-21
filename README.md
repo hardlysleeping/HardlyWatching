@@ -312,6 +312,13 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**How the feed loads.** The next two clips are fetched while the current one
+plays, and the two behind it are kept ready for a scroll back, so a swipe lands on
+something already buffered rather than starting a cold fetch. Refilling the feed
+only replaces the clips below the one in view, so nothing already loaded is
+thrown away. Sources are released about three clips away to keep memory bounded,
+and restored if you scroll back to them.
+
 **Pausing.** Pause is per platform and stops the profile downloading now, killing
 the process and putting it back at the front of its queue. It also works between
 profiles: during the pacing gap the button still offers Pause, and pressing it
