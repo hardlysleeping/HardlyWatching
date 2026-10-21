@@ -1076,20 +1076,24 @@ function thumbHtml(username, platform){
 /* ---------- embedded profile viewer ---------- */
 
 function openProfile(username, platform){
+  // The platform was accepted here and then ignored: a TikTok handle opened an
+  // Instagram embed of the same name, which for a name that exists on both is
+  // the wrong person and for one that does not is a 404 page.
   const plat = platform || "instagram";
-  const host = $("viewerHost");
-  host.innerHTML = `<div class="viewer">
-    <div class="viewer-head">
-      ${thumbHtml(username)}
-      <b style="font-size:14.5px">${esc(username)}</b>
-      <a class="iglink" target="_blank" rel="noopener noreferrer"
-         title="Open ${esc(username)} on Instagram"
-         aria-label="Open ${esc(username)} on Instagram"
-         href="https://www.instagram.com/${encodeURIComponent(username)}/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2.5" y="2.5" width="19" height="19" rx="5.2"/><circle cx="12" cy="12" r="4.2"/><circle cx="17.6" cy="6.4" r="1.15" fill="currentColor" stroke="none"/></svg></a>
-      <button class="small" id="viewerClose" style="margin-left:auto">Close</button>
-    </div>
-    <div class="viewer-body">
-      <iframe src="https://www.instagram.com/${encodeURIComponent(username)}/embed/"
+  const tt = plat === "tiktok";
+  const site = tt ? "TikTok" : "Instagram";
+  const url = tt
+    ? `https://www.tiktok.com/@${encodeURIComponent(username)}`
+    : `https://www.instagram.com/${encodeURIComponent(username)}/`;
+  // TikTok has no embeddable profile frame, so there is nothing to show in the
+  // body -- say that plainly rather than framing a page that will not load.
+  const body = tt
+    ? `<div class="viewer-note" style="padding:22px 16px;border-top:0">
+         TikTok does not offer a profile embed, so there is nothing to show here.
+         Use the link above to open @${esc(username)} on TikTok.
+       </div>`
+    : `<div class="viewer-body">
+      <iframe src="${url}embed/"
               title="${esc(username)} on Instagram"
               referrerpolicy="strict-origin-when-cross-origin"
               sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
@@ -1097,7 +1101,19 @@ function openProfile(username, platform){
     <div class="viewer-note">
       Instagram decides what an embed shows, and may refuse or ask you to log in.
       Use the link above if the frame stays blank.
+    </div>`;
+  const host = $("viewerHost");
+  host.innerHTML = `<div class="viewer">
+    <div class="viewer-head">
+      ${tt ? "" : thumbHtml(username)}
+      <b style="font-size:14.5px">${esc(username)}</b>
+      <a class="iglink" target="_blank" rel="noopener noreferrer"
+         title="Open ${esc(username)} on ${site}"
+         aria-label="Open ${esc(username)} on ${site}"
+         href="${url}">${tt ? TT_SVG : IG_SVG}</a>
+      <button class="small" id="viewerClose" style="margin-left:auto">Close</button>
     </div>
+    ${body}
   </div>`;
   $("viewerClose").onclick = () => { host.innerHTML = ""; };
   host.scrollIntoView({behavior:"smooth", block:"start"});
@@ -1106,6 +1122,8 @@ function openProfile(username, platform){
 // Instagram's mark, inline so it costs no request and takes its colour from the
 // button. Defined once and reused wherever the UI links to a profile.
 const IG_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2.5" y="2.5" width="19" height="19" rx="5.2"/><circle cx="12" cy="12" r="4.2"/><circle cx="17.6" cy="6.4" r="1.15" fill="currentColor" stroke="none"/></svg>';
+// TikTok's note mark, the shape everyone recognises as the app icon.
+const TT_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.2 3c.3 2.1 1.6 3.5 3.8 3.7v2.7c-1.4.1-2.7-.3-3.9-1v5.9c0 3.5-2.6 5.9-5.8 5.4-2.6-.4-4.4-2.5-4.4-5 0-3 2.6-5.3 5.8-4.8v2.8c-.4-.1-.8-.2-1.2-.1-1.3.1-2.2 1.1-2.1 2.4.1 1.3 1.2 2.2 2.5 2.1 1.2-.1 2-1 2-2.4V3h3.3z"/></svg>';
 
 let lastState = null;   // cached snapshot so reorder handlers can update locally
 let paused=false, settings=null, adv=false, lastHash="";
@@ -2271,18 +2289,31 @@ function cardHtml(j, pos, qpos){
         title="Check for new posts only — anything already downloaded is skipped">${
         j.status==="failed"?"Retry":"Check for new"}</button>`);
     }
-    more.push(`<button class="small iconbtn igicon" data-profile="${esc(j.username)}"
-      title="View ${esc(j.username)} on Instagram"
-      aria-label="View ${esc(j.username)} on Instagram">${IG_SVG}</button>`);
+    // Instagram-only controls. A TikTok handle is not an Instagram account, and
+    // yt-dlp has no notion of "tagged" or "reels" passes -- those are instaloader
+    // arguments. Showing them on a TikTok card offered three actions that could
+    // only fail, and the profile link opened the wrong site entirely.
+    const isTikTok = (j.platform || "instagram") === "tiktok";
+    if(!isTikTok){
+      more.push(`<button class="small iconbtn igicon" data-profile="${esc(j.username)}"
+        title="View ${esc(j.username)} on Instagram"
+        aria-label="View ${esc(j.username)} on Instagram">${IG_SVG}</button>`);
+    }else{
+      more.push(`<button class="small iconbtn igicon" data-ttprofile="${esc(j.username)}"
+        title="View ${esc(j.username)} on TikTok"
+        aria-label="View ${esc(j.username)} on TikTok">${TT_SVG}</button>`);
+    }
     // Extra passes: re-run just one slice of content without touching the rest.
     // Useful when a profile was archived before these were enabled.
-    if(j.kind !== "tagged"){
-      more.push(`<button class="small" data-pass="tagged" data-user="${esc(j.username)}"
-        title="Download only the posts this profile is tagged in">Grab tagged photos</button>`);
-    }
-    if(j.kind !== "reels"){
-      more.push(`<button class="small" data-pass="reels" data-user="${esc(j.username)}"
-        title="Download only this profile's reels">Grab reels</button>`);
+    if(!isTikTok){
+      if(j.kind !== "tagged"){
+        more.push(`<button class="small" data-pass="tagged" data-user="${esc(j.username)}"
+          title="Download only the posts this profile is tagged in">Grab tagged photos</button>`);
+      }
+      if(j.kind !== "reels"){
+        more.push(`<button class="small" data-pass="reels" data-user="${esc(j.username)}"
+          title="Download only this profile's reels">Grab reels</button>`);
+      }
     }
     if(j.status==="running"||isQ){
       more.push(`<button class="small danger" data-remove="${j.id}">Remove</button>`);
@@ -2539,6 +2570,8 @@ function wireCards(container){
     tick();
   }));
   on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile, b.dataset.platform));
+  // Same viewer, told which platform: the TikTok card must not open Instagram.
+  on("[data-ttprofile]", b=>b.onclick=()=>openProfile(b.dataset.ttprofile, "tiktok"));
   // Opening a folder used to be silent: the file manager window is the only
   // feedback and it can open behind the browser.
   on("[data-open]", b=>b.onclick=()=>busy(b, async()=>{
