@@ -439,6 +439,18 @@ downloads again on the next run.
 All of instaloader's useful options are exposed in the UI, grouped, with a filter
 box. Every field's tooltip shows the underlying instaloader flag.
 
+The section lives on the **Download** tab, and there is a **Settings** button in
+the header on every tab that jumps straight to it with the section already open,
+so you do not have to go hunting for it. Each platform shows the settings that
+apply to it, counted in the section summary.
+
+Rows belonging to the *other* platform are hidden by default — instaloader
+options on the TikTok tab, yt-dlp options on the Instagram one. **Show all
+platforms** reveals them dimmed rather than hidden, in case you want to set
+something before switching tabs. They stay fully editable. The text filter and
+the platform filter are applied together, so searching for a setting cannot make
+the other platform's rows reappear.
+
 | Setting | Default | Why |
 | --- | --- | --- |
 | Seconds between profiles | 120 | Keeps a burst of logins from looking automated |

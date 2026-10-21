@@ -5,6 +5,22 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A Settings button in the header**, visible on every tab, which switches to the
+  Download tab and opens the settings section for you.
+- **"Show all platforms"** in the settings toolbar. Settings belonging to the other
+  platform were hidden outright, with no way to see them without switching tabs.
+  They are now revealed dimmed rather than hidden, and stay editable.
+
+### Fixed
+
+- **The settings text filter undid the platform filter.** Both wrote
+  `style.display` directly, so typing in the filter box un-hid the other
+  platform's rows underneath the results — on the TikTok tab, searching "stories"
+  listed Instagram-only options as though they applied. Both filters now resolve
+  in one place, so the two axes cannot disagree.
+
 ### Changed
 
 - **TikTok archives moved out of the Instagram folder.** They lived in

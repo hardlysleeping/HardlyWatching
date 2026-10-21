@@ -51,6 +51,14 @@
      a warning, so a misclick is visible before it happens rather than after. */
   button.small.safe{border-color:var(--line)}
   button.small.danger{border-color:#b4534b;color:#e8a49c}
+  /* A settings control that is switched on: an accent border reads as "on" in a
+     row of otherwise identical small buttons. */
+  button.small.on{border-color:var(--accent)}
+  /* Settings belonging to the other platform, when "Show all platforms" is on.
+     Dimmed rather than hidden, and still usable -- some options are worth
+     setting before you switch tabs. */
+  .dim{opacity:.42}
+  .dim:hover,.dim:focus-within{opacity:.85}
   button.icon{padding:5px 9px;font-size:13px;line-height:1;border-radius:7px}
   button.danger:hover:not(:disabled){background:#3a1d1d;border-color:#5a2b2b;color:#fca5a5}
 
@@ -476,8 +484,10 @@
     <!-- Drive space sits in the header, not the Download bar, so it stays on
          screen on every tab. A drive filling up is the one status worth seeing
          wherever you are, and the Gallery is where you go to delete things. -->
-    <span class="chip" id="diskChip" style="margin-left:auto"
-          title="Free space in the download folder">—</span>
+    <button class="small" id="hdrSettings" style="margin-left:auto;align-self:center"
+            title="Open the download settings">Settings</button>
+    <span class="chip" id="diskChip"
+         title="Free space in the download folder">—</span>
   </header>
 
   <div class="tabs">
@@ -704,6 +714,8 @@ https://www.instagram.com/a.third.profile/"></textarea>
     <div class="row" style="padding:12px 0 2px;gap:8px">
       <input type="text" id="setSearch" class="txtin" style="max-width:260px"
              placeholder="Filter settings… (e.g. video, json, stories)">
+      <button class="small" id="showAllSettingsBtn"
+              title="Also show the settings that belong to the other platform, dimmed instead of hidden.">Show all platforms</button>
       <button class="small" id="showAdv">Show advanced</button>
       <button class="small" id="resetSettings">Reset to defaults</button>
     </div>
@@ -1104,14 +1116,66 @@ const SPEC = [
   {k:"slide", l:"Sidecar slide index", d:"which image of a carousel", t:"str", flag:"--slide"},
 ];
 
-function applySettingsPlatform(plat){
+/* Which platform's settings are on screen, and whether the other platform's rows
+   are hidden outright or merely dimmed. */
+let settingPlat = "ig";
+let showAllSettings = false;
+try{ showAllSettings = localStorage.getItem("hw.showAllSettings") === "1"; }catch(e){}
+
+/* The one place that decides what a settings row looks like. There are two
+   independent reasons to hide one -- it belongs to the other platform, or it
+   does not match the text filter -- and both used to write style.display
+   directly, so typing in the filter undid the platform filter and the other
+   platform's rows reappeared underneath the search results. Both axes are
+   applied together here instead.
+   The other platform's rows are hidden by default and dimmed when "Show all
+   platforms" is on, so they stay reachable without looking like part of the
+   platform you are on. */
+function refreshSettings(){
   const grid = $("sgrid");
   if(!grid) return;
-  grid.querySelectorAll("[data-plat]").forEach((el) => {
+  const search = $("setSearch");
+  const q = ((search && search.value) || "").trim().toLowerCase();
+  const rows = [...grid.querySelectorAll("[data-row],[data-group]")];
+  let shown = 0;
+  rows.forEach((el)=>{
+    if(el.dataset.group) return;          // group headings are decided below
     const p = el.dataset.plat || "both";
-    if(p === "both" || p === plat) el.style.display = "";
-    else el.style.display = "none";
+    const foreign = (p !== "both" && p !== settingPlat);
+    const hit = !q || (el.dataset.terms || "").includes(q);
+    const visible = hit && (!foreign || showAllSettings);
+    el.style.display = visible ? "" : "none";
+    el.classList.toggle("dim", visible && foreign);
+    if(visible) shown++;
   });
+  // a group heading shows only when something under it does
+  rows.forEach((el,i)=>{
+    if(!el.dataset.group) return;
+    let any = false;
+    for(let k=i+1;k<rows.length;k++){
+      if(rows[k].dataset.group) break;
+      if(rows[k].style.display !== "none"){ any = true; break; }
+    }
+    el.style.display = any ? "" : "none";
+  });
+  const nm = $("noMatch");
+  if(nm) nm.style.display = shown ? "none" : "";
+}
+
+function applySettingsPlatform(plat){
+  settingPlat = (plat === "tiktok") ? "tiktok" : "ig";
+  refreshSettings();
+}
+
+function setShowAllSettings(on){
+  showAllSettings = !!on;
+  try{ localStorage.setItem("hw.showAllSettings", showAllSettings ? "1" : "0"); }catch(e){}
+  const btn = $("showAllSettingsBtn");
+  if(btn){
+    btn.classList.toggle("on", showAllSettings);
+    btn.textContent = showAllSettings ? "Showing all platforms" : "Show all platforms";
+  }
+  refreshSettings();
 }
 
 async function loadAutostart(){
@@ -1184,29 +1248,10 @@ function buildSettings(){
   });
 }
 
-/* Filter the settings list by any word in the label, description or flag. */
-function filterSettings(){
-  const q = ($("setSearch").value||"").trim().toLowerCase();
-  let shown = 0;
-  const visibleKeys = new Set();
-  $("sgrid").querySelectorAll("[data-row]").forEach(row=>{
-    const hit = !q || row.dataset.terms.includes(q);
-    row.style.display = hit ? "" : "none";
-    if(hit){ shown++; visibleKeys.add(row.dataset.row); }
-  });
-  // hide a group heading when none of its rows are visible
-  const rows = [...$("sgrid").querySelectorAll("[data-row],[data-group]")];
-  rows.forEach((el,i)=>{
-    if(!el.dataset.group) return;
-    let any = false;
-    for(let k=i+1;k<rows.length;k++){
-      if(rows[k].dataset.group) break;
-      if(rows[k].style.display !== "none"){ any = true; break; }
-    }
-    el.style.display = any ? "" : "none";
-  });
-  $("noMatch").style.display = shown ? "none" : "";
-}
+/* Filter the settings list by any word in the label, description or flag. The
+   work itself lives in refreshSettings(), which also applies the platform axis --
+   they cannot be allowed to write style.display independently of each other. */
+function filterSettings(){ refreshSettings(); }
 
 /* ---------- archive folders (roots) ---------- */
 
@@ -2631,6 +2676,18 @@ $("changeFolderBtn").addEventListener("click", () => {
 
 buildSettings();
 applySettingsPlatform("ig");
+setShowAllSettings(showAllSettings);   // paint the toggle from the saved value
+
+// A quiet way into the settings from any tab: switch to Download and open the
+// section, instead of having to find the tab and then the disclosure triangle.
+$("hdrSettings").onclick = () => {
+  showTab("queue");
+  const box = $("settingsBox");
+  if(!box) return;
+  box.open = true;
+  requestAnimationFrame(() => box.scrollIntoView({behavior:"smooth", block:"start"}));
+};
+$("showAllSettingsBtn").onclick = () => setShowAllSettings(!showAllSettings);
 loadAutostart();
 // One header painter for the whole page. Leaving the Download tab's line to the
 // static HTML meant it read "Instagram and TikTok -> one queue, one gallery" on
