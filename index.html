@@ -159,6 +159,7 @@
   }
   .iglink:hover{color:#e08ae0;border-color:#4d2b4d}
   .iglink svg{width:15px;height:15px;display:block}
+  .vgap{margin-top:4px;font-size:11.5px;color:var(--warn);opacity:.9}
   .viewer-body{background:#fff;height:640px}
   .viewer-body iframe{width:100%;height:100%;border:0;background:#fff}
   .viewer-note{padding:9px 14px;font-size:12.5px;color:var(--muted);
@@ -4786,7 +4787,19 @@ function paintViewer(){
     vd.textContent = post.date || "";
     vd.title = "";
   }
-  host.querySelector(".vcap").textContent = post.caption || post.title || "";
+  // A carousel that is missing a part says so, rather than appearing to skip a
+  // photo between two others. The engine reports which numbers are absent.
+  const miss = (post.missing_parts || []);
+  const capEl = host.querySelector(".vcap");
+  capEl.textContent = post.caption || post.title || "";
+  if(miss.length){
+    const note = document.createElement("div");
+    note.className = "vgap";
+    note.textContent = miss.length === 1
+      ? `part ${miss[0]} of this post is missing from the archive`
+      : `parts ${miss.join(", ")} of this post are missing from the archive`;
+    capEl.appendChild(note);
+  }
   // Show the arrows whenever pressing them would do something. `many` only
   // means this post has several parts; now that they also walk the grid, a
   // single photo still has a next and previous post, so hiding them here left

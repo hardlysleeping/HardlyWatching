@@ -1292,6 +1292,17 @@ def gallery_posts(self, username: str, section: str = "main",
     # videos stays one post -- it used to split into two.
     for stamp_name, parts in group_into_posts(names).items():
         for part, name in parts:
+            # A zero-byte file is not a part. These come from an interrupted
+            # download, or from reconcile_deletions writing a placeholder so the
+            # post is not re-fetched. The tile already hid them (see _scan_dir),
+            # but the grouping counted them, so a carousel claimed more parts
+            # than it had and the viewer walked dead slots -- a blank box, or a
+            # photo silently skipped between two others.
+            try:
+                if (folder / name).stat().st_size == 0:
+                    continue
+            except OSError:
+                continue
             info = _media_info(folder, name)
             info["part"] = part
             grouped.setdefault(stamp_name, []).append(info)
@@ -1305,8 +1316,15 @@ def gallery_posts(self, username: str, section: str = "main",
         # of those is already on the post below and measured identical to it
         # across 10,648 items -- repeating them on each part was 30% of the
         # payload for a large profile (1.8MB of JSON to draw one screen).
+        # Which part numbers are absent. A carousel that lost part 3 should say
+        # so: the viewer numbers what it has, and this lets it mention the hole
+        # instead of appearing to skip a photo for no reason.
+        present = sorted(i["part"] for i in items)
+        missing_parts = [n for n in range(1, (max(present) if present else 0) + 1)
+                         if n not in present]
         posts.append({
             "post": stamp_name,
+            "missing_parts": missing_parts,
             "ts": first["ts"],
             # Where the date came from: json | name | mtime | "". The UI marks
             # mtime-dated items, because that is the file's timestamp rather
