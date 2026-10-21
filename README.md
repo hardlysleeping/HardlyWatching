@@ -283,6 +283,29 @@ grouped when they really are parts: the unnumbered file must exist and the
 numbered ones must run 2, 3, 4 with nothing missing. `IMG_0860.JPG` and
 `IMG_0885.JPG` share a prefix but are different photos, so they stay separate.
 
+### Videos that are really a still image
+
+Many Instagram stories are several seconds of one unchanging image, stored as
+video. `tools/static_videos.py` finds them by measuring — it samples each clip's
+frames, downscales them, and checks how much they differ from the first. It is a
+maintenance tool you run by hand, not part of the app:
+
+```sh
+python3 tools/static_videos.py --stories-only          # report only
+python3 tools/static_videos.py --stories-only --convert # also write a still
+```
+
+`--convert` writes a JPEG **beside** each clip, named `<date>_still.jpg`. It never
+changes, moves or deletes a video, and re-running it cannot overwrite anything —
+a name already taken gets a number instead. The still is taken from the middle of
+the clip rather than the start, because a story often opens on a black frame.
+
+Deciding how: frames are compared after downscaling to 16×16 grey, by mean pixel
+difference from the first frame. Counting distinct frames does **not** work here —
+compression noise makes every frame of a still image differ in bytes, so that
+reports motion on a frozen clip. Real footage scores 63–70 on this measure,
+static clips 0.000–1.9.
+
 ## Shorts
 
 **Shorts** is a tab in the header, next to Download and Gallery — a phone-shaped,

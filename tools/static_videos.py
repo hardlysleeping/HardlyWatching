@@ -84,6 +84,42 @@ def duration_of(fp: Path) -> float:
         return 0.0
 
 
+def extract_frame(fp: Path, dest: Path, at: float | None = None) -> bool:
+    """Write one frame of `fp` to `dest` as a JPEG. True on success.
+
+    Taken from the middle of the clip by default, not the first frame: a story
+    often opens on a black frame or a fade-in, and picking that would give a
+    black image. The middle is representative of what the clip actually shows.
+
+    Never overwrites: the caller only asks for a name that does not exist.
+    """
+    if dest.exists():
+        return False
+    if at is None:
+        dur = duration_of(fp)
+        at = dur / 2 if dur > 0.2 else 0.0
+    # The temp name ends in ".part", which ffmpeg cannot map to an encoder, so
+    # the output format is named explicitly rather than left to the extension.
+    tmp = dest.with_suffix(".part.jpg")
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", f"{at:.3f}", "-i", str(fp),
+             "-frames:v", "1", "-q:v", "2", "-f", "image2", "-y", str(tmp)],
+            capture_output=True, timeout=180)
+        if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size == 0:
+            return False
+        tmp.replace(dest)          # atomic: appears whole or not at all
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 def is_story(folder: Path, stem: str) -> bool:
     """Did Instagram serve this as a story?
 
@@ -137,6 +173,10 @@ def main() -> int:
                     help=f"mean-difference cut-off (default {STATIC_THRESHOLD})")
     ap.add_argument("--json", default="", help="write findings here as JSON")
     ap.add_argument("--limit", type=int, default=0, help="stop after N clips")
+    ap.add_argument("--convert", action="store_true",
+                    help="also write a still image beside each static clip")
+    ap.add_argument("--suffix", default="_still",
+                    help="name added to the image (default _still)")
     args = ap.parse_args()
 
     if not args.root:
@@ -166,13 +206,29 @@ def main() -> int:
             dur = duration_of(fp)
             found += 1
             bytes_freed += size
-            findings.append({
+            row = {
                 "path": str(fp), "profile": folder.name, "name": fp.name,
                 "bytes": size, "frames": n, "mean_diff": round(diff, 3),
                 "seconds": round(dur, 1), "story": story,
-            })
+            }
+            if args.convert:
+                # Beside the video, never instead of it. The clip stays exactly
+                # where it was: this only adds an image for you to look at. A
+                # name that is already taken gets a number rather than being
+                # overwritten, so running this twice cannot destroy anything.
+                stem = fp.stem + args.suffix
+                dest = folder / f"{stem}.jpg"
+                k = 2
+                while dest.exists() and k < 1000:
+                    dest = folder / f"{stem}_{k}.jpg"
+                    k += 1
+                row["image"] = str(dest) if extract_frame(fp, dest) else ""
+            findings.append(row)
+            img = ""
+            if row.get("image"):
+                img = f"  -> {Path(row['image']).name}"
             print(f"STATIC  {diff:6.3f}  {dur:5.1f}s  {size/1024:8.0f}KB  "
-                  f"{'story' if story else '     '}  {folder.name}/{fp.name}")
+                  f"{'story' if story else '     '}  {folder.name}/{fp.name}{img}")
         if checked % 200 == 0:
             print(f"  ...{checked} checked, {found} static", file=sys.stderr)
 
@@ -180,7 +236,13 @@ def main() -> int:
     print(f"checked {checked} videos, {found} have a single unchanging frame")
     if found:
         print(f"they occupy {bytes_freed/1e6:.1f} MB as video")
-    print("Nothing was modified: this is a report. Converting is a separate step.")
+    if args.convert:
+        made = sum(1 for r in findings if r.get("image"))
+        print(f"wrote {made} still image(s) beside the videos. No video was "
+              f"changed, moved or deleted.")
+    else:
+        print("Nothing was modified: this is a report. Add --convert to also "
+              "write a still image beside each one.")
     if args.json:
         Path(args.json).write_text(json.dumps({
             "root": str(root), "checked": checked, "found": found,

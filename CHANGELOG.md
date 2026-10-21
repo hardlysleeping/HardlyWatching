@@ -7,6 +7,12 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+### Added
+
+- **`tools/static_videos.py`**, which finds videos whose frames never change —
+  the stories that are several seconds of one unchanging image. By default it
+  only reports; `--convert` also writes a JPEG beside each clip, never replacing
+  the video and never overwriting an existing file.
 - **A Settings button in the header**, visible on every tab, which switches to the
   Download tab and opens the settings section for you.
 - **"Show all platforms"** in the settings toolbar. Settings belonging to the other
