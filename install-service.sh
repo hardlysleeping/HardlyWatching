@@ -13,11 +13,32 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT="$UNIT_DIR/hardlywatching.service"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Pick a real interpreter, not a venv that might vanish. The app is stdlib-only.
-PYTHON="$(command -v python3 || true)"
-if [ -z "$PYTHON" ]; then
-  echo "error: python3 not found on PATH" >&2
+# The app is NOT stdlib-only: it needs Pillow to make thumbnails, and
+# pillow-heif to show the HEIC photos a phone produces. Prefer the project's own
+# venv, which is where run.py installs them, and only fall back to a system
+# python3 -- checking that it can actually import them rather than assuming.
+if [ -x "$HERE/.venv/bin/python3" ]; then
+  PYTHON="$HERE/.venv/bin/python3"
+else
+  PYTHON="$(command -v python3 || true)"
+  if [ -z "$PYTHON" ]; then
+    echo "error: no python3 found (neither $HERE/.venv nor PATH)" >&2
+    exit 1
+  fi
+  echo "note: no venv at $HERE/.venv, falling back to $PYTHON"
+fi
+
+if ! "$PYTHON" -c 'import PIL' >/dev/null 2>&1; then
+  echo "error: $PYTHON cannot import Pillow, which the app needs for thumbnails." >&2
+  echo "       Fix it with:  $PYTHON -m pip install --user Pillow pillow-heif" >&2
+  echo "       (or run ./run.py, which sets up the venv for you)" >&2
   exit 1
+fi
+if ! "$PYTHON" -c 'import pillow_heif' >/dev/null 2>&1; then
+  echo "note: pillow-heif is missing, so HEIC photos from a phone will not show"
+  echo "      a thumbnail or open in the viewer. Optional:"
+  echo "        $PYTHON -m pip install pillow-heif"
+  echo
 fi
 
 # The app is a UI around instaloader; warn (don't fail) if it is missing.
@@ -39,7 +60,7 @@ mkdir -p "$UNIT_DIR"
 
 cat > "$UNIT" <<EOF
 [Unit]
-Description=HardlyWatching (instaloader queue UI)
+Description=HardlyWatching (instaloader and yt-dlp download queue and viewer)
 After=network-online.target
 Wants=network-online.target
 
@@ -47,6 +68,10 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$HERE
 ExecStart=$PYTHON $HERE/server.py
+# Both downloaders are found on PATH, so it has to be set explicitly: a unit
+# does not inherit the login shell's PATH, and without this the app would fall
+# back to guessing at ~/.local/bin.
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5

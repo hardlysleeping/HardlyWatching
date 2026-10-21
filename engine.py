@@ -18,7 +18,6 @@ import datetime
 import json
 import os
 import queue
-import random
 import re
 import shutil
 import sqlite3
@@ -1886,26 +1885,6 @@ def set_output_root(self, path: str, migrate: bool = False) -> tuple[bool, str]:
     return True, f"downloads now go to {target}"
 
 
-def gallery_photos(self, username: str, limit: int = 60) -> list[str]:
-    """A random sample of a finished profile's media, as relative paths.
-
-    Reshuffled on every call, so re-opening a profile shows different photos.
-    """
-    folder = self.root_for(username)
-    if folder is None:
-        return []
-    try:
-        self.reconcile_deletions(username)
-    except Exception:
-        pass
-    media = _gallery_media(folder)
-    if len(media) > limit:
-        media = random.sample(media, limit)
-    else:
-        random.shuffle(media)
-    return media
-
-
 THUMB_MAX = 320          # px on the long edge; the grid shows them ~190px
 THUMB_VIDEO_AT = 1.0     # seconds into a clip for its poster frame
 THUMB_CACHE = Path(os.environ.get(
@@ -2381,7 +2360,6 @@ class Engine:
     # ---------- gallery ----------
 
     gallery_profiles = gallery_profiles
-    gallery_photos = gallery_photos
     gallery_sections = gallery_sections
     gallery_posts = gallery_posts
     timeline = timeline

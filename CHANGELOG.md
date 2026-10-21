@@ -15,6 +15,16 @@ versioning is [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **`install-service.sh` picked an interpreter that might not have the app's
+  dependencies**, and its comment claimed "the app is stdlib-only" — untrue since
+  it needs Pillow for thumbnails and pillow-heif for a phone's HEIC photos. It
+  now prefers the project's own venv and checks that interpreter can actually
+  import Pillow, warning rather than failing when pillow-heif is absent.
+- **The installer dropped the service's `PATH`.** The unit sets `PATH` explicitly
+  because systemd does not inherit a login shell's, so the app can otherwise miss
+  `instaloader` and `yt-dlp`. The installer's template never wrote that line, so
+  re-running the documented install step produced a unit that could not find
+  either downloader. Verified: the generated unit now matches the live one.
 - **The settings text filter undid the platform filter.** Both wrote
   `style.display` directly, so typing in the filter box un-hid the other
   platform's rows underneath the results — on the TikTok tab, searching "stories"
