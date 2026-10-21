@@ -3040,7 +3040,11 @@ function buildAllBar(profileCount){
     return b;
   };
   bar.appendChild(mk(`Profiles (${profileCount})`, gAll === null,
-    () => { gAll = null; renderGallery(); }));
+    // Must clear gProfile as well. renderGallery() opens the profile view again
+    // whenever gProfile is set, so without this the chip did nothing at all from
+    // inside a profile -- it looked dead instead of going back to the list. The
+    // other three chips below all clear it.
+    () => { gAll = null; gProfile = null; gPlatform = "instagram"; renderGallery(); }));
   bar.appendChild(mk("♥ All Favourites", gAll === "favorites",
     () => { gAll = "favorites"; gProfile = null; gPlatform = "instagram"; renderAllSection("favorites"); }));
   bar.appendChild(mk("🗑 All Trash", gAll === "trash",
