@@ -332,6 +332,15 @@ left off, and only closing it starts over.
 since short-form is all TikTok is. For Instagram it shows reels and nothing
 else: ordinary profile videos and IGTV are left out.
 
+Which posts are reels comes from Instagram, through the JSON instaloader writes
+beside each one. A video **you uploaded** has no such file, because Instagram
+never served it — so for those the shape is measured instead, with `ffprobe`
+(part of ffmpeg, already needed for TikTok). A video taller than it is wide is
+short-form shaped and joins the feed; square and landscape do not. Measuring
+costs about 140 ms a file, so the answer is stored next to the clip and reused
+until the file itself changes — the first scan after an upload is slower, every
+one after it is not.
+
 Which posts are reels is read from instaloader's own record for each post
 (`is_reel_media` in the saved `.json`), not guessed from the file or the length.
 That works on an archive you already have — nothing needs re-downloading — and

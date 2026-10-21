@@ -107,7 +107,8 @@ def _scan_clips(root, force: bool = False):
                 and (now - c["t"]) < _SCAN_TTL):
             return c["found"]
         db = _profile_db()
-        found = shorts.scan(root, known_reels=db.known_reels())
+        found = shorts.scan(root, known_reels=db.known_reels(),
+                            known_reels_cache=db)
         c.update(t=now, root=str(root), found=found)
         return found
 

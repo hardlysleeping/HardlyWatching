@@ -30,6 +30,13 @@ versioning is [SemVer](https://semver.org/).
 
 ### Fixed
 
+- **Uploaded videos now reach the Shorts feed.** A video you uploaded has no
+  instaloader sidecar, so its reel flag was unknown and the feed left it out —
+  148 uploads were excluded this way. Where the sidecar is absent the video's
+  shape is measured instead: taller than it is wide means short-form, so it
+  joins the feed. Square and landscape do not. Dimensions are cached against the
+  file's size and mtime, so the ~140 ms probe is paid once per file rather than
+  on every scan.
 - **The sibling `tiktok` folder is only adopted when it is actually an archive.**
   Any directory of that name next to the downloads folder used to be read as one
   and listed in the gallery. It must now carry a `.hardlywatching-tiktok` marker,

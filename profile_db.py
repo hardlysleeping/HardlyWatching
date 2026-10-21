@@ -107,6 +107,18 @@ class ProfileDB:
                     f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_profiles_state ON profiles(platform, state)")
+        # Measured video dimensions, so a portrait upload can be recognised as a
+        # reel. Probing with ffprobe costs ~140ms a file, which is far too much
+        # to pay on every feed request, so the answer is stored against the
+        # file's size and mtime and only re-measured when the file changes.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS clip_dims (
+                   path   TEXT PRIMARY KEY,
+                   size   INTEGER NOT NULL DEFAULT 0,
+                   mtime  REAL    NOT NULL DEFAULT 0,
+                   width  INTEGER NOT NULL DEFAULT 0,
+                   height INTEGER NOT NULL DEFAULT 0
+               )""")
         self._conn.commit()
 
     def record(self, platform: str, handle: str, display: str = '', source: str = '') -> bool:
@@ -360,6 +372,29 @@ class ProfileDB:
             for pth in paths:
                 self._conn.execute(
                     "UPDATE clips SET shown=shown+1, last_shown=? WHERE path=?", (now, pth))
+            self._conn.commit()
+
+
+    def dims_get(self, rel: str) -> tuple[tuple[int, int], int, float] | None:
+        """Cached (width, height, size, mtime) for one clip, or None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT width, height, size, mtime FROM clip_dims WHERE path=?",
+                (rel,)).fetchone()
+        if not row:
+            return None
+        return (row["width"], row["height"]), row["size"], row["mtime"]
+
+    def dims_put(self, rel: str, size: int, mtime: float,
+                 width: int, height: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO clip_dims (path, size, mtime, width, height)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(path) DO UPDATE SET
+                       size=excluded.size, mtime=excluded.mtime,
+                       width=excluded.width, height=excluded.height""",
+                (rel, int(size), float(mtime), int(width), int(height)))
             self._conn.commit()
 
     def known_reels(self) -> dict[str, bool]:

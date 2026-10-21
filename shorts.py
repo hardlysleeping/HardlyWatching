@@ -11,9 +11,16 @@ deleted from disk disappear from the feed without any bookkeeping.
 
 import json
 import os
+import subprocess
+import shutil
 from pathlib import Path
 
 VIDEO_EXTS = {'.mp4', '.mov', '.webm', '.m4v'}
+
+# Reads a video's dimensions from its header. Comes with ffmpeg, which the
+# TikTok side already requires, so this adds no new dependency for anyone who
+# is downloading video at all.
+FFPROBE = shutil.which('ffprobe') or 'ffprobe'
 
 # TikTok archives are kept in a sibling folder, always named this, and appear in
 # feed paths under this prefix.
@@ -93,6 +100,66 @@ def is_reel(json_path: Path) -> bool | None:
     return node.get("media_type") == 2
 
 
+def _probe_dims(path: Path) -> tuple[int, int] | None:
+    """(width, height) of a video, read from its container without decoding.
+
+    ffprobe reads the header only, so this is a few milliseconds on a local
+    file -- but it is still far too much to pay for every clip on every feed
+    request, so the caller caches the result against the file's size and mtime.
+    Returns None when the tool is missing or the file cannot be read, which the
+    caller treats as "unknown", never as "portrait".
+    """
+    try:
+        proc = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "csv=p=0:s=,", str(path)],
+            capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    line = (proc.stdout or "").strip().splitlines()
+    if not line:
+        return None
+    parts = line[0].split(",")
+    if len(parts) < 2:
+        return None
+    try:
+        w, h = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def is_portrait_video(path: Path, rel: str, size: int, mtime: float,
+                      cache=None) -> bool:
+    """Is this an upright video, measured rather than assumed?
+
+    Used only where Instagram's own flag is unavailable -- a file that was
+    uploaded rather than downloaded, so it has no sidecar to read. A video
+    taller than it is wide is short-form shaped and belongs in the feed; square
+    and landscape are not.
+    """
+    dims = None
+    if cache is not None:
+        hit = cache.dims_get(rel)
+        if hit is not None:
+            (w, h), csize, cmtime = hit
+            # Same file? The cache is only trusted while the file it describes
+            # is unchanged -- a re-upload or a re-encode replaces it.
+            if csize == size and abs(cmtime - mtime) < 0.001:
+                dims = (w, h)
+    if dims is None:
+        dims = _probe_dims(path)
+        if dims is None:
+            return False          # unknown is not portrait
+        if cache is not None:
+            cache.dims_put(rel, size, mtime, dims[0], dims[1])
+    w, h = dims
+    return h > w
+
+
 def _clip_id(stem: str) -> str:
     """yt-dlp names files by video id; Instagram names them by timestamp."""
     return stem.rsplit('.', 1)[0] if '.' in stem else stem
@@ -116,7 +183,8 @@ def _reel_for(folder: Path, filename: str) -> bool | None:
 
 
 def scan(root: Path, limit_dirs: int = 5000,
-         known_reels: dict[str, bool] | None = None) -> list[dict]:
+         known_reels: dict[str, bool] | None = None,
+         known_reels_cache=None) -> list[dict]:
     """Every playable video under `root`, newest first.
 
     Uses scandir rather than rglob so a large archive does not stall the feed.
@@ -190,6 +258,14 @@ def scan(root: Path, limit_dirs: int = 5000,
                 reel = known_reels[rel]
             else:
                 reel = _reel_for(full, e.name)
+                # No sidecar means None, which used to exclude the clip. For a
+                # file that was uploaded rather than downloaded that is wrong --
+                # there is no sidecar because Instagram never served it -- so an
+                # upright video is measured instead and counts as short-form.
+                if reel is None and is_portrait_video(
+                        full / e.name, rel, st.st_size, st.st_mtime,
+                        cache=known_reels_cache):
+                    reel = True
             out.append({
                 'path': rel,
                 'profile': profile,
