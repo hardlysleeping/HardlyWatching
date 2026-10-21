@@ -312,6 +312,11 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Pausing.** Pause is per platform and stops the profile downloading now, killing
+the process and putting it back at the front of its queue. It also works between
+profiles: during the pacing gap the button still offers Pause, and pressing it
+drops the rest of that gap and holds until you resume.
+
 **TikTok's session.** Private TikTok profiles need a login. **Save session from
 browser** takes it from a browser signed into TikTok and keeps the app's own copy
 in `tiktok-cookies.txt` (mode 0600), the way Instagram keeps its sessions -- so a

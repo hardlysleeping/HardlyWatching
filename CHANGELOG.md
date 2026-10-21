@@ -5,6 +5,18 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pause works between profiles now.** The gap between profiles was the one
+  moment the button could not stop anything. Two copies of the run button's logic
+  had drifted apart: the main poll asked whether `st.current` was set, and that
+  is an object of platform -> username, so it is truthy even when nothing is
+  running -- the button read "Pause". The click handler looked at the platform's
+  own entry instead, found nothing running, and fell through to **Start**, which
+  skips the gap and begins the next download. Pressing Pause during pacing made
+  it download sooner. Both now share one painter, and a pacing gap counts as
+  working, so the button offers Pause and actually pauses.
+
 ### Added
 
 - **TikTok has a session of its own.** Instagram always kept session files; the

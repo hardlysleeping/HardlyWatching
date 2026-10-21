@@ -18,6 +18,7 @@ import datetime
 import json
 import os
 import queue
+import random
 import re
 import shutil
 import sqlite3
@@ -141,6 +142,31 @@ def instaloader_path() -> str:
     return shutil.which("instaloader") or INSTALOADER
 
 BETWEEN_PROFILES_SECONDS = 240
+
+# Spreading the waits out.
+#
+# Every gap used to be the same number every single time: 120.0s before each
+# Instagram profile, 15.0s before each TikTok one, identical for days. A fixed
+# metronome is the one pattern a rate limiter can be sure about, and it also makes
+# the countdown look frozen. A spread costs nothing and removes both.
+PACING_JITTER = 0.25      # +/- 25% on a voluntary between-profiles gap
+RETRY_JITTER = 0.20       # +/- 20% on a scheduled retry
+COOLDOWN_JITTER = 0.15    # 0 to +15% on a safety cooldown
+
+
+def jitter(seconds: float, spread: float = PACING_JITTER, *,
+           up_only: bool = False) -> float:
+    """`seconds` with a random spread, so repeated waits do not line up.
+
+    `up_only` is for waits that exist for safety rather than pacing -- a rate
+    limit cooldown, an IP block cooldown. Those may be lengthened at random but
+    never shortened, because coming back early is exactly what turns a short block
+    into a long one. Voluntary pacing is free to jitter both ways.
+    """
+    if seconds is None or seconds <= 0 or spread <= 0:
+        return float(seconds or 0)
+    delta = random.uniform(0.0, spread) if up_only else random.uniform(-spread, spread)
+    return max(1.0, float(seconds) * (1.0 + delta))
 
 # Automatic retry of throttled jobs. Instagram refuses a profile for a while and
 # then serves it again, so a refusal is not an answer: the sweep re-queues it on
@@ -2554,6 +2580,10 @@ class Engine:
         self.wait_started: dict[str, float] = {"instagram": 0.0, "tiktok": 0.0}
         self._skip_gap: dict[str, bool] = {"instagram": False, "tiktok": False}
         self.wait_until: dict[str, float] = {"instagram": 0.0, "tiktok": 0.0}
+        # The length chosen for the gap in progress. Jitter is picked once, when
+        # the gap starts: recomputing it per poll would make the countdown's total
+        # jump around while the number counted down.
+        self.wait_total: dict[str, float] = {"instagram": 0.0, "tiktok": 0.0}
         self._load_state()
 
     # ---------- gallery ----------
@@ -3379,7 +3409,10 @@ class Engine:
                 j.finished_at = None
                 # Widening delay: 15min, 1h, 3h, 8h. Long enough for Instagram
                 # to forget, short enough that a real block clears in a day.
-                step = AUTO_RETRY_DELAYS[min(j.auto_retries, len(AUTO_RETRY_DELAYS)) - 1]
+                base_step = AUTO_RETRY_DELAYS[min(j.auto_retries, len(AUTO_RETRY_DELAYS)) - 1]
+                # Spread both ways: this is scheduling, not a safety margin, and
+                # jobs that failed together should not all come back together.
+                step = jitter(base_step, RETRY_JITTER)
                 j.next_retry_at = now + step
                 j.status = "queued"
                 self.pending[:] = [x for x in self.pending if x != jid]
@@ -3531,8 +3564,11 @@ class Engine:
             else:
                 label = "pacing between TikTok profiles"
             return {"kind": "pacing", "remaining": int(wu - now),
-                    "total": self._pacing_delay(platform), "until": wu,
-                    "label": label}
+                    # The length chosen for this gap, not the raw setting, so the
+                    # bar matches the countdown it is drawn against.
+                    "total": int(self.wait_total.get(platform)
+                                 or self._pacing_delay(platform)),
+                    "until": wu, "label": label}
         return {}
 
     def check_ip_block(self) -> bool:
@@ -3540,8 +3576,11 @@ class Engine:
         blocked = probe_ip_block()
         if blocked:
             with self.lock:
-                self.cooldown_until = max(self.cooldown_until,
-                                          time.time() + IP_BLOCK_COOLDOWN)
+                # Same rule as the rate-limit cooldown: only ever longer.
+                self.cooldown_until = max(
+                    self.cooldown_until,
+                    time.time() + jitter(IP_BLOCK_COOLDOWN, COOLDOWN_JITTER,
+                                         up_only=True))
                 self.paused = True
             self.save_state()
         return blocked
@@ -4238,10 +4277,14 @@ class Engine:
             # whether that platform has more to do, not on the shared order.
             delay = self._pacing_delay(platform) if self._has_pending(platform) else 0
             if delay:
+                # Vary it, once, here. The setting stays what it says; only the gap
+                # actually waited is spread around it.
+                delay = jitter(delay)
                 # Publish the deadline so the UI can count down honestly, rather
                 # than guessing from the last job's finish time.
                 with self.lock:
                     self.wait_started[platform] = time.time()
+                    self.wait_total[platform] = delay
                     self.wait_until[platform] = self.wait_started[platform] + delay
                 waited = 0
                 while waited < delay:
@@ -4263,6 +4306,7 @@ class Engine:
                     time.sleep(1.0)
                 with self.lock:
                     self.wait_started[platform] = 0.0
+                    self.wait_total[platform] = 0.0
                     self.wait_until[platform] = 0.0
 
     def _process_tiktok(self, job: Job) -> None:
@@ -4585,6 +4629,9 @@ class Engine:
             backoff = DEFAULT_RATE_LIMIT_COOLDOWN
             if job.retry_after:
                 backoff = max(backoff, min(job.retry_after, 2 * 3600))
+            # Longer at random, never shorter: this exists to let a block clear,
+            # and coming back early is what makes the block longer.
+            backoff = jitter(backoff, COOLDOWN_JITTER, up_only=True)
             with self.lock:
                 self.cooldown_until = max(self.cooldown_until, time.time() + backoff)
                 self.consecutive_limits += 1

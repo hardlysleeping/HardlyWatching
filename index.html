@@ -1571,6 +1571,54 @@ function platWait(st, p){
   return {};
 }
 
+// What the run button says and does, in one place.
+//
+// There were two copies of this and they drifted: the main poll kept a version
+// that asked whether `st.current` was set, and that is an object of
+// platform -> username, so it is truthy even when nothing is running. The button
+// therefore read "Pause" during a pacing gap while the click handler, which
+// looked at the platform's own entry, fell through to Start. Pressing Pause
+// between profiles skipped the gap and began the next download instead.
+//
+// A pacing gap counts as working: the worker is between profiles and is going to
+// take the next one, so that is exactly when you want to be able to stop it.
+function paintRunButton(st){
+  const run = $("runBtn");
+  if(!run) return;
+  const cAll = st.counts || {};
+  const c = (cAll.by_platform && cAll.by_platform[activePlatform]) || cAll;
+  const tt = activePlatform === "tiktok";
+  const cur = platCurrent(st, activePlatform);
+  paused = platPaused(st, activePlatform);
+  const w = platWait(st, activePlatform) || {};
+  const pacing = w.kind === "pacing";
+  const cd = tt ? 0 : (st.cooldown_remaining || 0);
+  if(paused){
+    run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
+    run.className = "small primary";
+    run.title = cd > 0
+      ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
+      : "Resume this queue";
+  } else if(cur || pacing){
+    run.textContent = "Pause";
+    run.className = "small";
+    run.title = cur
+      ? "Pause — stops the profile downloading now"
+      : "Pause — stops between profiles; the rest of the gap is dropped";
+  } else if((c.queued || 0) > 0){
+    run.textContent = tt ? "Start TikTok" : "Start";
+    run.className = "small primary";
+    run.title = tt
+      ? "Start the TikTok queue, which runs alongside Instagram"
+      : "Start downloading the queue";
+  } else {
+    run.textContent = tt ? "Start TikTok" : "Start";
+    run.className = "small primary";
+    run.disabled = true; run.title = "Nothing queued yet";
+  }
+  run.disabled = !((c.queued || 0) > 0 || cur || paused || pacing);
+}
+
 function renderLight(st){
   const cAll = st.counts || {};
   // Follow the open sub-tab so the button label and its enabled state agree
@@ -1582,30 +1630,7 @@ function renderLight(st){
   // A rate-limit cooldown is Instagram's alone; it must not put a "cooling
   // down" label on the TikTok button.
   const cd = tt ? 0 : (st.cooldown_remaining || 0);
-  const run = $("runBtn");
-  if(run){
-    if(cur){
-      run.textContent = "Pause"; run.className = "small";
-      run.title = "Pause — stops the profile downloading now";
-    } else if(paused){
-      run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
-      run.className = "small primary";
-      run.title = cd > 0
-        ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
-        : "Resume this queue";
-    } else if((c.queued || 0) > 0){
-      run.textContent = tt ? "Start TikTok" : "Start";
-      run.className = "small primary";
-      run.title = tt
-        ? "Start the TikTok queue, which runs alongside Instagram"
-        : "Start downloading the queue";
-    } else {
-      run.textContent = tt ? "Start TikTok" : "Start";
-      run.className = "small primary";
-      run.disabled = true; run.title = "Nothing queued yet";
-    }
-    if((c.queued || 0) > 0 || cur || paused) run.disabled = false;
-  }
+  paintRunButton(st);
   const qh = $("queueHint");
   if(qh){
     const q = c.queued || 0;
@@ -1862,28 +1887,7 @@ function render(st){
   // A rate-limit cooldown is Instagram's alone. Showing it on the TikTok tab
   // would put "Resume (cooling down)" on a queue that is not cooling down.
   const cd = tt ? 0 : (st.cooldown_remaining || 0);
-  const run = $("runBtn");
-  if(st.current){
-    run.textContent = "Pause";
-    run.className = "small";
-    run.title = "Pause — stops the profile downloading now";
-  } else if(paused){
-    run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
-    run.className = "small primary";
-    run.title = cd > 0 ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min` : "Resume this queue";
-  } else if((c.queued||0) > 0){
-    run.textContent = tt ? "Start TikTok" : "Start";
-    run.className = "small primary";
-    run.title = tt
-      ? "Start the TikTok queue, which runs alongside Instagram"
-      : "Start downloading the queue";
-  } else {
-    run.textContent = tt ? "Start TikTok" : "Start";
-    run.className = "small primary";
-    run.disabled = true;
-    run.title = tt ? "Nothing TikTok queued yet" : "Nothing queued yet";
-  }
-  if((c.queued||0) > 0 || st.current || paused) run.disabled = false;
+  paintRunButton(st);
 
   // Loud, plain explanation when Instagram has limited us.
   const cb = $("coolBox");
@@ -2805,8 +2809,22 @@ $("runBtn").onclick = async () => {
   const p = activePlatform;
   const label = p === "tiktok" ? "TikTok" : "Instagram";
   const cur = platCurrent(st, p);
-  if(cur){ await post("/api/pause",{platform: p}); toast(`Paused ${label} — stopped ${cur}, it restarts on resume`); }
-  else if(platPaused(st, p)){ await post("/api/resume",{platform: p}); toast(`Resumed ${label}`); }
+  const w = platWait(st, p) || {};
+  // Between profiles counts as running. Without this, the gap was the one moment
+  // the button could not stop anything: no profile is "current" during it, so the
+  // click fell through to Start, which skips the gap and begins the next
+  // download -- the opposite of pausing.
+  const pacing = w.kind === "pacing";
+  if(platPaused(st, p)){
+    await post("/api/resume",{platform: p});
+    toast(`Resumed ${label}`);
+  }
+  else if(cur || pacing){
+    await post("/api/pause",{platform: p});
+    toast(cur
+      ? `Paused ${label} — stopped ${cur}, it restarts on resume`
+      : `Paused ${label} between profiles — the rest of the gap is dropped`);
+  }
   else {
     const r = await post("/api/start",{platform: p});
     if(!r || !r.ok) toast(r && r.error ? r.error : `Could not start ${label}`);
