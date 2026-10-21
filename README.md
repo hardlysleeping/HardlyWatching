@@ -317,6 +317,13 @@ independent — a clip can be liked, starred, both or neither — and the topbar
 star button filters the feed to the clips you have starred. The rail's buttons are
 icons only; the words survive as tooltips.
 
+**Profile pictures.** Instagram pictures come from instaloader and live in the
+archive. TikTok ones are not in the archive at all, so they are fetched from the
+account's own page and kept in the cache (`~/.cache/hardlywatching/avatars`);
+`tools/tiktok_avatars.py` fills them in for profiles already downloaded, and each
+TikTok download fetches its own. Not in the profile folder on purpose — anything
+in there is scanned as gallery media and would show up as an extra post.
+
 **One card per person.** An identical handle on Instagram and TikTok is folded
 into a single gallery card automatically, and any two accounts can be merged by
 hand — which is the burner/finsta case, where the handles differ. This is gallery

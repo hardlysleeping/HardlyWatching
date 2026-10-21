@@ -216,6 +216,85 @@ def _base_download_cmd(handle: str, dest: Path, archive: Path, count: int,
 
 
 
+# ---------------------------------------------------------------------------
+# Profile pictures
+#
+# yt-dlp is not asked for one, so a TikTok archive holds no avatar at all --
+# measured across the whole thing: 402 profiles, not one picture. The account's
+# own page carries it, in the rehydration blob, as `avatarLarger`, and a plain
+# GET returns that blob -- no session, no cookies, no signature. 12 of 12 sampled
+# handles had one.
+#
+# It is deliberately NOT written into the profile folder. Instaloader puts the
+# Instagram picture there, and the gallery scans every picture in a folder as
+# media -- so a file dropped into a TikTok folder turns up as an extra tile
+# against that profile. Checked rather than assumed: an Instagram folder holding
+# only an avatar reports exactly one post, and that post is the avatar. An avatar
+# is derived from a URL, not archive content, so it belongs in the cache.
+# ---------------------------------------------------------------------------
+
+AVATAR_UA = ("Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 "
+             "Firefox/132.0")
+
+
+def avatar_url(handle: str, timeout: int = 25) -> str | None:
+    """The account's profile picture URL, from its own page.
+
+    None when the page does not carry one -- a handle with no TikTok account at
+    all gives the same answer, which is correct: there is nothing to show.
+    """
+    import re
+    import urllib.request
+    url = profile_url(handle)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": AVATAR_UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            html = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    m = re.search(r'"avatarLarger":"(.*?)"', html)
+    if not m:
+        return None
+    # The blob is JSON-escaped, so a URL arrives with its slashes escaped.
+    return m.group(1).replace("\\u002F", "/").replace("\\/", "/")
+
+
+def fetch_avatar(handle: str, dest: Path, timeout: int = 30) -> Path | None:
+    """Save the account's picture to `dest`, or return None.
+
+    Written to a temporary name and moved into place, so a half-downloaded file
+    is never mistaken for a finished one.
+    """
+    import shutil
+    import urllib.request
+    url = avatar_url(handle, timeout=timeout)
+    if not url:
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": AVATAR_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            head = r.read(4)
+            if not head.startswith(b"\xff\xd8") and not head.startswith(b"\x89PNG"):
+                return None            # an error page, not a picture
+            with open(tmp, "wb") as f:
+                f.write(head)
+                shutil.copyfileobj(r, f)
+        tmp.replace(dest)
+        return dest
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return None
+
+
 def normalise_proxy(raw: str) -> str:
     """Turn what people actually paste into a URL yt-dlp will accept.
 

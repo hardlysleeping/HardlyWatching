@@ -47,6 +47,36 @@ def config_dir() -> Path:
     return Path(base)
 
 
+def tiktok_avatar_file(username: str) -> Path:
+    """Where an account's TikTok picture is cached."""
+    return AVATAR_CACHE / "tiktok" / (username.strip().lower() + ".jpg")
+
+
+def tiktok_avatar(self, username: str, fetch: bool = False) -> Path | None:
+    """The account's TikTok picture from the cache, fetching it once if asked.
+
+    `fetch` is kept separate from reading on purpose: the gallery asks for one of
+    these per card, and a first load has 400 of them, so fetching on request
+    would be 400 page loads in a burst. The cache is filled in a paced pass and
+    by each profile's own download instead.
+    """
+    if not username or not username.strip():
+        return None
+    dest = tiktok_avatar_file(username)
+    try:
+        if dest.is_file() and dest.stat().st_size > 0:
+            return dest
+    except OSError:
+        return None
+    if not fetch:
+        return None
+    import tiktok_engine as _tt
+    try:
+        return _tt.fetch_avatar(username, dest)
+    except Exception:
+        return None
+
+
 def cache_dir() -> Path:
     """Standard per-user cache folder for this OS."""
     if os.name == "nt":
@@ -2226,6 +2256,11 @@ THUMB_VIDEO_AT = 1.0     # seconds into a clip for its poster frame
 THUMB_CACHE = Path(os.environ.get(
     "INSTA_THUMBS", cache_dir() / "thumbs"))
 
+# Profile pictures fetched from the site, which the archive does not carry.
+# Kept in the cache rather than in the profile folder: everything in a profile
+# folder is scanned as media, so a picture put there appears as an extra post.
+AVATAR_CACHE = Path(os.environ.get("INSTA_AVATARS", cache_dir() / "avatars"))
+
 # Hover-preview clips: a few silent seconds of the video, small enough to fetch
 # on hover. A 4 MB source becomes ~180 KB, so sweeping the cursor over a row of
 # video tiles does not pull tens of megabytes.
@@ -2715,6 +2750,7 @@ class Engine:
 
     gallery_profiles = gallery_profiles
     gallery_sections = gallery_sections
+    tiktok_avatar = tiktok_avatar
     gallery_posts = gallery_posts
     # These two are what make a merged card show more than one account, and they
     # have to be bound here to be reachable as methods at all.
@@ -4467,6 +4503,15 @@ class Engine:
         existing = next((c / job.username for c in tiktok_roots(base_root)
                          if (c / job.username).is_dir()), None)
         tt_root = existing.parent if existing else tiktok_roots(base_root)[0]
+
+        # The profile picture, once, from the account's own page. yt-dlp does not
+        # fetch one and a TikTok folder otherwise holds nothing but videos, so
+        # without this the tile has no face. Already cached means already done, so
+        # a retry costs a stat rather than a request.
+        try:
+            self.tiktok_avatar(job.username, fetch=True)
+        except Exception:
+            pass    # a missing picture must never fail a download
         target_dir = tt_root / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
         # Say so, once. `tiktok_roots` only adopts a sibling folder it can

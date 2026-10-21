@@ -7,6 +7,15 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **TikTok profile pictures.** A TikTok archive held none at all — yt-dlp is never
+  asked for one, so all 402 profiles had nothing but videos. The account's own
+  page carries the picture in its rehydration blob and one plain GET returns it,
+  so `tools/tiktok_avatars.py` fetches them, paced, and each profile's download
+  now fetches its own. They are cached rather than written into the profile
+  folder: the gallery scans every picture in a folder as media, so a file put
+  there appears as an extra post, and an avatar is derived from a URL rather than
+  archive content.
+
 - **Accounts that are the same person show as one card.** An identical handle on
   both sites is folded into a single entry automatically, and any two accounts can
   be merged by hand for burners and finstas. Gallery view only: the folders, the

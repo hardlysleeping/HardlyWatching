@@ -876,6 +876,15 @@ class Handler(BaseHTTPRequestHandler):
             # nothing. That is deliberate: it is what makes the same person's
             # face appear on their TikTok tile.
             eng = get_engine()
+
+            # A cached TikTok picture, if there is one, wins over the fallbacks
+            # below: it is a picture of the right account, where the other
+            # platform's is a guess that the two handles are the same person.
+            if plat == "tiktok":
+                hit_tt = eng.tiktok_avatar(name)
+                if hit_tt is not None:
+                    return self._serve_file(hit_tt)
+
             folders = []
             for want in (plat, "instagram" if plat != "instagram" else "tiktok"):
                 try:
