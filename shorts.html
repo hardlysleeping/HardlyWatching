@@ -118,6 +118,18 @@
      display:"" (used to show it again when the feed loads) cannot override it. */
   @media (pointer:coarse){ .scrub{display:none !important} }
 
+  /* Briefly shown over the clip: play/pause on a tap, the seconds skipped on a
+     double tap. There is no visible control to move, so without this a tap
+     looks like it did nothing. */
+  .tapicon{
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    z-index:25;pointer-events:none;opacity:0;
+    font-size:3.4rem;line-height:1;color:#fff;
+    text-shadow:0 2px 18px rgba(0,0,0,.75);
+    transition:opacity .18s ease;
+  }
+  .tapicon.show{opacity:.92}
+
   /* ---- states ---- */
   .msg{
     height:100%;height:100dvh;display:flex;flex-direction:column;
@@ -154,6 +166,10 @@
 
 <div class="rail" id="rail" style="display:none">
   <div>
+    <button class="act" id="muteBtn" aria-label="Unmute" title="Sound (m)">&#128263;</button>
+    <div class="lbl" id="muteLbl">muted</div>
+  </div>
+  <div>
     <button class="act" id="likeBtn" aria-label="Like">&#9825;</button>
     <div class="lbl">like</div>
   </div>
@@ -176,6 +192,8 @@
     <div class="lbl">less</div>
   </div>
 </div>
+
+<div class="tapicon" id="tapIcon" aria-hidden="true"></div>
 
 <div class="scrub" id="scrubWrap" style="display:none">
   <span class="t" id="tCur">0:00</span>
@@ -200,6 +218,8 @@ const TOP = 8;            // clips fetched per batch (8, not 4: each batch is a
                           // every couple of swipes)
 const REFILL_AT = 3;      // fetch more when this many remain below the fold
 const MAX_EXCLUDE = 400;  // remember this many recently shown, then forget
+const SKIP = 10;          // seconds a double-tap jumps, either way
+const DOUBLE_TAP_MS = 260;// wait this long before a tap counts as a single tap
 
 // Opened inside the main app's Shorts tab (an iframe of /shorts?embed=1) rather
 // than standalone: the surrounding page supplies the tabs and title, so ours is
@@ -283,8 +303,9 @@ function clipEl(c){
   v.loop = true;
   // Muted is required for autoplay: every browser blocks a video with sound
   // from starting on its own, which left every clip sitting paused at 0.00.
-  // Sound is opt-in through the tap-to-unmute control.
-  v.muted = true;
+  // Sound is opt-in through the mute button in the rail, and the choice carries
+  // across clips for the sitting.
+  v.muted = !wantSound;
   // Drive the desktop scrub bar from whichever clip is actually in view.
   v.addEventListener("loadedmetadata", () => {
     if(v.closest(".clip") === current()) paintScrub(v);
@@ -295,10 +316,26 @@ function clipEl(c){
   // Fall back to a poster-free black frame rather than a broken icon.
   wrap.appendChild(v);
 
-  // Tapping the middle plays/pauses; the rail handles its own clicks.
+  // Tapping the middle plays/pauses. Two taps on the left or right half jump
+  // 10s, which is the only way to scrub on a phone: the bar above is
+  // desktop-only and the arrow keys need a keyboard. The single-tap action is
+  // held until the double-tap window closes, so a skip never also toggles.
+  let tapTimer = null;
   wrap.addEventListener("click", e => {
     if(e.target.closest(".rail") || e.target.closest(".topbar")) return;
-    if(v.paused) v.play().catch(()=>{}); else v.pause();
+    const r = wrap.getBoundingClientRect();
+    const dir = (e.clientX - r.left) < r.width / 2 ? -1 : 1;
+    if(tapTimer){
+      clearTimeout(tapTimer); tapTimer = null;
+      seekTo(v.currentTime + dir * SKIP);
+      tapIcon((dir < 0 ? "&minus;" : "+") + SKIP + "s");
+      return;
+    }
+    tapTimer = setTimeout(() => {
+      tapTimer = null;
+      if(v.paused){ v.play().catch(()=>{}); tapIcon("&#9654;"); }
+      else { v.pause(); tapIcon("&#10074;&#10074;"); }
+    }, DOUBLE_TAP_MS);
   });
   wrap.querySelector("video").addEventListener("error", () => {
     wrap.innerHTML = '<div class="msg"><h2>Cannot play this one</h2>' +
@@ -356,6 +393,7 @@ async function fetchMore(){
     $("rail").style.display = "";
     $("bottombar").style.display = "";
     $("scrubWrap").style.display = "";
+    paintMute();
     // Mark the clip now in view straight away. onScrollSettled is otherwise
     // only reachable by scrolling, so the first clip of every session went
     // unrecorded and could come back immediately.
@@ -452,7 +490,16 @@ function playCurrent(){
   fillRail();
   for(const v of feed.querySelectorAll("video")){
     if(v.closest(".clip") === current()){
-      v.play().catch(()=>{});
+      v.play().catch(() => {
+        // Refused. With sound on this is the autoplay block (iOS especially),
+        // so mute and retry rather than leave the clip frozen at 0:00 -- and
+        // let the button show sound is off instead of claiming otherwise.
+        if(!v.muted){
+          v.muted = true; wantSound = false; paintMute();
+          try { sessionStorage.setItem("shorts.sound", "0"); } catch(e){}
+          v.play().catch(()=>{});
+        }
+      });
       if(v.preload === "none") v.preload = "auto";
     }else{
       v.pause();
@@ -496,6 +543,51 @@ function paintScrub(v){
   $("tCur").textContent = fmtTime(v.currentTime);
   if(known) $("scrub").value = String(Math.round(v.currentTime / d * 1000));
 }
+
+let tapTimerGlobal = null;
+
+// Brief glyph over the clip so a tap visibly does something. The html argument
+// is one of this file's own literals (a play mark, pause bars, or "+10s" and
+// "-10s" built from SKIP) -- never anything from the server or a clip's
+// metadata, so there is no untrusted content going into innerHTML here.
+function tapIcon(html){
+  const el = $("tapIcon");
+  if(!el) return;
+  el.innerHTML = html;
+  el.classList.add("show");
+  clearTimeout(tapTimerGlobal);
+  tapTimerGlobal = setTimeout(() => el.classList.remove("show"), 520);
+}
+
+// Sound is off to begin with, because a browser will not autoplay a video with
+// sound -- which is what used to leave every clip frozen at 0:00. The choice is
+// kept for the sitting, so a clip scrolled into view later is not silent again.
+let wantSound = (() => {
+  try { return sessionStorage.getItem("shorts.sound") === "1"; } catch(e){ return false; }
+})();
+
+function paintMute(){
+  const b = $("muteBtn");
+  if(!b) return;
+  b.innerHTML = wantSound ? "&#128266;" : "&#128263;";
+  b.setAttribute("aria-label", wantSound ? "Mute" : "Unmute");
+  b.title = wantSound ? "Mute (m)" : "Unmute (m)";
+  b.classList.toggle("on", wantSound);
+  const l = $("muteLbl");
+  if(l) l.textContent = wantSound ? "sound" : "muted";
+}
+
+function setSound(on){
+  wantSound = !!on;
+  try { sessionStorage.setItem("shorts.sound", wantSound ? "1" : "0"); } catch(e){}
+  for(const v of feed.querySelectorAll("video")){
+    v.muted = !wantSound;
+    if(wantSound) v.volume = 1;
+  }
+  paintMute();
+}
+
+function toggleSound(){ setSound(!wantSound); }
 
 function seekTo(seconds){
   const v = current() && current().querySelector("video");
@@ -655,6 +747,10 @@ document.addEventListener("keydown", e => {
     e.preventDefault();
     const v = current()?.querySelector("video");
     if(v){ v.paused ? v.play().catch(()=>{}) : v.pause(); }
+  }else if(e.key === "m"){
+    // Same as the rail's mute button, which is the phone's only way in.
+    e.preventDefault();
+    toggleSound();
   }else if(e.key === "l"){ $("likeBtn").click(); }
   else if(e.key === "f"){ $("favBtn").click(); }
 });
@@ -669,6 +765,9 @@ if(restored){
   favourites = !!restored.favourites;
   $("favBtn").classList.toggle("on", favourites);
 }
+paintMute();
+const _muteBtn = $("muteBtn");
+if(_muteBtn) _muteBtn.addEventListener("click", toggleSound);
 renderLoading();
 fetchMore();
 

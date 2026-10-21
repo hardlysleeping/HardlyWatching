@@ -13,6 +13,22 @@ versioning is [SemVer](https://semver.org/).
   platform were hidden outright, with no way to see them without switching tabs.
   They are now revealed dimmed rather than hidden, and stay editable.
 
+### Added
+
+- **Shorts player conveniences.** A speaker button in the rail (and **m**) turns
+  sound on and off, remembered for the sitting; clips still start muted, since a
+  browser refuses to autoplay audible video. On a phone — where the seek bar is
+  desktop-only and there is no keyboard — **double-tap the left or right half**
+  to jump ten seconds, with a brief play/skip mark flashing over the clip so a
+  tap visibly does something. A clip that a browser refuses to start with sound
+  falls back to muted and the button shows that, instead of claiming sound is on
+  over a silent video.
+- **`install-service.sh` now prefers the project's venv** and checks the chosen
+  interpreter can import Pillow, warning when pillow-heif is missing (no HEIC
+  previews). It also writes the unit's `PATH`, which it previously omitted, so
+  re-running it no longer produces a unit that cannot find `instaloader` or
+  `yt-dlp`.
+
 ### Fixed
 
 - **`install-service.sh` picked an interpreter that might not have the app's

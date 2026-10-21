@@ -278,6 +278,22 @@ has **like**, **trash**, **download**, **more** and **less**.
 On a desktop there is a **seek bar** under the clip, and **← / →** jump five
 seconds. Every clip loops, so without those there is no way back to the start.
 
+Clips start **muted**, because a browser will not autoplay a video with sound —
+which is what used to leave every clip sitting frozen at 0:00. Turn sound on with
+the speaker button in the rail (or **m** on a desktop) and the choice is kept for
+the rest of the sitting, so clips you scroll to later are not silent again.
+
+On a phone, where there is no seek bar and no keyboard, **double-tap the left or
+right half** of a clip to jump ten seconds either way; a single tap plays and
+pauses. A brief play or skip mark flashes over the clip either way, since there
+is no visible control to move.
+
+**One limitation, told plainly:** iOS will not let a clip that scrolls into view
+play sound unless you have tapped that page, so if a clip refuses to start with
+sound on it falls back to muted and the speaker button flips to say so — rather
+than showing sound as on over a silent video. On desktop the sound setting simply
+holds.
+
 `/shorts` also works on its own, which is what the installable phone app uses.
 The tab is the same player in a frame, so the two can never drift apart.
 
