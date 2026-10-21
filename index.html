@@ -1091,18 +1091,21 @@ function openProfile(username, platform){
   // the wrong person and for one that does not is a 404 page.
   const plat = platform || "instagram";
   const tt = plat === "tiktok";
-  const site = tt ? "TikTok" : "Instagram";
-  const url = tt
-    ? `https://www.tiktok.com/@${encodeURIComponent(username)}`
-    : `https://www.instagram.com/${encodeURIComponent(username)}/`;
-  // TikTok has no embeddable profile frame, so there is nothing to show in the
-  // body -- say that plainly rather than framing a page that will not load.
-  const body = tt
-    ? `<div class="viewer-note" style="padding:22px 16px;border-top:0">
-         TikTok does not offer a profile embed, so there is nothing to show here.
-         Use the link above to open @${esc(username)} on TikTok.
-       </div>`
-    : `<div class="viewer-body">
+
+  // A TikTok profile has no embed, so the panel could only ever say "there is
+  // nothing to show here" and ask for a second click on the link inside it. That
+  // is a click and a scroll to reach a page we already know the address of, so
+  // go straight there. Instagram keeps the panel, because its embed does show
+  // something worth looking at.
+  if(tt){
+    window.open(`https://www.tiktok.com/@${encodeURIComponent(username)}`,
+                "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  const site = "Instagram";
+  const url = `https://www.instagram.com/${encodeURIComponent(username)}/`;
+  const body = `<div class="viewer-body">
       <iframe src="${url}embed/"
               title="${esc(username)} on Instagram"
               referrerpolicy="strict-origin-when-cross-origin"
@@ -1115,12 +1118,12 @@ function openProfile(username, platform){
   const host = $("viewerHost");
   host.innerHTML = `<div class="viewer">
     <div class="viewer-head">
-      ${tt ? "" : thumbHtml(username)}
+      ${thumbHtml(username)}
       <b style="font-size:14.5px">${esc(username)}</b>
       <a class="iglink" target="_blank" rel="noopener noreferrer"
          title="Open ${esc(username)} on ${site}"
          aria-label="Open ${esc(username)} on ${site}"
-         href="${url}">${tt ? TT_SVG : IG_SVG}</a>
+         href="${url}">${IG_SVG}</a>
       <button class="small" id="viewerClose" style="margin-left:auto">Close</button>
     </div>
     ${body}

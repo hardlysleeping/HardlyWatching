@@ -298,6 +298,10 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Opening a profile.** Instagram opens an embed in the page. TikTok has no
+profile embed, so a TikTok profile opens on tiktok.com straight away rather than
+showing a panel that could only say there was nothing to show.
+
 **Raising a whole list at once.** On the TikTok tab, **+5 all** in the Finished
 header adds 5 to every finished profile's grab-count and re-queues them, so a
 list sitting at "grab newest 5" becomes "grab newest 10" without a click per

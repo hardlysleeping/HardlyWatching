@@ -5,6 +5,15 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A TikTok profile opens straight away.** TikTok offers no profile embed, so
+  the in-app panel could only say "there is nothing to show here" and ask for a
+  second click on the link inside it — a click and a scroll to reach a page whose
+  address we already had. Clicking a TikTok profile (its name, or the TikTok
+  button in the menu) now opens it on tiktok.com immediately. Instagram keeps the
+  panel, because its embed does show something.
+
 ### Fixed
 
 - **Clearing a tombstone now sticks.** It removed the placeholder but left the
