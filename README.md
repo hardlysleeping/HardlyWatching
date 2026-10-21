@@ -510,8 +510,8 @@ again. The panel shows it as incomplete instead of silently burning requests.
 | Path | What |
 | --- | --- |
 | `~/instagram/<username>/` | Downloaded Instagram media (changeable, see below) |
-| `~/instagram/tiktok/<handle>/` | Downloaded TikTok videos, kept apart so the two platforms cannot collide |
-| `~/instagram/tiktok/<handle>/.yt-dlp-archive.txt` | Which TikTok videos are already downloaded, so raising the count only fetches new ones |
+| `~/tiktok/<handle>/` | Downloaded TikTok videos, in a folder **beside** the Instagram one, so the two platforms cannot collide |
+| `~/tiktok/<handle>/.yt-dlp-archive.txt` | Which TikTok videos are already downloaded, so raising the count only fetches new ones |
 | `~/instagram/<username>/.insta-index.json` | Hidden record of what was there, used to spot file-manager deletions |
 | `~/.config/hardlywatching/state.json` | Queue, order, settings, cooldowns, deleted-post markers |
 | `~/.config/instaloader/session-<user>` | Instagram session, created by instaloader |
@@ -542,17 +542,25 @@ what you already have.
 They never mix, and no folder is ambiguous:
 
 - **Instagram** sits directly in the downloads folder: `<downloads>/<username>/`.
-- **TikTok** sits in a subfolder of it: `<downloads>/tiktok/<handle>/`.
+- **TikTok** sits in a folder *beside* the downloads folder:
+  `<downloads>/../tiktok/<handle>/`.
 
-There is deliberately no `instagram/` subfolder, so a handle that exists on both
+Keeping TikTok as a sibling rather than a sub-folder means it reads as a peer of
+Instagram instead of looking like part of it. A handle that exists on both
 platforms gets two separate folders rather than one shared pile. You can also
 tell the files apart at a glance: Instagram media is named by date
 (`2026-06-21_18-15-26_UTC_10.mp4`) and TikTok videos by their numeric id
 (`7698779338124053764.mp4`).
 
-Worth knowing: the downloads folder is called `instagram` because that is
-instaloader's own default name, and it now holds both platforms. Renaming it is
-fine — use **Change…** on the Downloads folder card.
+One exception, handled automatically: if the downloads folder *is* the mount
+point of a drive (e.g. you set it to `/mnt/bigdrive` rather than
+`/mnt/bigdrive/instagram`), then the sibling would land on a different disk, so
+TikTok goes inside the downloads folder instead. The app checks which case it is
+rather than assuming.
+
+Worth knowing: the downloads folder is often called `instagram` because that is
+instaloader's own default name. Renaming it is fine — use **Change…** on the
+Downloads folder card.
 
 ### Disk space
 

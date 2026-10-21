@@ -1134,10 +1134,11 @@ class Handler(BaseHTTPRequestHandler):
                 # downloads folder -- it may live on another drive.
                 target = eng.root_for(name, plat) or eng.output_root
             elif plat == "tiktok":
-                # The whole TikTok tree. It sits one level down from the
-                # downloads folder, so opening the downloads folder never shows
-                # it and the TikTok files look like they went somewhere else.
-                target = eng.output_root / "tiktok"
+                # The whole TikTok tree, which sits BESIDE the downloads folder
+                # rather than inside it, so opening the downloads folder never
+                # shows it and the videos look like they went somewhere else.
+                import engine as _eng
+                target = _eng.tiktok_roots(eng.output_root)[0]
                 try:
                     target.mkdir(parents=True, exist_ok=True)
                 except OSError:

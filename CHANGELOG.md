@@ -7,6 +7,20 @@ versioning is [SemVer](https://semver.org/).
 
 ### Changed
 
+- **TikTok archives moved out of the Instagram folder.** They lived in
+  `<downloads>/tiktok/<handle>/`, which made TikTok look like a sub-folder of
+  Instagram — the downloads folder is named after instaloader, so nesting TikTok
+  inside it read as "TikTok is part of Instagram". TikTok now sits **beside** the
+  downloads folder, `<downloads>/../tiktok/<handle>/`, as a peer. Existing
+  archives are read from either location, so a backup or a second drive in the
+  old shape still works, and the move itself is a folder rename rather than a copy.
+- **The TikTok location rule is defined in exactly one place.** It had been
+  written out separately in the gallery's profile scan, and that copy kept
+  looking in the old spot — TikTok profiles vanished from the Gallery while the
+  queue, the shorts feed and the files on disk were all fine. One guard comes
+  with it: if the downloads folder *is* a drive's mount point the sibling would
+  land on a different disk, so TikTok stays inside it there. Checked at runtime,
+  not hardcoded.
 - **Instagram and TikTok download independently.** They were sharing one worker,
   one queue position and one pause flag, so a TikTok video sat behind hundreds
   of Instagram profiles and an Instagram rate-limit pause stopped TikTok too.

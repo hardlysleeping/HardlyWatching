@@ -1010,6 +1010,45 @@ def _same(a: Path, b: Path) -> bool:
     return ra == rb
 
 
+def tiktok_roots(root: Path) -> tuple[Path, ...]:
+    """Candidate folders holding TikTok archives for one root, best first.
+
+    TikTok lives BESIDE the Instagram folder, not inside it: `<parent>/tiktok`
+    next to `<parent>/instagram`. It used to be `<root>/tiktok`, which made
+    TikTok read as a sub-folder of the Instagram archive rather than a peer of
+    it -- the root is named after instaloader, so nesting TikTok inside it
+    wrongly suggested TikTok was part of Instagram.
+
+    Unless the root IS a mount point. Then `<parent>` is a different disk, and a
+    sibling `tiktok` folder would put TikTok on the system drive while the
+    Instagram archives it belongs with sit on the mounted one. A mounted drive
+    keeps its TikTok folder inside itself instead. This is checked rather than
+    hardcoded, so the same code is correct whether someone points downloads at
+    `/mnt/bigdrive/instagram` (sibling, same disk) or straight at `/mnt/bigdrive`
+    (nested, because the sibling would land elsewhere).
+
+    The old nested location is kept as a second candidate so an archive still in
+    the old shape -- a backup, a second drive, or a move that was interrupted --
+    is still read instead of silently disappearing from the gallery.
+
+    This is the ONE definition of the rule. It used to be written out separately
+    in the gallery's profile scan, and that copy kept looking in the old spot
+    after the layout changed, so TikTok profiles vanished from the gallery while
+    everything else worked.
+    """
+    root = Path(root)
+    nested = root / "tiktok"
+    try:
+        same_disk = os.stat(root).st_dev == os.stat(root.parent).st_dev
+    except OSError:
+        # Root missing, or unreadable: prefer the location inside it, which is
+        # the one that cannot escape onto a different volume.
+        same_disk = False
+    if same_disk:
+        return (root.parent / "tiktok", nested)
+    return (nested,)
+
+
 def _existing_root(self, username: str, platform: str = "instagram") -> Path | None:
     """The archive root `username` already lives on, or None.
 
@@ -1017,8 +1056,10 @@ def _existing_root(self, username: str, platform: str = "instagram") -> Path | N
     profile's folder, so a job can be pinned to the drive its archive is on.
     """
     for root in self.roots:
-        folder = (root / "tiktok" / username) if platform == "tiktok" else (root / username)
-        if folder.is_dir():
+        if platform == "tiktok":
+            if any((c / username).is_dir() for c in tiktok_roots(root)):
+                return root
+        elif (root / username).is_dir():
             return root
     return None
 
@@ -1035,15 +1076,21 @@ def root_for(self, username: str, platform: str = "instagram") -> Path | None:
     first-listed root wins, so a stray copy can never make the archive
     silently change under you.
 
-    TikTok archives live one level down, in `<root>/tiktok/<handle>`, so they
-    are looked up there instead. Keeping the platforms in separate folders
+    TikTok archives live beside the Instagram folder, in `<parent>/tiktok`, so
+    they are looked up there. Keeping the platforms in separate sibling folders
     means a TikTok handle and an Instagram profile of the same name cannot
     resolve to the same directory.
     """
     for root in self.roots:
-        folder = (root / "tiktok" / username) if platform == "tiktok" else (root / username)
-        if folder.is_dir():
-            return folder
+        if platform == "tiktok":
+            for candidate in tiktok_roots(root):
+                folder = candidate / username
+                if folder.is_dir():
+                    return folder
+        else:
+            folder = root / username
+            if folder.is_dir():
+                return folder
     return None
 
 
@@ -1425,22 +1472,33 @@ def gallery_profiles(self) -> list[dict]:
                     try:
                         if not entry.is_dir():
                             continue
-                        # TikTok profiles sit one level down, so `tiktok` itself
-                        # is not a profile and its children are.
+                        # `tiktok` is not a profile itself. Its children are, and
+                        # they are listed below from wherever TikTok actually
+                        # lives for this root.
                         if entry.name == "tiktok":
-                            try:
-                                with os.scandir(entry.path) as sub:
-                                    for s in sub:
-                                        if s.is_dir():
-                                            tt_on_disk.append(s.name)
-                            except OSError:
-                                pass
-                        else:
-                            on_disk.append(entry.name)
+                            continue
+                        on_disk.append(entry.name)
                     except OSError:
                         continue
         except OSError:
             continue
+        # TikTok archives sit BESIDE this root. The first candidate that exists
+        # wins, so an archive left in the old nested shape is still listed and
+        # nothing is counted twice.
+        for tt_dir in tiktok_roots(root):
+            if not tt_dir.is_dir():
+                continue
+            try:
+                with os.scandir(tt_dir) as sub:
+                    for s in sub:
+                        try:
+                            if s.is_dir():
+                                tt_on_disk.append(s.name)
+                        except OSError:
+                            continue
+            except OSError:
+                pass
+            break
     # Each profile is looked up under its own platform, so an Instagram profile
     # and a TikTok account sharing a handle stay separate entries on disk.
     wanted = [(u, "instagram") for u in on_disk] + [(u, "tiktok") for u in tt_on_disk]
@@ -3801,8 +3859,14 @@ class Engine:
         # meant a TikTok handle could collide with an Instagram profile of the
         # same name. Each platform stays independently deletable. A job pinned
         # to a drive keeps downloading there even if the downloads folder moves.
+        # TikTok sits BESIDE the Instagram folder rather than inside it, so it
+        # reads as a peer of Instagram instead of a sub-folder of it. A profile
+        # already in the old nested location keeps downloading there, so a
+        # layout change cannot silently start a second copy of an archive.
         base_root = Path(job.root) if job.root else self.output_root
-        tt_root = base_root / "tiktok"
+        existing = next((c / job.username for c in tiktok_roots(base_root)
+                         if (c / job.username).is_dir()), None)
+        tt_root = existing.parent if existing else tiktok_roots(base_root)[0]
         target_dir = tt_root / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
         archive = tt.archive_path(tt_root, job.username)

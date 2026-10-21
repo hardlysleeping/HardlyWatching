@@ -15,6 +15,59 @@ from pathlib import Path
 
 VIDEO_EXTS = {'.mp4', '.mov', '.webm', '.m4v'}
 
+# TikTok archives are kept in a sibling folder, always named this, and appear in
+# feed paths under this prefix.
+TIKTOK_DIR = "tiktok"
+
+
+def _tiktok_candidates(root: Path) -> tuple[Path, ...]:
+    """Where TikTok archives may live for an archive root, best first.
+
+    The rule itself lives in engine.tiktok_roots so there is exactly one
+    definition of it. It used to be written out in three separate places, and
+    one of those copies (the gallery's profile scan) kept looking in the old
+    location after the layout changed -- so TikTok profiles silently vanished
+    from the gallery while everything else carried on working.
+
+    Imported inside the function so this module stays importable on its own.
+    """
+    import engine
+    return engine.tiktok_roots(root)
+
+
+def _contained(base: Path, sub: str) -> Path | None:
+    """`sub` inside `base`, or None if it escapes or is not a playable file."""
+    try:
+        anchor = Path(base).resolve()
+        target = (anchor / sub).resolve()
+    except OSError:
+        return None
+    try:
+        target.relative_to(anchor)
+    except ValueError:
+        return None
+    if not target.is_file():
+        return None
+    if target.suffix.lower() not in VIDEO_EXTS:
+        return None
+    return target
+
+
+def directory_for(root: Path, dir_rel: str) -> Path | None:
+    """Real folder for a feed-relative profile directory, or None."""
+    rel = str(dir_rel or "").replace("\\", "/").strip("/")
+    if rel == TIKTOK_DIR or rel.startswith(TIKTOK_DIR + "/"):
+        name = rel.split("/", 1)[1] if "/" in rel else ""
+        if not name:
+            return None
+        for candidate in _tiktok_candidates(root):
+            d = candidate / name
+            if d.is_dir():
+                return d
+        return None
+    d = Path(root) / rel
+    return d if d.is_dir() else None
+
 
 def is_reel(json_path: Path) -> bool | None:
     """Did Instagram mark this post as a reel?
@@ -82,25 +135,35 @@ def scan(root: Path, limit_dirs: int = 5000,
     except OSError:
         return out
 
-    # TikTok profiles live one level down, in <root>/tiktok/<handle>, so the
-    # feed has to look inside that folder as well as at the top. Anything else
-    # at the top level is an Instagram profile, as before.
+    # TikTok profiles live BESIDE the archive root (<parent>/tiktok), not under
+    # it. The feed path keeps the `tiktok/...` prefix regardless, so the clips
+    # already recorded in the database stay valid across the layout change.
     profile_dirs: list[tuple[str, str, str]] = []
     for e in top:
         if e.name.startswith('.'):
             continue
-        if e.name == 'tiktok':
-            try:
-                for sub in os.scandir(e.path):
-                    if sub.is_dir(follow_symlinks=False) and not sub.name.startswith('.'):
-                        profile_dirs.append((f"tiktok/{sub.name}", sub.name, 'tiktok'))
-            except OSError:
-                continue
-        else:
-            profile_dirs.append((e.name, e.name, 'instagram'))
+        if e.name == TIKTOK_DIR:
+            continue    # handled below, wherever it actually lives
+        profile_dirs.append((e.name, e.name, 'instagram'))
+
+    # First candidate that exists wins, so an archive left in the old nested
+    # shape is still read but nothing is counted twice.
+    for candidate in _tiktok_candidates(root):
+        if not candidate.is_dir():
+            continue
+        try:
+            subs = [s for s in os.scandir(candidate)
+                    if s.is_dir(follow_symlinks=False) and not s.name.startswith('.')]
+        except OSError:
+            continue
+        for sub in subs:
+            profile_dirs.append((f"{TIKTOK_DIR}/{sub.name}", sub.name, 'tiktok'))
+        break
 
     for dir_rel, profile, platform in profile_dirs[:limit_dirs]:
-        full = root / dir_rel
+        full = directory_for(root, dir_rel)
+        if full is None:
+            continue
         try:
             entries = list(os.scandir(full))
         except OSError:
@@ -143,15 +206,20 @@ def scan(root: Path, limit_dirs: int = 5000,
 
 
 def resolve(root: Path, rel: str) -> Path | None:
-    """Map a feed path back to a real file, refusing anything that escapes root."""
-    root = Path(root).resolve()
-    target = (root / rel).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError:
+    """Map a feed path back to a real file, refusing anything that escapes.
+
+    `tiktok/...` is a virtual prefix. Those clips live in the folder BESIDE the
+    archive root, so the prefix is stripped and looked up there, with the old
+    nested location as a fallback. Every candidate is containment-checked
+    against its own base, so a crafted path cannot reach outside either folder.
+    """
+    rel = str(rel or "").replace("\\", "/").lstrip("/")
+    parts = rel.split("/")
+    if parts and parts[0] == TIKTOK_DIR and len(parts) >= 2:
+        sub = "/".join(parts[1:])
+        for candidate in _tiktok_candidates(root):
+            got = _contained(candidate, sub)
+            if got:
+                return got
         return None
-    if not target.is_file():
-        return None
-    if target.suffix.lower() not in VIDEO_EXTS:
-        return None
-    return target
+    return _contained(root, rel)
