@@ -312,6 +312,10 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**Shorts for one profile.** Open someone in the Gallery and then tap Shorts, and
+the feed is that person alone; go back to the profile list and it is everyone
+again. The count line says "only @someone" while a filter is on.
+
 **How the feed loads.** The next two clips are fetched while the current one
 plays, and the two behind it are kept ready for a scroll back, so a swipe lands on
 something already buffered rather than starting a cold fetch. Refilling the feed

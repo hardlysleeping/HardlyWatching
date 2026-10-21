@@ -3028,9 +3028,20 @@ function showTab(which){
     // Load the feed the first time the tab is opened, not on page load: the
     // player pulls clips from disk and there is no reason to pay for that
     // before it is looked at.
-    if(shorts && !sp.dataset.loaded){
+    if(shorts){
+      // Opened while looking at someone's gallery? Then Shorts is that person
+      // alone. If you are on the profile list, it is the whole feed.
       const f = $("shortsFrame");
-      if(f) f.src = "/shorts?embed=1";
+      const want = gProfile
+        ? "/shorts?embed=1&profile=" + encodeURIComponent(gProfile)
+          + "&platform=" + encodeURIComponent(gPlatform || "instagram")
+        : "/shorts?embed=1";
+      // Only reload when the target actually changes. Loading the tab again must
+      // not restart the sitting, but swapping the open profile must take effect,
+      // or the feed would go on showing the filter it was loaded with.
+      if(f && f.getAttribute("src") !== want) f.src = want;
+      const full = $("shortsFull");
+      if(full) full.href = want.replace("?embed=1&", "?").replace("?embed=1", "");
       sp.dataset.loaded = "1";
     }
   }

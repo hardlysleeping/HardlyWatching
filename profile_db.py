@@ -322,7 +322,8 @@ class ProfileDB:
         return new
 
     def feed(self, limit: int = 20, favourites_only: bool = False,
-             exclude: list[str] | None = None, known_paths: list[str] | None = None) -> list[dict]:
+             exclude: list[str] | None = None, known_paths: list[str] | None = None,
+             profile: str | None = None, platform: str | None = None) -> list[dict]:
         """Pick the next clips, weighted, newest-ignored-first.
 
         Weighted choice is done here rather than in SQL: the set is small enough
@@ -338,11 +339,20 @@ class ProfileDB:
             # an ordinary video in a reels feed is the mistake worth avoiding.
             # Parenthesised: without it AND binds tighter than OR, and the
             # favourites filter would apply to the Instagram branch only.
-            cur = self._conn.execute(
-                "SELECT * FROM clips WHERE trashed=0 AND ("
-                "platform='tiktok' OR (platform='instagram' AND is_reel=1))"
-                + (" AND liked=1" if favourites_only else "")
-            )
+            sql = ("SELECT * FROM clips WHERE trashed=0 AND ("
+                   "platform='tiktok' OR (platform='instagram' AND is_reel=1))")
+            params: list = []
+            # One profile only, when the feed is opened from someone's gallery.
+            # Matched case-insensitively: a handle is not case-sensitive on either
+            # site, and the folder name may not match the way it is typed.
+            if profile:
+                sql += " AND lower(profile)=?"
+                params.append(profile.strip().lower())
+            if platform:
+                sql += " AND platform=?"
+                params.append(platform.strip().lower())
+            sql += " AND liked=1" if favourites_only else ""
+            cur = self._conn.execute(sql, params)
             rows = [dict(r) for r in cur]
         if known_paths:
             alive = set(known_paths)

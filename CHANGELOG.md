@@ -5,6 +5,16 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Shorts for one person.** Opening the Shorts tab while a profile is open in
+  the Gallery shows only that person's clips. The filter travels in the player's
+  URL, which the app sets when the tab opens and reloads when the open profile
+  changes, so what is on screen and what is filtered cannot disagree; the count
+  line reads "1 / 8 · only @someone" so a filtered feed is never mistaken for a
+  small archive. Returning to the profile list goes back to the whole feed.
+  Reaching it: open someone in the Gallery, then tap Shorts.
+
 ### Fixed
 
 - **The Shorts feed stops getting slower the longer you scroll.** Every refill

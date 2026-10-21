@@ -1357,18 +1357,26 @@ class Handler(BaseHTTPRequestHandler):
             limit = int(body.get("limit") or 20)
             fav = bool(body.get("favourites"))
             seen = body.get("exclude") or []
+            # Opened from one person's gallery: show only them.
+            import engine as _eng
+            prof = _eng.clean_profile_name(str(body.get("profile") or "")) or ""
+            plat = str(body.get("platform") or "").strip().lower()
+            if plat not in ("instagram", "tiktok"):
+                plat = ""
             db = _profile_db()
             found = _scan_clips(get_engine().output_root, force=bool(body.get("refresh")))
             db.sync_clips(found)
             alive = [f["path"] for f in found]
             by_path = {f["path"]: f for f in found}
-            rows = db.feed(limit, favourites_only=fav, exclude=seen, known_paths=alive)
+            rows = db.feed(limit, favourites_only=fav, exclude=seen, known_paths=alive,
+                           profile=prof or None, platform=plat or None)
             out = []
             for r in rows:
                 meta = by_path.get(r["path"], {})
                 out.append({**r, **{k: meta.get(k) for k in ("url", "mtime", "bytes")}})
             db.mark_shown([r["path"] for r in out])
-            return self._json({"clips": out, "stats": db.clip_stats()})
+            return self._json({"clips": out, "stats": db.clip_stats(),
+                               "profile": prof, "platform": plat})
 
         if p == "/api/shorts/action":
             db = _profile_db()

@@ -252,8 +252,19 @@ const DOUBLE_TAP_MS = 260;// wait this long before a tap counts as a single tap
 // Opened inside the main app's Shorts tab (an iframe of /shorts?embed=1) rather
 // than standalone: the surrounding page supplies the tabs and title, so ours is
 // dropped. Everything else behaves identically in both modes.
-if(new URLSearchParams(location.search).get("embed") === "1")
+const QS = new URLSearchParams(location.search);
+if(QS.get("embed") === "1")
   document.documentElement.classList.add("embed");
+
+// Opened from one person's gallery: show only them.
+//
+// The filter arrives in the URL rather than through postMessage because the whole
+// player is an iframe with its own document, and a filter that has to be pushed
+// in afterwards is one more thing that can arrive late or not at all. The app
+// sets this URL when it opens the tab, and reloads it when the open profile
+// changes, so what is on screen and what is filtered cannot disagree.
+const ONLY_USER = (QS.get("profile") || "").trim();
+const ONLY_PLATFORM = (QS.get("platform") || "").trim().toLowerCase();
 
 let clips = [];           // loaded clips, in feed order
 let idx = 0;              // index of the clip in view
@@ -396,6 +407,8 @@ async function fetchMore(){
     const r = await post("/api/shorts/feed", {
       limit: TOP,
       favourites,
+      profile: ONLY_USER,
+      platform: ONLY_PLATFORM,
       exclude: seen.slice(-MAX_EXCLUDE),
       // A forced reshuffle should see a clip that was downloaded a moment ago,
       // so it bypasses the server's short-lived scan cache once.
@@ -405,10 +418,15 @@ async function fetchMore(){
     const got = r.clips || [];
     if(!got.length && !clips.length){
       renderEmpty(
-        favourites ? "No favourites yet" : "Nothing to show",
-        favourites
-          ? "Like a few clips and they will appear here."
-          : "Download some TikToks first, then come back."
+        ONLY_USER ? `Nothing from @${ONLY_USER}`
+          : (favourites ? "No favourites yet" : "Nothing to show"),
+        ONLY_USER
+          ? (ONLY_PLATFORM === "instagram"
+              ? "This profile has no reels or short videos archived."
+              : "This profile has no videos archived yet.")
+          : (favourites
+              ? "Like a few clips and they will appear here."
+              : "Download some TikToks first, then come back.")
       );
       return;
     }
@@ -573,7 +591,8 @@ function fillRail(){
     .filter(Boolean).join(" · ");
   $("likeBtn").classList.toggle("liked", !!c.liked);
   $("likeBtn").innerHTML = c.liked ? "&#9829;" : "&#9825;";
-  $("count").textContent = (idx + 1) + " / " + clips.length;
+  $("count").textContent = (idx + 1) + " / " + clips.length
+    + (ONLY_USER ? " · only @" + ONLY_USER : "");
 }
 
 // ---- desktop scrub bar ---------------------------------------------------
