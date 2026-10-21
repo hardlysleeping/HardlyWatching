@@ -9,6 +9,12 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **A 🖼 Still videos button in the Gallery**, which finds the stories that are
+  one unchanging image held for their whole length and can write a still image
+  beside each one. Scanning runs as a background job with live progress and a
+  Stop button, since decoding a whole archive takes far longer than a request
+  can wait, and it offers to write the images from what it already found rather
+  than decoding everything twice.
 - **`tools/static_videos.py`**, which finds videos whose frames never change —
   the stories that are several seconds of one unchanging image. By default it
   only reports; `--convert` also writes a JPEG beside each clip, never replacing

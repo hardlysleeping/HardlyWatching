@@ -94,7 +94,7 @@ def extract_frame(fp: Path, dest: Path, at: float | None = None) -> bool:
     Never overwrites: the caller only asks for a name that does not exist.
     """
     if dest.exists():
-        return False
+        return True          # already done by an earlier pass; nothing to redo
     if at is None:
         dur = duration_of(fp)
         at = dur / 2 if dur > 0.2 else 0.0
@@ -158,6 +158,42 @@ def videos_under(root: Path):
                 continue
             yield fp, Path(dirpath), st.st_size, is_story(Path(dirpath),
                                                           os.path.splitext(name)[0])
+
+
+def still_path(folder: Path, fp: Path, suffix: str = "_still") -> Path:
+    """Where this clip's still image goes, reusing one that already exists.
+
+    A rescan must not pile up `_still_2`, `_still_3` for the same clip: running
+    the scan twice is normal (once to look, once after adding profiles) and each
+    pass should land on the same file. Anything already there is kept exactly as
+    it is -- nothing is overwritten, because a still someone has looked at should
+    not be silently replaced.
+    """
+    direct = folder / f"{fp.stem}{suffix}.jpg"
+    if direct.exists():
+        return direct
+    k = 2
+    while k < 1000:
+        cand = folder / f"{fp.stem}{suffix}_{k}.jpg"
+        if not cand.exists():
+            return cand
+        k += 1
+    return direct
+
+
+def videos_for_scan(root: Path, stories_only: bool = False):
+    """The list the scan will walk, built up front so progress has a total.
+
+    Materialised on purpose: the UI shows "checked 400 of 21,266", which needs a
+    known denominator, and the walk itself is a single scandir pass so holding
+    the tuples costs little.
+    """
+    out = []
+    for fp, folder, size, story in videos_under(root):
+        if stories_only and not story:
+            continue
+        out.append((fp, folder, size, story))
+    return out
 
 
 def main() -> int:

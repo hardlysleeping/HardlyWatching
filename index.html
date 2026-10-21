@@ -3189,6 +3189,18 @@ function buildAllBar(profileCount){
   junk.title = "Delete .temp files left behind by interrupted downloads";
   junk.onclick = cleanJunk;
   bar.appendChild(junk);
+
+  // Videos whose frames never change -- the stories that are one still image
+  // held for their whole length. Always offered, because unlike leftover junk
+  // there is no cheap way to know whether any exist without decoding them.
+  const stills = document.createElement("button");
+  stills.className = "fchip";
+  stills.id = "staticChip";
+  stills.title = "Find videos that are really a single unchanging image (many stories are)";
+  stills.textContent = "🖼 Still videos";
+  stills.onclick = openStaticPanel;
+  bar.appendChild(stills);
+
   refreshJunk();
 }
 
@@ -3934,6 +3946,108 @@ async function cleanJunk(){
   toast(`Removed ${r.count}, freed ${fmtBytes(r.bytes)}`
     + (r.errors && r.errors.length ? ` (${r.errors.length} failed)` : ""));
   refreshJunk();
+}
+
+/* ---------- static-video scan ---------- */
+// A story that is one image held for 30 seconds is stored as video, so it plays
+// as a motionless clip and takes the room of real footage. Finding them needs a
+// decode per file, which is far too slow to do inline: this runs as a background
+// job on the server and polls, the same shape as a download.
+
+let staticPoll = null;
+let staticOpen = false;
+
+function openStaticPanel(){
+  staticOpen = true;
+  let box = $("staticBox");
+  if(box) box.remove();
+  box = document.createElement("div");
+  box.id = "staticBox";
+  box.className = "banner";
+  box.style.cssText = "display:block;background:var(--panel-2);border-color:var(--line-2);color:var(--text)";
+  box.innerHTML = `
+    <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+      <b style="font-size:13.5px">Still videos</b>
+      <span class="hint" id="staticNote" style="flex:1"></span>
+      <button class="small" id="staticStories">Scan stories</button>
+      <button class="small" id="staticAll">Scan all videos</button>
+      <button class="small" id="staticWrite" style="display:none">Write still images</button>
+      <button class="small danger" id="staticStop" style="display:none">Stop</button>
+      <button class="small" id="staticClose">Close</button>
+    </div>
+    <div id="staticBody" class="hint" style="margin-top:8px"></div>`;
+  $("profileGrid").parentElement.insertBefore(box, $("profileGrid"));
+  $("staticClose").onclick = () => { box.remove(); staticOpen = false; stopStaticPoll(); };
+  $("staticStories").onclick = () => startStaticScan("stories");
+  $("staticAll").onclick = () => startStaticScan("all");
+  $("staticWrite").onclick = () => writeStaticImages();
+  $("staticStop").onclick = () => post("/api/static/cancel", {});
+  refreshStatic();
+}
+
+async function startStaticScan(scope){
+  const r = await post("/api/static/scan", {scope});
+  if(!r.ok){ toast(r.error || "Could not start"); return; }
+  toast(scope === "stories" ? "Scanning stories…" : "Scanning every video…");
+  startStaticPoll();
+}
+
+async function writeStaticImages(){
+  // Take the scan that has already run and write the images for what it found,
+  // rather than decoding the whole archive a second time.
+  const r = await post("/api/static/scan", {only_write: true, write: true});
+  if(!r.ok){ toast(r.error || "Could not start"); return; }
+  toast("Writing still images…");
+  startStaticPoll();
+}
+
+function startStaticPoll(){
+  stopStaticPoll();
+  staticPoll = setInterval(refreshStatic, 1200);
+}
+
+function stopStaticPoll(){
+  if(staticPoll){ clearInterval(staticPoll); staticPoll = null; }
+}
+
+async function refreshStatic(){
+  const box = $("staticBox");
+  if(!box || !staticOpen) { stopStaticPoll(); return; }
+  let s;
+  try { s = await (await fetch("/api/static")).json(); }
+  catch(e){ return; }
+  const note = $("staticNote"), body = $("staticBody");
+  const running = s.running;
+  $("staticStop").style.display = running ? "" : "none";
+  $("staticStories").disabled = running;
+  $("staticAll").disabled = running;
+  // Only offer to write once there is something found and nothing running: the
+  // writing pass re-uses the findings rather than rescanning.
+  $("staticWrite").style.display =
+    (!running && s.found_count && !s.images) ? "" : "none";
+
+  if(running){
+    const pct = s.total ? Math.round(s.checked / s.total * 100) : 0;
+    note.textContent = `scanning ${s.scope}… ${s.checked} of ${s.total} (${pct}%)`;
+    body.textContent = s.text || "";
+  } else if(s.phase === "cancelled"){
+    note.textContent = `stopped after ${s.checked} of ${s.total}`;
+  } else if(s.phase === "error"){
+    note.textContent = "scan failed"; body.textContent = s.error;
+  } else if(s.done){
+    note.textContent = `${s.found_count} still video${s.found_count===1?"":"s"}`
+      + (s.bytes ? ` · ${fmtBytes(s.bytes)}` : "")
+      + (s.images ? ` · ${s.images} image${s.images===1?"":"s"} written` : "");
+    const list = (s.found || []).slice(-12).map(r => {
+      const nm = r.image ? ` → ${r.image.split("/").pop()}` : "";
+      return `<div>${esc(r.profile)}/${esc(r.name)} <span class="hint">`
+        + `${r.seconds}s, diff ${r.mean_diff}</span>${esc(nm)}</div>`;
+    }).join("");
+    body.innerHTML = list || "Nothing found.";
+    if(s.phase === "done") stopStaticPoll();
+  } else {
+    note.textContent = "Not scanned yet. Stories is quick; every video takes a while.";
+  }
 }
 
 async function renderGallery(){

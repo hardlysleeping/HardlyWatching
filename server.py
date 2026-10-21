@@ -24,6 +24,13 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+# The static-video checker lives in tools/ and is imported by name, so the app
+# and the command-line tool share one definition of how a still is found.
+_HERE = Path(__file__).resolve().parent
+if str(_HERE / "tools") not in sys.path:
+    sys.path.insert(0, str(_HERE / "tools"))
+
 from urllib.parse import urlparse
 
 from engine import (Engine, UPLOAD_EXTS, clean_profile_name, ensure_pillow_formats,
@@ -97,6 +104,17 @@ _SCAN_TTL = 15.0
 _scan_cache: dict = {"t": 0.0, "root": None, "found": None}
 _scan_lock = threading.Lock()
 
+# Static-video scan: a background job, because a full pass over an archive is
+# minutes to hours of decoding and the page must not sit and wait for it. Same
+# shape as the download queue on purpose -- a phase, a count, a cancel flag and
+# a last result -- so the UI can show real progress instead of a frozen button.
+_static_job: dict = {
+    "running": False, "cancelled": False, "phase": "", "checked": 0,
+    "total": 0, "found": [], "images": 0, "error": "", "done": False,
+    "text": "", "started": 0.0, "scope": "",
+}
+_static_lock = threading.Lock()
+
 
 def _scan_clips(root, force: bool = False):
     import shorts
@@ -117,6 +135,114 @@ def _invalidate_scan():
     """Drop the cached scan, e.g. just after a download finishes."""
     with _scan_lock:
         _scan_cache["found"] = None
+
+
+def _static_scan_worker(scope: str, write_images: bool) -> None:
+    """Walk the archive looking for clips whose frames never change.
+
+    Runs on its own thread. Progress is written into _static_job, which is what
+    the UI polls -- there is no other channel, and holding a request open for
+    hours would time out long before it finished.
+    """
+    import static_videos as sv          # tools/, put on the path at import time
+    eng = get_engine()
+    try:
+        rows = list(sv.videos_for_scan(Path(eng.output_root),
+                                       stories_only=(scope == "stories")))
+        with _static_lock:
+            _static_job["total"] = len(rows)
+            _static_job["phase"] = "scanning"
+        found = []
+        for fp, folder, size, story in rows:
+            with _static_lock:
+                if _static_job["cancelled"]:
+                    _static_job["phase"] = "cancelled"
+                    return
+                _static_job["checked"] += 1
+                _static_job["text"] = f"{folder.name}/{fp.name}"
+            stats = sv.frame_stats(fp)
+            if stats is None:
+                continue
+            _n, diff = stats
+            if diff > sv.STATIC_THRESHOLD:
+                continue
+            dur = sv.duration_of(fp)
+            row = {"path": str(fp), "profile": folder.name, "name": fp.name,
+                   "bytes": size, "mean_diff": round(diff, 3),
+                   "seconds": round(dur, 1), "story": story, "image": ""}
+            if write_images:
+                dest = sv.still_path(folder, fp)
+                if sv.extract_frame(fp, dest):
+                    row["image"] = str(dest)
+                    with _static_lock:
+                        _static_job["images"] += 1
+            found.append(row)
+            with _static_lock:
+                _static_job["found"] = found
+        with _static_lock:
+            _static_job["phase"] = "done"
+    except Exception as e:
+        with _static_lock:
+            _static_job["phase"] = "error"
+            _static_job["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        with _static_lock:
+            _static_job["running"] = False
+            _static_job["done"] = True
+
+
+def _static_write_from_findings() -> None:
+    """Write still images for what the last scan already found.
+
+    Deliberately not a second scan: the decode is the expensive part and its
+    answer has not changed since a moment ago. The video is never touched -- an
+    image is written beside it.
+    """
+    import static_videos as sv
+    try:
+        with _static_lock:
+            rows = list(_static_job["found"])
+            _static_job.update(running=True, cancelled=False, phase="writing",
+                               images=0, done=False, error="")
+        written = []
+        for row in rows:
+            with _static_lock:
+                if _static_job["cancelled"]:
+                    _static_job["phase"] = "cancelled"
+                    return
+                _static_job["text"] = f"{row['profile']}/{row['name']}"
+            fp = Path(row["path"])
+            if not fp.is_file():
+                continue
+            dest = sv.still_path(fp.parent, fp)
+            if sv.extract_frame(fp, dest):
+                row = dict(row, image=str(dest))
+                written.append(row)
+                with _static_lock:
+                    _static_job["images"] = len(written)
+        with _static_lock:
+            _static_job["found"] = written
+            _static_job["phase"] = "done"
+    except Exception as e:
+        with _static_lock:
+            _static_job["phase"] = "error"
+            _static_job["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        with _static_lock:
+            _static_job["running"] = False
+            _static_job["done"] = True
+
+
+def static_status() -> dict:
+    """Snapshot of the static-video scan, for the UI to poll."""
+    with _static_lock:
+        j = dict(_static_job)
+    j["found_count"] = len(j.get("found") or [])
+    j["bytes"] = sum(r.get("bytes", 0) for r in (j.get("found") or []))
+    # Only the newest few rows come back to the browser; the rest stay server-side
+    # so a scan that finds hundreds does not push a huge payload every second.
+    j["found"] = (j.get("found") or [])[-40:]
+    return j
 
 
 def _systemctl(*args) -> tuple[int, str]:
@@ -462,6 +588,9 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/autostart":
             # Read-only: whether the service starts itself at login.
             return self._json(autostart_state())
+        if p == "/api/static":
+            # Progress of the static-video scan, polled while it runs.
+            return self._json(static_status())
         if p == "/api/tiktok/browsers":
             # Which browsers are signed into TikTok (yt-dlp takes a name, not a
             # cookie file, so this is a plain list).
@@ -1099,6 +1228,35 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/autostart":
             return self._json(set_autostart(bool(body.get("enabled"))))
+
+        if p == "/api/static/scan":
+            # Start looking for videos whose frames never change. Backgrounded:
+            # a full archive is hours of decoding, and the button must not hold
+            # the request open for that.
+            scope = str(body.get("scope") or "stories")
+            write = bool(body.get("write"))
+            only_write = bool(body.get("only_write"))
+            if scope not in ("stories", "all"):
+                return self._json({"ok": False, "error": "unknown scope"})
+            with _static_lock:
+                if _static_job["running"]:
+                    return self._json({"ok": False, "error": "already scanning"})
+                _static_job.update(
+                    running=True, cancelled=False, phase="starting", checked=0,
+                    total=0, found=[], images=0, error="", done=False,
+                    started=time.time(), scope=scope)
+            target = (_static_write_from_findings if only_write
+                      else _static_scan_worker)
+            args = () if only_write else (scope, write)
+            threading.Thread(target=target, args=args,
+                             daemon=True, name="static-scan").start()
+            return self._json({"ok": True, "scope": scope, "write": write,
+                               "only_write": only_write})
+
+        if p == "/api/static/cancel":
+            with _static_lock:
+                _static_job["cancelled"] = True
+            return self._json({"ok": True})
 
         if p == "/api/cooldown/clear":
             # The countdown is a safety brake, not a lock: Instagram's own wait

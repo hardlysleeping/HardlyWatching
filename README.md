@@ -290,6 +290,16 @@ video. `tools/static_videos.py` finds them by measuring — it samples each clip
 frames, downscales them, and checks how much they differ from the first. It is a
 maintenance tool you run by hand, not part of the app:
 
+**In the app:** the Gallery has a **🖼 Still videos** button in its toolbar. It
+opens a small panel with **Scan stories** and **Scan all videos**. The scan runs
+in the background with live progress ("checked 400 of 12,028") and a **Stop**
+button, because decoding an archive takes far longer than a page can wait. When
+it finishes it lists what it found and what it saved, and offers **Write still
+images** — that writes the images for what has already been found, without
+decoding everything a second time.
+
+**From the command line**, the same work:
+
 ```sh
 python3 tools/static_videos.py --stories-only          # report only
 python3 tools/static_videos.py --stories-only --convert # also write a still
