@@ -62,6 +62,15 @@
   }
   .filt.on{background:var(--accent);border-color:var(--accent);color:#1a0f08}
 
+  .edgeshelf{
+    position:fixed;top:0;right:0;bottom:0;width:26px;
+    /* Under the rail, so the buttons still take their own clicks. */
+    z-index:19;
+  }
+  /* Nothing can hover here, so the strip must not exist: it would be a silent
+     26px band down the right edge that swallows taps. */
+  @media (hover: none){ .edgeshelf{display:none} }
+
   /* ---- right-hand action rail ---- */
   .rail{
     position:fixed;right:.55rem;bottom:calc(env(safe-area-inset-bottom) + 5.4rem);
@@ -195,8 +204,16 @@
   <span class="title">Shorts</span>
   <button class="filt" id="favBtn" aria-label="Starred only"
           title="Starred only — the clips you have starred">&#9734;</button>
+  <button class="filt" id="uiToggle" aria-label="Show or hide the controls"
+          title="Hide the controls">&#128065;</button>
   <span class="count" id="count"></span>
 </div>
+
+<!-- A place to put the cursor, not a thing to look at. On a desktop there is no
+     swipe, so running the cursor into the right edge reveals the controls and
+     leaving it puts them back -- the same gesture, done with a mouse, and nothing
+     permanent sitting over the video. -->
+<div class="edgeshelf" id="edgeshelf" aria-hidden="true"></div>
 
 <div class="rail" id="rail" style="display:none">
   <div>
@@ -418,14 +435,62 @@ function clipEl(c){
 // and only a gesture: auto-hiding them while a clip plays means reaching for a
 // button that has just vanished, and re-showing them on every clip would undo the
 // choice a moment later.
-let chromeHidden = false;
+let chromeHidden = false;   // the choice: what the controls do at rest
+let chromePeek = false;     // the cursor is at the edge: show them anyway
 
-function showChrome(hidden){
-  chromeHidden = !!hidden;
-  const d = chromeHidden ? "none" : "";
+function paintChrome(){
+  const hidden = chromeHidden && !chromePeek;
+  const d = hidden ? "none" : "";
   for(const id of ["rail", "bottombar", "scrubWrap"]){
     const el = $(id);
     if(el) el.style.display = d;
+  }
+  const btn = $("uiToggle");
+  if(btn){
+    btn.title = chromeHidden ? "Show the controls" : "Hide the controls";
+    btn.setAttribute("aria-pressed", chromeHidden ? "true" : "false");
+  }
+}
+
+function showChrome(hidden){
+  chromeHidden = !!hidden;
+  chromePeek = false;      // a deliberate change cancels any hover
+  paintChrome();
+}
+
+// Reveal for the duration of a hover, without changing the choice: leaving the
+// edge puts them back the way the choice says.
+function peekChrome(){
+  if(chromePeek || !chromeHidden) return;
+  chromePeek = true;
+  paintChrome();
+}
+
+function unpeekChrome(){
+  if(!chromePeek) return;
+  chromePeek = false;
+  paintChrome();
+}
+
+// A desktop has no swipe, so the same two things are offered: a small button in
+// the topbar, and the invisible strip down the right edge.
+function wireChromeToggle(){
+  const btn = $("uiToggle");
+  if(btn) btn.onclick = () => showChrome(!chromeHidden);
+
+  const shelf = $("edgeshelf");
+  const rail = $("rail");
+  if(!shelf) return;
+  // Gated on the pointer that arrives, not on a guess about the device. A finger
+  // reports "touch", so a phone can never trip this and keeps the swipe alone;
+  // the CSS takes the strip out of the layout entirely on hover-less screens, so
+  // it cannot swallow a tap there either.
+  const byMouse = (fn) => (e) => { if(e.pointerType === "mouse") fn(); };
+  shelf.addEventListener("pointerenter", byMouse(peekChrome));
+  shelf.addEventListener("pointerleave", byMouse(() => setTimeout(unpeekChrome, 220)));
+  if(rail){
+    rail.addEventListener("pointerenter", byMouse(peekChrome));
+    rail.addEventListener("pointerleave", byMouse(() => setTimeout(unpeekChrome, 220)));
   }
 }
 
@@ -459,7 +524,7 @@ function onSwipeMove(e){
   if(Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
   swipeFrom = null;
   swipeUntil = Date.now() + 450;   // swallow the click this gesture ends with
-  showChrome(!chromeHidden);
+  showChrome(!chromeHidden);       // also clears any hover-peek
 }
 
 // Nothing auto-hides, so the controls are on screen from the first clip.
@@ -473,6 +538,7 @@ function renderEmpty(message, sub){
   // you would be stuck in an empty screen with no control to leave it. Keep
   // the bar; hide only what has nothing to show (the rail and bottombar).
   $("topbar").style.display = "";
+  chromePeek = false;
   $("rail").style.display = "none";
   $("bottombar").style.display = "none";
   $("scrubWrap").style.display = "none";
@@ -521,8 +587,9 @@ async function fetchMore(){
     placeQueue();
     $("topbar").style.display = "";
     // Respect the gesture: a refill must not pop the controls back on screen
-    // after they have been swiped away.
-    showChrome(chromeHidden);
+    // after they have been swiped away, or close them while the cursor is at the
+    // edge asking for them.
+    paintChrome();
     paintMute();
     // Mark the clip now in view straight away. onScrollSettled is otherwise
     // only reachable by scrolling, so the first clip of every session went
@@ -928,6 +995,8 @@ $("likeBtn").onclick = async () => {
   fillRail();
   await act("like", {value: !!c.liked});
 };
+
+wireChromeToggle();
 
 $("who").onclick = () => {
   const b = $("who");

@@ -7,6 +7,13 @@ versioning is [SemVer](https://semver.org/).
 
 ## [0.2.0] — 2026-10-21
 
+### Changed
+- **The Shorts controls can be hidden with a mouse too.** A swipe has no desktop
+  equivalent, so there is a small 👁 in the topbar and an invisible strip along the
+  right edge that reveals the controls while the cursor is in it and puts them back
+  afterwards. The strip is gated on the pointer that arrives, not on a guess about
+  the device, and is removed from the layout entirely where nothing can hover — a
+  phone keeps the swipe and never gets a dead band down its edge.
 ### Added
 - **Selection mode in the gallery.** *☑ Select* (or holding a tile) turns tapping
   into picking: choose as many tiles as you like and then Star, Like, Favourite,

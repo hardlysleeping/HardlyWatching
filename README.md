@@ -451,6 +451,12 @@ Each clip has **mute**, **like**, **star**, **download**, **trash**, **more** an
 right** shows or hides those controls: they start visible, nothing hides them on
 their own, and a refill leaves them as you left them.
 
+On a desktop there is no swipe, so the same two things are offered: a small **👁**
+in the topbar, and an invisible strip down the right edge — run the cursor into it
+and the controls appear, move away and they go back to however you left them. The
+strip exists only where something can hover, so it is never a dead band along the
+edge of a phone screen.
+
 On a desktop there is a **seek bar** under the clip, and **← / →** jump five
 seconds. Every clip loops, so without those there is no way back to the start.
 
