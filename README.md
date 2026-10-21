@@ -312,6 +312,14 @@ it finishes it lists what it found and what it saved, and offers **Write still
 images** — that writes the images for what has already been found, without
 decoding everything a second time.
 
+**The Starred view.** Gallery → *★ Starred* lists every starred clip, newest star
+first. A star is the bookmark, kept apart from the like, and it stays on the clip
+rather than moving the file.
+
+**Controlling the Shorts overlay.** The right-hand rail, the account bar and the
+scrub bar start visible and never hide themselves. A swipe left or right toggles
+them, and a refill leaves them as you left them.
+
 **Likes and stars.** The heart is a like; the star is a bookmark. They are
 independent — a clip can be liked, starred, both or neither — and the topbar's
 star button filters the feed to the clips you have starred. The rail's buttons are

@@ -1911,6 +1911,41 @@ def gallery_profiles(self) -> list[dict]:
     return out
 
 
+def starred_posts(self) -> list[dict]:
+    """Every starred clip, shaped like a gallery post so it can be shown as tiles.
+
+    Starring happens in the viewer, so these are clips rather than profile posts:
+    one item each, carrying the profile and platform it came from because those
+    are what the media and thumbnail URLs are built from. The path is not used for
+    that -- the two platforms store it differently (TikTok's carries a leading
+    `tiktok/`, Instagram's does not) -- so only the file name is taken from it.
+    """
+    import profile_db as _pdb
+    video_exts = {".mp4", ".mov", ".webm", ".m4v", ".mkv"}
+    out = []
+    for row in _pdb._shared_db().starred_clips():
+        rel = str(row.get("path") or "")
+        name = rel.rsplit("/", 1)[-1]
+        who = str(row.get("profile") or "")
+        if not name or not who:
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        out.append({
+            "post": os.path.splitext(name)[0],
+            "username": who,
+            "platform": str(row.get("platform") or "instagram"),
+            # Starred order, falling back to when the clip was seen: anything
+            # starred before the column existed has no moment of its own.
+            "ts": float(row.get("starred_at") or row.get("first_seen") or 0),
+            # Where the FILE lives. A star does not move anything, so this is
+            # always the profile's main folder.
+            "section": "main",
+            "items": [{"file": name, "part": 1,
+                       "kind": "video" if ext in video_exts else "image"}],
+        })
+    return out
+
+
 def gallery_all(self, section: str) -> list[dict]:
     """Every profile's posts for one section, across the whole archive.
 
@@ -2750,6 +2785,7 @@ class Engine:
 
     gallery_profiles = gallery_profiles
     gallery_sections = gallery_sections
+    starred_posts = starred_posts
     tiktok_avatar = tiktok_avatar
     gallery_posts = gallery_posts
     # These two are what make a merged card show more than one account, and they

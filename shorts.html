@@ -389,6 +389,7 @@ function clipEl(c){
   let tapTimer = null;
   wrap.addEventListener("click", e => {
     if(e.target.closest(".rail") || e.target.closest(".topbar")) return;
+    if(Date.now() < swipeUntil) return;   // the tail of a swipe, not a tap
     const r = wrap.getBoundingClientRect();
     const dir = (e.clientX - r.left) < r.width / 2 ? -1 : 1;
     if(tapTimer){
@@ -409,6 +410,62 @@ function clipEl(c){
   });
   return wrap;
 }
+
+// The controls that sit over the video: the rail down the right edge, the
+// account bar along the bottom, and the scrub bar.
+//
+// They start visible and nothing here hides them on their own. A gesture does,
+// and only a gesture: auto-hiding them while a clip plays means reaching for a
+// button that has just vanished, and re-showing them on every clip would undo the
+// choice a moment later.
+let chromeHidden = false;
+
+function showChrome(hidden){
+  chromeHidden = !!hidden;
+  const d = chromeHidden ? "none" : "";
+  for(const id of ["rail", "bottombar", "scrubWrap"]){
+    const el = $(id);
+    if(el) el.style.display = d;
+  }
+}
+
+// Swipe left or right to show or hide the controls.
+//
+// Either direction toggles. The rail is on the right edge, which is where a
+// thumb already is, and asking for one specific direction on a control that does
+// not slide would be a rule to remember rather than a gesture to use.
+//
+// A vertical drag is left alone: the feed is a scroller, so only a clearly
+// horizontal move counts, and the tap that ends a swipe is swallowed so it does
+// not also pause the clip.
+let swipeFrom = null;
+let swipeUntil = 0;
+
+function onSwipeStart(e){
+  if(e.touches && e.touches.length === 1){
+    const t = e.touches[0];
+    swipeFrom = {x: t.clientX, y: t.clientY};
+  } else {
+    swipeFrom = null;
+  }
+}
+
+function onSwipeMove(e){
+  if(!swipeFrom || !e.touches || e.touches.length !== 1) return;
+  const t = e.touches[0];
+  const dx = t.clientX - swipeFrom.x;
+  const dy = t.clientY - swipeFrom.y;
+  // Horizontal, deliberate, and not a vertical scroll that drifted sideways.
+  if(Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+  swipeFrom = null;
+  swipeUntil = Date.now() + 450;   // swallow the click this gesture ends with
+  showChrome(!chromeHidden);
+}
+
+// Nothing auto-hides, so the controls are on screen from the first clip.
+document.addEventListener("touchstart", onSwipeStart, {passive: true});
+document.addEventListener("touchmove", onSwipeMove, {passive: true});
+document.addEventListener("touchend", () => { swipeFrom = null; }, {passive: true});
 
 function renderEmpty(message, sub){
   // The Favourites button lives in the topbar. Hiding the bar here would also
@@ -463,9 +520,9 @@ async function fetchMore(){
     queue.push(...shuffle(got.slice()));
     placeQueue();
     $("topbar").style.display = "";
-    $("rail").style.display = "";
-    $("bottombar").style.display = "";
-    $("scrubWrap").style.display = "";
+    // Respect the gesture: a refill must not pop the controls back on screen
+    // after they have been swiped away.
+    showChrome(chromeHidden);
     paintMute();
     // Mark the clip now in view straight away. onScrollSettled is otherwise
     // only reachable by scrolling, so the first clip of every session went

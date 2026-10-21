@@ -981,11 +981,15 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
             section = (q.get("section") or [""])[0]
-            if section not in ("favorites", "trash"):
+            if section not in ("favorites", "trash", "starred"):
                 return self.send_error(400)
+            # Favourites and trash are folders; a star is a flag on the clip, so it
+            # is the one section that does not come from walking the archive.
+            posts = (get_engine().starred_posts() if section == "starred"
+                     else get_engine().gallery_all(section))
             return self._json({"section": section,
                                "profiles": get_engine().gallery_profiles(),
-                               "posts": get_engine().gallery_all(section)})
+                               "posts": posts})
         if p == "/api/photos":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)

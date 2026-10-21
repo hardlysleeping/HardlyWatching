@@ -5,6 +5,21 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A Starred view in the Gallery.** A star is a bookmark — the higher-level
+  favourite — and it lives on the clip rather than in a folder, so there was no
+  way to see them together. The *★ Starred* chip beside All Favourites lists every
+  starred clip across the archive, newest star first. `starred_at` is recorded when
+  you star something, because `first_seen` is a sync stamp that every row in a pass
+  shares and ordering a bookmarks view by it means nothing.
+- **Swipe left or right in Shorts to show or hide the controls.** They start
+  visible and nothing hides them on their own: no timer, and a refill does not pop
+  them back after you have swiped them away. Either direction toggles — the rail is
+  on the right edge where a thumb already is, and one specific direction on a
+  control that does not slide would be a rule to remember rather than a gesture.
+  The tap that ends a swipe is swallowed, so it does not also pause the clip.
+
 ### Changed
 
 - **The search box sits above the queue and finished lists.** It was at the bottom

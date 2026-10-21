@@ -3409,6 +3409,10 @@ function buildAllBar(profileCount){
     () => { gAll = null; gProfile = null; gPlatform = "instagram"; renderGallery(); }));
   bar.appendChild(mk("♥ All Favourites", gAll === "favorites",
     () => { gAll = "favorites"; gProfile = null; gPlatform = "instagram"; renderAllSection("favorites"); }));
+  // The higher-level favourite: a star is a bookmark, and it lives on the clip
+  // rather than in a folder, so this view is the only place to see them together.
+  bar.appendChild(mk("★ Starred", gAll === "starred",
+    () => { gAll = "starred"; gProfile = null; gPlatform = "instagram"; renderAllSection("starred"); }));
   bar.appendChild(mk("🗑 All Trash", gAll === "trash",
     () => { gAll = "trash"; gProfile = null; gPlatform = "instagram"; renderAllSection("trash"); }));
   bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
@@ -3497,7 +3501,8 @@ async function renderAllSection(section){
     const play = document.createElement("button");
     play.className = "small";
     play.style.marginLeft = "9px";
-    play.textContent = section === "favorites" ? "▶ Swipe favourites" : "▶ Swipe all";
+    play.textContent = section === "favorites" ? "▶ Swipe favourites"
+      : section === "starred" ? "▶ Swipe starred" : "▶ Swipe all";
     play.title = "Open full screen and swipe through every item";
     play.onclick = () => {
       allViewList = sortPosts(posts);
@@ -3515,6 +3520,7 @@ async function renderAllSection(section){
   if(!posts.length){
     grid.innerHTML = `<div class="gempty">${
       section === "favorites" ? "No favourites across any profile yet."
+      : section === "starred" ? "Nothing starred yet. Star a clip in Shorts and it will appear here."
       : "Trash is empty everywhere."}</div>`;
   } else {
     for(const post of sortPosts(posts)){

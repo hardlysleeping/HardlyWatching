@@ -101,6 +101,10 @@ class ProfileDB:
         # you actually want to find again -- so they are separate columns and one
         # never implies the other.
         ("clips", "starred", "INTEGER NOT NULL DEFAULT 0"),
+        # When it was starred. `first_seen` is a sync stamp, so every row in one
+        # pass carries the same value and ordering a bookmarks view by it means
+        # nothing. Zero for anything starred before this column existed.
+        ("clips", "starred_at", "REAL NOT NULL DEFAULT 0"),
         # Which site the parent lives on. Blank means "the same one as the alias",
         # which is what every within-platform merge means.
         ("profile_links", "parent_platform", "TEXT NOT NULL DEFAULT ''"),
@@ -561,8 +565,9 @@ class ProfileDB:
 
     def set_starred(self, path: str, starred: bool = True):
         with self._lock:
-            self._conn.execute("UPDATE clips SET starred=? WHERE path=?",
-                               (1 if starred else 0, path))
+            self._conn.execute(
+                "UPDATE clips SET starred=?, starred_at=? WHERE path=?",
+                (1 if starred else 0, time.time() if starred else 0.0, path))
             self._conn.commit()
 
     def set_trashed(self, path: str, trashed: bool = True):
@@ -628,6 +633,20 @@ class ProfileDB:
         if out[0][0].lower() == me.lower():
             out[0] = (me, out[0][1])
         return out
+
+    def starred_clips(self) -> list[dict]:
+        """Every starred clip, newest first. Backs the gallery's Starred view.
+
+        A star is the bookmark -- the higher-level favourite -- and it lives on the
+        clip, not in a folder, so this is the only list of it there is. Trashed
+        clips are left out: they are still starred, but they are in the bin.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT path, profile, platform, first_seen, starred_at FROM clips "
+                "WHERE starred=1 AND trashed=0 "
+                "ORDER BY starred_at DESC, first_seen DESC")
+            return [dict(r) for r in cur]
 
     def split_profile(self, username: str) -> dict:
         """Undo a merge, and stop the same-name rule putting it back.
