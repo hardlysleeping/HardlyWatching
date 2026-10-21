@@ -3863,6 +3863,13 @@ async function renderPhotos(username, platform){
   const host = $("profileGrid");
   const sw0 = $("gSearchWrap");
   if(sw0) sw0.style.display = "none";   // the search box is for the profile list only
+  // None of the cross-profile views is the one you are in once a profile is
+  // open, so the bar above must stop claiming otherwise. It is only rebuilt
+  // when the profile list is drawn, so it has to be cleared here -- left alone
+  // it keeps saying "Profiles (n)" or "All Favourites" while you browse one
+  // person, which reads as if you were still on that view.
+  const abar = $("allBar");
+  if(abar) abar.querySelectorAll(".fchip.on").forEach(c => c.classList.remove("on"));
   gProfile = username;
   gPlatform = platform || "instagram";
   gFilter = "all";
