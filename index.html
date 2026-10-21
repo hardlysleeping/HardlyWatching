@@ -1546,8 +1546,70 @@ let logScrolls = {};
 // only touch the DOM when it actually differs.
 const lastListHtml = {};
 
+// The last row keys and row html per container, so a repaint can tell "the same
+// rows, my text moved" from "the list itself changed".
+const rowKeys = {};
+const rowHtml = {};
+
+// True while the page has been scrolled or touched in the last moment.
+//
+// Used only to hold off repaints. Replacing the element a scroll gesture started
+// on cancels that scroll -- on a touch screen the position snaps back -- so a
+// repaint that lands mid-gesture waits for the poll after it instead.
+let lastTouchAt = 0;
+window.addEventListener("scroll", () => { lastTouchAt = performance.now(); }, {passive: true});
+window.addEventListener("pointerdown", () => { lastTouchAt = performance.now(); }, {passive: true});
+window.addEventListener("wheel", () => { lastTouchAt = performance.now(); }, {passive: true});
+function scrollingNow(){
+  return performance.now() - lastTouchAt < 350;
+}
+
+function rowKeyOf(j, fallback){
+  return String((j && (j.id || j.username)) || fallback);
+}
+
+// Repaint a list row by row.
+//
+// Replacing the container's whole innerHTML throws away every card element. That
+// loses the open log panels and the menus, and on a touch screen it loses the
+// scroll as well. When the same rows are still on screen, only the ones whose
+// text actually moved are replaced; everything else keeps its element.
+function setRows(id, rows){
+  const el = $(id);
+  if(!el) return false;
+  const keys = rows.map(r => r.key);
+  const prev = rowKeys[id];
+  const sameRows = prev && prev.length === keys.length
+                   && prev.every((k, i) => k === keys[i]);
+  const html = rows.map(r => r.html);
+  if(!sameRows){
+    if(lastListHtml[id] === html.join("") && prev) return false;
+    lastListHtml[id] = html.join("");
+    rowKeys[id] = keys;
+    rowHtml[id] = html;
+    el.innerHTML = html.join("");
+    wireCards(el);
+    return true;
+  }
+  if(scrollingNow()) return false;             // try again on the next poll
+  let changed = 0;
+  for(let i = 0; i < rows.length; i++){
+    if(rowHtml[id][i] === rows[i].html) continue;
+    const child = el.children[i];
+    if(!child) continue;
+    child.outerHTML = rows[i].html;
+    wireCards(el.children[i]);                 // only the card that was replaced
+    changed++;
+  }
+  if(!changed) return false;
+  rowHtml[id] = html;
+  lastListHtml[id] = html.join("");
+  return true;
+}
+
 function setListHtml(id, html){
   if(lastListHtml[id] === html) return false;   // nothing to do, leave the DOM alone
+  if(scrollingNow()) return false;              // a repaint mid-scroll can eat the scroll
   lastListHtml[id] = html;
   const el = $(id);
   if(!el) return false;
@@ -2067,17 +2129,28 @@ function paintPagedQueue(queued){
   // Assigning the undefined argument directly emptied it, so a page click
   // blanked the list and looked like the button did nothing.
   if(queued) listData.queue = queued;
-  paintPaged("queue", null, $("queueHint"), null);
   const { hits, start, slice } = pageSlice("queue");
   // Position numbers stay the real queue position, not the row number, so a
   // card still says where it actually sits in the queue.
-  setListHtml("list", slice.map((j, i) => cardHtml(j, String(start + i + 1),
-                                                   start + i + 1)).join(""));
-  if(!slice.length){
-    setListHtml("list", hits.length ? "" :
+  //
+  // One write, not two. This used to call paintPaged("queue") first, which drew
+  // the same rows without their positions and was immediately overwritten by the
+  // version below -- two different strings, so the "nothing changed" guard never
+  // caught it and the whole list was rebuilt twice on every poll, forever, even
+  // with nothing running. On a touch screen that is a list being torn down under
+  // your finger every 600ms.
+  if(slice.length){
+    setRows("list", slice.map((j, i) => ({
+      key: rowKeyOf(j, start + i + 1),
+      html: cardHtml(j, String(start + i + 1), start + i + 1),
+    })));
+  } else if(hits.length){
+    setRows("list", []);
+  } else {
+    setRows("list", [{key: "hint", html:
       `<div class="hint" style="padding:10px 2px">` +
       (listUI.queue.q ? `No waiting profile matches “${esc(listUI.queue.q)}”.`
-                      : "Nothing waiting.") + `</div>`);
+                      : "Nothing waiting.") + `</div>`}]);
   }
   paintPager("queue", hits.length, null, $("queueHint"), "waiting");
 }
@@ -2087,13 +2160,13 @@ function paintPagedQueue(queued){
 function paintPaged(key, items, hintEl, noun){
   if(items) listData[key] = items;
   const { hits, slice } = pageSlice(key);
-  const html = slice.map(j => cardHtml(j, "", 0)).join("");
-  setListHtml(key === "done" ? "doneList" : "list", html);
+  const id = key === "done" ? "doneList" : "list";
+  setRows(id, slice.map((j, i) => ({key: rowKeyOf(j, i), html: cardHtml(j, "", 0)})));
   if(key === "done"){
     if(!slice.length && hits.length === 0){
-      setListHtml("doneList", listUI.done.q
-        ? `<div class="hint" style="padding:10px 2px">No finished profile matches “${esc(listUI.done.q)}”.</div>`
-        : "");
+      setRows("doneList", listUI.done.q
+        ? [{key: "hint", html: `<div class="hint" style="padding:10px 2px">No finished profile matches “${esc(listUI.done.q)}”.</div>`}]
+        : []);
     }
   }
   paintPager(key, hits.length, hintEl, null, noun);

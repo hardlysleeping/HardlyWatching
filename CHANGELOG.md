@@ -5,7 +5,22 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
+### Fixed
+
+- **The queue list was rebuilt twice on every poll, forever.** `paintPagedQueue`
+  drew the rows once without their queue positions and then immediately drew them
+  again with them — two different strings, so the "nothing changed, leave the DOM
+  alone" guard never caught it and every card was thrown away and recreated every
+  1.2s, even with nothing running. Measured: 2 mutations per poll, ~13 over eight
+  idle seconds; now 0.
+- **A change to one card no longer rebuilds the whole list.** Replacing the
+  container's innerHTML costs the open log panels and the menus, and on a touch
+  screen it costs the scroll: replacing the element a gesture started on cancels
+  that scroll. Only the rows whose text actually moved are replaced now — measured
+  by moving one job's counters and repainting: 1 row replaced, 9 kept their DOM
+  nodes.
+- **A repaint no longer lands mid-scroll.** Held off for a moment while the page
+  has been scrolled or touched, and retried on the next poll.
 
 - **TikTok profile pictures.** A TikTok archive held none at all — yt-dlp is never
   asked for one, so all 402 profiles had nothing but videos. The account's own
