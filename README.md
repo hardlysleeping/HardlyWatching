@@ -213,9 +213,11 @@ only renames it into place once the file is complete, and yt-dlp keeps `.part`
 files, so the next run picks up cleanly. A killed run can leave a `.temp` file
 behind, which the next run overwrites.
 
-A pause is **not** saved: restarting the service (or rebooting) resumes
-downloading. If you want a brake that survives a restart, lock the session you
-want held back.
+A pause **is** saved: restarting the service, deploying a new version or
+rebooting all come back paused, so nothing resumes behind your back. Press
+**Resume** when you want it moving again. (A pause caused by a rate limit is
+separate — it clears itself when its cooldown expires, which a pause you pressed
+never does.)
 
 Re-running a profile does not re-download it. instaloader's `--fast-update` stops
 at the first file it already has, and `--latest-stamps` records what has been

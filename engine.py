@@ -2636,6 +2636,15 @@ class Engine:
             if d.get("limit_paused"):
                 self._limit_paused = True
                 self.paused = True
+            # A pause the user pressed survives a restart. Read after the
+            # rate-limit flag above, so a deliberate pause is never mistaken for
+            # one that clears itself when the cooldown expires.
+            up = d.get("user_paused")
+            if isinstance(up, dict):
+                if up.get("instagram"):
+                    self.paused = True
+                if up.get("tiktok"):
+                    self.tt_paused = True
             self.removed = list(d.get("removed") or [])
             self.tombstones = list(d.get("tombstones") or [])
             try:
@@ -2683,6 +2692,15 @@ class Engine:
                     "cooldown_until": self.cooldown_until,
                     "consecutive_limits": self.consecutive_limits,
                     "limit_paused": self._limit_paused,
+                    # A pause the user pressed is remembered, so a restart (or a
+                    # reboot, or a deploy) comes back PAUSED instead of quietly
+                    # putting downloads back to work. Derived rather than stored
+                    # separately: "paused and not a rate-limit pause" IS a user
+                    # pause, which is the same distinction `wait_reason` reports.
+                    "user_paused": {
+                        "instagram": bool(self.paused and not self._limit_paused),
+                        "tiktok": bool(self.tt_paused),
+                    },
                     # When the automatic check last ran. Persisted so a restart
                     # does not immediately look like "never checked" and fire
                     # another sweep against Instagram.
@@ -3423,6 +3441,9 @@ class Engine:
             self._limit_paused = False
         if platform in ("tiktok", "all"):
             self.tt_paused = False
+        # Save BEFORE kicking off: the paused state is persisted, so a resume
+        # that never reached disk would come back paused after a restart.
+        self.save_state()
         self.kick_if_work()
 
     def start_platform(self, platform: str) -> dict:

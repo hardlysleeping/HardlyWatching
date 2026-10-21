@@ -23,8 +23,10 @@ versioning is [SemVer](https://semver.org/).
   resume. Previously a long run had to finish first, so sitting out a block could
   take another twenty minutes. Nothing is half-written — instaloader writes media
   to a `.temp` file and renames it into place only when complete, and yt-dlp keeps
-  `.part` files — so the next run re-fetches cleanly. A pause is still not
-  persisted: restarting the service resumes downloading (lock the session instead).
+  `.part` files — so the next run re-fetches cleanly. A pause you press is now
+  persisted too: a service restart, deploy or reboot comes back paused instead of
+  silently resuming, and only **Resume** starts it again. A rate-limit pause is
+  tracked separately and still clears itself when its cooldown expires.
 
 - **One paste box for both platforms.** The Instagram and TikTok tabs each had
   their own box, so a mixed list meant two pastes on two tabs. There is now a
