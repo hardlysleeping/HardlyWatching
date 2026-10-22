@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import calendar
 import datetime
+import filecmp
 import json
 import os
 import queue
@@ -1849,7 +1850,18 @@ def reconcile_deletions(self, username: str) -> list[str]:
     current = set(_gallery_media(root))
     previously = set(index.get("media") or [])
 
-    vanished = sorted(previously - current)
+    # A move is not a deletion. Favouriting and trashing relocate a file, and
+    # anything now sitting in favorites/ or trash/ must not be tombstoned:
+    # otherwise un-favouriting has to fight an empty placeholder that shadows
+    # the real file, and a lost race here is what left those placeholders in the
+    # first place.
+    moved: set[str] = set()
+    for sub in (FAVORITES_DIR, TRASH_DIR):
+        try:
+            moved.update(p.name for p in (root / sub).iterdir() if p.is_file())
+        except OSError:
+            pass
+    vanished = sorted(n for n in (previously - current) if n not in moved)
     added: list[str] = []
     if vanished:
         with self.lock:
@@ -2729,30 +2741,71 @@ def move_media(self, username: str, name: str, section: str,
 
     # Where the file is now (main, favorites/ or trash/) -> where it should go.
     dest_dir = root if section == "main" else root / section
-    src = next((p for p in [root / name,
-                            root / FAVORITES_DIR / name,
-                            root / TRASH_DIR / name] if p.is_file()), None)
-    if src is None:
-        return False, "file not found"
-    # The source must be the profile folder itself or one of its two subdirs.
-    if src.parent not in (root, root / FAVORITES_DIR, root / TRASH_DIR):
-        return False, "outside profile folder"
 
-    if src.parent == dest_dir:
+    def real(p: Path) -> bool:
+        """A file with contents, not a 0-byte deletion placeholder."""
+        try:
+            return p.is_file() and p.stat().st_size > 0
+        except OSError:
+            return False
+
+    # Every copy of this file that has real bytes in it, whichever folder it is
+    # in. A favourite leaves an empty placeholder in main/ -- that is what stops
+    # instaloader re-downloading what you deleted -- and treating that placeholder
+    # as the file made un-favouriting answer "already there" while the real copy
+    # sat in favorites/. The heart flipped, nothing moved, and a refresh undid it.
+    candidates = [root / name, root / FAVORITES_DIR / name, root / TRASH_DIR / name]
+    copies = [p for p in candidates if real(p)]
+    if not copies:
+        if any(p.is_file() for p in candidates):
+            return False, "only a deleted placeholder is here"
+        return False, "file not found"
+
+    in_dest = next((p for p in copies if p.parent == dest_dir), None)
+    src = next((p for p in copies if p.parent != dest_dir), None)
+    if src is None:
         return True, "already there"
 
-    try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        return False, f"could not create {dest_dir.name}/: {e}"
+    if in_dest is not None:
+        # A real copy on both sides. The destination keeps its file and the other
+        # is retired to the desktop trash -- but only when they are the same
+        # bytes, because two different files sharing a name is a question for a
+        # human, not something to resolve by guessing.
+        try:
+            same = filecmp.cmp(src, in_dest, shallow=False)
+        except OSError:
+            same = False
+        if not same:
+            return False, f"{dest_dir.name}/{name} already exists as a different file"
+        try:
+            _to_desktop_trash(src)
+        except Exception as e:
+            return False, f"could not retire the duplicate: {e}"
+    else:
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return False, f"could not create {dest_dir.name}/: {e}"
 
-    target = dest_dir / name
-    if target.exists():
-        return False, f"{dest_dir.name}/{name} already exists"
-    try:
-        src.rename(target)
-    except OSError as e:
-        return False, f"move failed: {e}"
+        target = dest_dir / name
+        if target.exists():
+            # A placeholder is not media and must not block the real file coming
+            # back to main/. Clearing it is part of the move; its tombstone entry
+            # is dropped below so the post counts as wanted again.
+            try:
+                target.unlink()
+            except OSError as e:
+                return False, f"could not clear the placeholder in {dest_dir.name}/: {e}"
+        try:
+            src.rename(target)
+        except OSError as e:
+            return False, f"move failed: {e}"
+    if dest_dir == root:
+        # Back in main/, so it is no longer a deleted post.
+        try:
+            self.remove_tombstone(username, name, _platform_of_folder(root))
+        except Exception:
+            pass
 
     # Tell the deletion detector this file was MOVED, not deleted.
     #

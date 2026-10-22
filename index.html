@@ -476,6 +476,17 @@
     border-radius:6px;width:26px;height:26px;font-size:13px;line-height:1;
     cursor:pointer;padding:0}
   .ptile .acts button:hover{background:rgba(0,0,0,.9)}
+  /* A heart that changes has to look like it changed. One short spring, no
+     colour flash, nothing that fights the tile's own hover state. */
+  .ptile .acts button.pop,#vwrap [data-vfav].pop{animation:favpop .24s ease-out}
+  @keyframes favpop{
+    0%{transform:scale(1)}
+    40%{transform:scale(1.4)}
+    100%{transform:scale(1)}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .ptile .acts button.pop,#vwrap [data-vfav].pop{animation:none}
+  }
   /* On touch devices there is no hover, so keep the actions visible. */
   @media (hover:none){.ptile .acts{opacity:1}}
   /* Destructive action (trash / restore) sits alone in the bottom-right corner,
@@ -3321,6 +3332,28 @@ function paintHeader(tab){
   }
 }
 
+// Remember where you were, in the URL.
+//
+// A reload used to drop you on Download even if you had been halfway through
+// one person's grid. The view goes into the query string with replaceState, so
+// it never fills up the back button, and the boot at the end of this file reads
+// it back. The link stays shareable: it still opens the same profile.
+let currentTab = "queue";
+
+function rememberView(){
+  const q = new URLSearchParams();
+  if(currentTab === "gallery" || currentTab === "shorts") q.set("tab", currentTab);
+  if(currentTab === "gallery" && gProfile){
+    q.set("profile", gProfile);
+    q.set("platform", gPlatform || "instagram");
+  }
+  if(currentTab !== "shorts" && activePlatform === "tiktok") q.set("plat", "tiktok");
+  const qs = q.toString();
+  const want = (qs ? "?" + qs : "") + location.hash;
+  if(location.search + location.hash === want) return;
+  try{ history.replaceState(null, "", location.pathname + want); }catch(e){}
+}
+
 function showTab(which){
   // Three top-level tabs: Download (queue + finished for both platforms),
   // Gallery, and Shorts. Shorts was a separate page reachable only through a
@@ -3328,6 +3361,7 @@ function showTab(which){
   // /shorts still works standalone for the installed phone/PWA copy.
   const gallery = which === "gallery";
   const shorts = which === "shorts";
+  currentTab = gallery ? "gallery" : shorts ? "shorts" : "queue";
   $("tabQueue").classList.toggle("active", !gallery && !shorts);
   $("tabGallery").classList.toggle("active", gallery);
   $("tabShorts").classList.toggle("active", shorts);
@@ -3387,6 +3421,7 @@ function showTab(which){
   // The poll skips the queue while another pane is showing, so coming back has
   // to draw it from the last state we saw.
   else if(!shorts && lastQueueRender) render(lastQueueRender);
+  rememberView();
 }
 
 $("tabQueue").onclick = () => showTab("queue");
@@ -3431,6 +3466,7 @@ function showPlatform(which){
   // The Sessions panel is per platform too, so an open one follows the tab
   // instead of going on offering the other platform's accounts.
   if($("sessPanel").style.display !== "none") paintSessionPanel();
+  rememberView();
 }
 $("subIg").onclick = () => showPlatform("ig");
 $("subTt").onclick = () => showPlatform("tt");
@@ -3660,6 +3696,10 @@ async function renderAllSection(section){
   const host = $("profileGrid");
   const sw = $("gSearchWrap");
   if(sw) sw.style.display = "none";
+  // This is a cross-profile view, so no single profile is open. The URL has to
+  // say so, or a reload would reopen whichever profile was open a moment ago.
+  gProfile = null;
+  rememberView();
   const mine = ++gReq;
   host.innerHTML = `<div class="gempty">Loading…</div>`;
   let data;
@@ -4227,11 +4267,21 @@ function noteTimelineChanged(){
     + ` · ${tlIndex + 1} of ${tlMonths.length}`;
 }
 
-function paintHeart(btn, tile, on){
+function popHeart(btn){
+  // One small spring when a heart changes, so the tap reads as done before the
+  // server answers. Reading offsetWidth restarts it on a fast second tap.
+  if(!btn) return;
+  btn.classList.remove("pop");
+  void btn.offsetWidth;
+  btn.classList.add("pop");
+}
+
+function paintHeart(btn, tile, on, pop){
   btn.dataset.heart = "1";
   btn.textContent = on ? "♥" : "♡";
   btn.title = on ? "Remove from favourites" : "Add to favourites";
   tile.classList.toggle("faved", on);
+  if(pop) popHeart(btn);
 }
 
 // Open a timeline post in the existing viewer: real size, carousel, keyboard,
@@ -4708,6 +4758,7 @@ async function renderGallery(){
   // undo what is typed in the box.
   wireProfileSearch();
   applyProfileSearch();
+  rememberView();
 }
 
 // Open one profile's gallery from the queue.
@@ -4724,6 +4775,7 @@ function openGalleryProfile(username, platform){
   gPlatform = platform || "instagram";
   gProfile = username;
   renderPhotos(username, gPlatform);
+  rememberView();
 }
 
 async function renderPhotos(username, platform){
@@ -4742,6 +4794,7 @@ async function renderPhotos(username, platform){
   gFilter = "all";
   gType = "any";
   gSeed = (Date.now() & 0x7fffffff);
+  rememberView();
   const mine = ++gReq;
   host.innerHTML = `<div class="gempty">Loading ${esc(username)}…</div>`;
   let data;
@@ -4797,7 +4850,10 @@ function tileFor(username, post, section){
 
   const img = document.createElement("img");
   img.loading = "lazy"; img.alt = ""; img.src = mkThumb(first);
-  img.onclick = () => openViewer(username, post, srcSection, 0);
+  // Read the section off the tile at click time: an in-place favourite has
+  // already moved the files, and a captured section would open the viewer on
+  // the folder they used to be in (heart showing empty on a favourited post).
+  img.onclick = () => openViewer(username, post, tile.dataset.section || srcSection, 0);
   tile.appendChild(img);
 
   // Videos: keep the poster frame, and only start the preview clip when the
@@ -4822,7 +4878,7 @@ function tileFor(username, post, section){
       vid.src = src; vid.muted = true; vid.loop = true;
       vid.playsInline = true; vid.preload = "auto";
       vid.className = "hovervid";
-      vid.onclick = () => openViewer(username, post, srcSection, 0);
+      vid.onclick = () => openViewer(username, post, tile.dataset.section || srcSection, 0);
       vid.oncanplay = () => {
         img.style.visibility = "hidden";
         vid.play().catch(()=>{});
@@ -4840,7 +4896,7 @@ function tileFor(username, post, section){
   }
 
   // Any click on the tile that wasn't a button opens the viewer.
-  tile.onclick = () => openViewer(username, post, section, 0);
+  tile.onclick = () => openViewer(username, post, tile.dataset.section || section, 0);
 
   if(post.count > 1){
     const stack = document.createElement("span");
@@ -4895,16 +4951,23 @@ function tileFor(username, post, section){
   // belongs there), but leaves it in All, where it is still shown from main/.
   if(srcSection !== "trash"){
     let on = faved;
-    const paint = () => {
-      tile.classList.toggle("faved", on);
-      btn.textContent = on ? "♥" : "♡";
-      btn.title = on ? "Remove from favourites" : "Add to favourites";
+    let busy = false;
+    const paint = (pop) => {
+      paintHeart(btn, tile, on, pop);
+      // Keep the tile honest about where its files live, so opening the viewer
+      // from it starts from the right section.
+      tile.dataset.section = on ? "favorites" : "main";
     };
     const btn = mkBtn(on ? "♥" : "♡",
       on ? "Remove from favourites" : "Add to favourites", async () => {
+        // Ignore a tap while the previous move is still running: two moves at
+        // once put the carousel's parts in different folders.
+        if(busy) return;
         const was = on;
-        on = !on; paint();                        // instant feedback
+        busy = true;
+        on = !on; paint(true);                    // instant feedback
         const res = await every(on ? "favorites" : "main");
+        busy = false;
         if(!res.every(Boolean)){                  // any file failed -> revert
           on = was; paint();
           toast("Could not update favourites");
@@ -4919,6 +4982,9 @@ function tileFor(username, post, section){
           adjustFavCount(on ? 1 : -1);
         }
       });
+    // Lets refreshAfterMove() find the glyph when the change came from the
+    // viewer, so the tile behind the overlay updates in step.
+    btn.dataset.heart = "1";
     acts.appendChild(btn);
   }
   if(srcSection === "trash"){
@@ -5542,6 +5608,8 @@ function refreshAllFavHint(){
 /* ---------- post viewer (single/carousel, with arrows) ---------- */
 
 let vState = null;   // {username, post, section, idx, srcs}
+// True while a favourite move from the viewer is still in flight.
+let vFavBusy = false;
 
 function mediaSrc(item, username, section){
   // HEIC is converted server-side for viewing: no browser except Safari can
@@ -5555,7 +5623,12 @@ function mediaSrc(item, username, section){
 }
 
 function openViewer(username, post, section, idx){
-  const srcSection = post.section || section;
+  // The caller knows where the files are right now -- an in-place favourite has
+  // already moved them -- whereas post.section is only what the API said when
+  // the grid or viewer list was built. Trust the caller, fall back to the
+  // payload, and then keep them in step.
+  const srcSection = section || post.section || "main";
+  post.section = srcSection;
   const srcs = post.items.map(i => ({item:i, src:mediaSrc(i, username, srcSection)}));
   vState = {username, post, section: srcSection, idx: idx||0, srcs};
   // Remember where this post sits in the grid, so ← and → continue from here
@@ -5674,7 +5747,7 @@ function viewerCurrentFile(){
   return cur ? cur.item.file : null;
 }
 
-function paintViewerActions(){
+function paintViewerActions(pop){
   if(!vState || !VIEWER_BTN.fav) return;
   const srcSection = vState.section;
   const file = viewerCurrentFile();
@@ -5690,7 +5763,9 @@ function paintViewerActions(){
     const faved = srcSection === "favorites";
     VIEWER_BTN.fav.textContent = faved ? "♥" : "♡";
     VIEWER_BTN.fav.title = faved ? "Remove from favourites" : "Add to favourites";
+    VIEWER_BTN.fav.dataset.heart = "1";
     VIEWER_BTN.fav.classList.toggle("on", faved);
+    if(pop) popHeart(VIEWER_BTN.fav);
   }
 
   // Download is for videos (the ones that are annoying to save from the page).
@@ -5720,19 +5795,43 @@ async function viewerToggleFav(){
   if(!vState) return;
   const srcSection = vState.section;
   if(srcSection === "trash") return;
+  // One move at a time. A second tap while the first is still in flight would
+  // send the files two places at once and the last answer would win.
+  if(vFavBusy) return;
   const target = srcSection === "favorites" ? "main" : "favorites";
-  vState.post.items.forEach(i => movePhoto(vState.username, i.file, target, true));
-  // Reflect it immediately: the viewer keeps showing the post, so just flip
-  // the section it is reading from and repaint.
-  vState.section = target;
-  vState.post.section = target;
-  paintViewerActions();
+  const st = vState;
+  const post = st.post;
+  const names = post.items.map(i => i.file);
+  const firstFile = names[0] || null;
+
+  // Flip now -- a tap has to land -- then put it back if the server refused.
+  // This used to fire the requests without waiting for them and toast success
+  // regardless, so a refused move left the heart lying until a reload put it
+  // back and it looked like the like had undone itself.
+  vFavBusy = true;
+  st.section = target;
+  post.section = target;
+  paintViewerActions(true);
+  const res = await Promise.all(names.map(n => movePhoto(st.username, n, target, true)));
+  vFavBusy = false;
+  if(vState !== st){
+    // Viewer closed while the move was in flight: nothing left to repaint, but
+    // the grid behind it still needs the new home.
+    if(res.every(Boolean)) refreshAfterMove(st.username, firstFile, target);
+    return;
+  }
+  if(!res.every(Boolean)){
+    st.section = srcSection;
+    post.section = srcSection;
+    paintViewerActions();
+    toast("Could not update favourites");
+    return;
+  }
   toast(target === "favorites" ? "Favourited" : "Removed from favourites");
   // The grid is still behind the overlay and holds its own copy of the state.
   // Pass the post and its new home so the matching tile is updated in place --
   // redrawing the grid here is what made it flash and lose its scroll.
-  const firstFile = vState.post.items[0] ? vState.post.items[0].file : null;
-  refreshAfterMove(vState.username, firstFile, target);
+  refreshAfterMove(st.username, firstFile, target);
 }
 
 async function viewerTrash(){
@@ -6171,6 +6270,9 @@ document.addEventListener("keydown", (e) => {
 (function(){
   const qs = new URLSearchParams(location.search);
   const want = (qs.get("tab") || "").toLowerCase();
+  // The platform is remembered too: a reload must not quietly put the queue back
+  // on Instagram while TikTok is the one being worked through.
+  if((qs.get("plat") || "").toLowerCase() === "tiktok") showPlatform("tt");
   if(want === "shorts" || want === "gallery") showTab(want);
   else paintHeader("queue");
   // A link into one person's gallery, which is what the viewer's profile picture

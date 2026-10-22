@@ -26,7 +26,46 @@ versioning is [SemVer](https://semver.org/).
   is one card, so its timeline walks the family's Instagram handles; the same-name
   twin on the other site is skipped rather than counted twice.
 
+### Changed
+- **The heart reacts, and the view you were in survives a reload.** A heart
+  springs once when it changes, so the tap registers before the server answers,
+  and each post takes one favourite move at a time — a second tap mid-flight used
+  to start a competing move over the same files. The current view is written into
+  the URL (`?tab=gallery&profile=…&platform=…`, plus `plat=tiktok` for the queue),
+  so reloading keeps the tab, the site and the open profile instead of dropping
+  you back on Download. Pasting that link elsewhere opens the same page.
+
 ### Fixed
+- **A favourite that had left a placeholder behind could not be undone.** A post
+  moved to `favorites/` leaves a 0-byte placeholder in `main/` — that is what
+  stops instaloader fetching a deleted post again — and the move code took that
+  placeholder to be the file itself. Un-favouriting then answered "already
+  there": true of the placeholder, untrue of the post, so nothing moved at all,
+  the heart flipped anyway, and the next load put it back. Moves now work from
+  the copy that has real bytes, choose the copy in the folder it is moving *out*
+  of, and clear a placeholder that is in the way.
+- **The deletion detector treated a favourite as a deletion.** It compares
+  `main/` against the folder's remembered index, and a file that had just been
+  favourited looked exactly like one deleted outside the app: it wrote a
+  placeholder and a tombstone for a post you had merely moved. Anything now
+  sitting in `favorites/` or `trash/` is exempt, which also closes the race that
+  produced the placeholders in the first place. Existing placeholders need no
+  cleaning up — un-favouriting goes straight through them now.
+- **Two real copies of one file are no longer a coin toss.** If the destination
+  already holds a real copy, the other one is retired to the desktop trash — but
+  only when the bytes match. Two different files sharing a name are refused with
+  a message rather than overwritten.
+- **The enlarged view claimed success before the server had answered.** It fired
+  the moves and toasted "Favourited" regardless, never noticed a refusal, and
+  left the grid behind it on the old state — which is what made a like look
+  undone until a reload. It now waits, reverts the heart and says *Could not
+  update favourites* when a move fails, and updates the tile it was opened from
+  in place, so the grid neither flashes nor loses its scroll.
+- **A tile and the enlarged view could disagree about where a post was.** An
+  in-place favourite updated the tile but the viewer still read the section from
+  the payload the grid was built with, so a post you had just favourited opened
+  with an empty heart, and tapping it moved the files the wrong way. The viewer
+  now takes its section from the tile it was opened from.
 - **A photo you added by hand shows the day it was taken, not the day it was
   copied here.** With no sidecar and no instaloader stamp, the gallery fell back
   to the file's own timestamp, so a batch of camera JPEGs all claimed the day

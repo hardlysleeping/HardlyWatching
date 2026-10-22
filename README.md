@@ -85,6 +85,13 @@ arrow keys), favourite, download a video, or trash it.
 
 ![A post enlarged over the grid, with previous and next arrows and action buttons](docs/viewer.png)
 
+The heart works the same in both places, and both tell the truth: the tile under
+the viewer updates as the move lands, and a move that fails springs the heart
+back with *Could not update favourites* instead of pretending. Reloading keeps
+you where you were — same tab, same site, same profile — because the view is
+written into the URL (`?tab=gallery&profile=…`); paste that link anywhere and it
+opens the same page.
+
 **Shorts** — a full-screen, phone-sized feed of your reels and TikTok videos.
 Swipe through it, like, trash, download, or change how often a clip comes back.
 It is a separate tab in the header, and can be installed to a phone home screen.
