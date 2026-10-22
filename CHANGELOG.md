@@ -17,6 +17,16 @@ versioning is [SemVer](https://semver.org/).
   twin on the other site is skipped rather than counted twice.
 
 ### Fixed
+- **TikTok dates were the date you downloaded a video, not the date it was
+  posted.** TikTok files are named by video id and their yt-dlp metadata lives in
+  `<id>.info.json`, which the gallery never looked at — it looked for `<id>.json`,
+  found nothing, and fell back to the file's modification time. So every video
+  carried the day it was saved to disk. The date now comes from the video's own
+  metadata (`timestamp`, else `upload_date`), falls back to the id itself — TikTok
+  ids are snowflake ids, so the creation time is recoverable from the number —
+  and only then to the file's mtime, labelled approximate as before. Cached post
+  lists carry a recipe version, so this kind of parser fix drops them instead of
+  leaving the old answers in service.
 - **A saved profile picture is no longer fetched again.** instaloader asks for
   it on every run — `--fast-update` does not cover pictures — and the
   high-quality copy costs its own API call. When Instagram answers that call

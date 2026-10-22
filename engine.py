@@ -713,6 +713,13 @@ CACHE_DB = Path(os.environ.get(
     "INSTA_CACHE_DB", config_dir() / "hardlywatching" / "gallery-cache.db"))
 
 
+# Bumped whenever the way a folder's files become posts changes. Cached posts
+# are only right for the parser that produced them, and the stamp is built from
+# file metadata -- so a parser fix would otherwise leave every old row valid and
+# in service forever. 2: TikTok dates come from the video's metadata.
+POSTS_RECIPE = 2
+
+
 class _Cache:
     """SQLite-backed mirror of the folder listing cache.
 
@@ -746,6 +753,11 @@ class _Cache:
             for col in ("newest_ns", "nfiles"):
                 if col not in have:
                     self.conn.execute(f"ALTER TABLE media ADD COLUMN {col} INTEGER")
+            # Drop cached posts built by an older parser. One UPDATE, once.
+            have_ver = self.conn.execute("PRAGMA user_version").fetchone()[0]
+            if have_ver != POSTS_RECIPE:
+                self.conn.execute("UPDATE media SET posts=NULL")
+                self.conn.execute(f"PRAGMA user_version={int(POSTS_RECIPE)}")
             self.conn.commit()
         except Exception:
             # A cache that cannot be opened is not an error: the app simply
@@ -924,9 +936,17 @@ def _posts_stamp(folder: Path, names: list[str]) -> tuple | None:
         with os.scandir(folder) as it:
             for entry in it:
                 try:
-                    if not entry.name.endswith(".json"):
+                    # Two sidecar shapes date a post: instaloader's
+                    # `<name>.json`, and yt-dlp's `<id>.info.json` for TikTok.
+                    # The second was invisible here, so a TikTok video's date
+                    # came from its mtime and never noticed its metadata change.
+                    if entry.name.endswith(".info.json"):
+                        key = entry.name[:-len(".info.json")]
+                    elif entry.name.endswith(".json"):
+                        key = entry.name[:-len(".json")]
+                    else:
                         continue
-                    if os.path.splitext(entry.name)[0] not in stem_set:
+                    if key not in stem_set:
                         continue
                     est = entry.stat()
                 except OSError:
@@ -1043,14 +1063,73 @@ def _parse_filename_date(name: str) -> float:
         return 0.0
 
 
-def _media_info(folder: Path, name: str) -> dict:
+def _tiktok_info(folder: Path, name: str) -> tuple[float, str, str, str]:
+    """Date, caption and title for one TikTok file downloaded by yt-dlp.
+
+    A TikTok filename is the numeric video id, so there is no date in the name
+    and the generic parser below used to fall straight through to the file's
+    mtime -- which stamps every video with the day it was downloaded rather
+    than the day it was posted. Two real sources exist:
+
+      1. `<id>.info.json`, the metadata yt-dlp writes beside the video. It
+         carries `timestamp` (epoch seconds) and `upload_date` (YYYYMMDD), both
+         the posting time; `upload_date` is date-only, so it lands at midnight.
+      2. the video id itself. TikTok ids are snowflake ids, the high bits are
+         the creation time in seconds, so `id >> 32` recovers it. Measured
+         against 21 sampled sidecars with no disagreement over a day, which
+         makes it a sound fallback when the sidecar is missing.
+
+    Returns (ts, ts_src, caption, title). ts is 0.0 when neither source works,
+    leaving the caller's mtime fallback to apply.
+    """
+    stem = os.path.splitext(name)[0]
+    ts = 0.0
+    src = ""
+    caption = ""
+    title = ""
+    try:
+        node = json.loads((folder / (stem + ".info.json")).read_bytes()) or {}
+    except (OSError, ValueError, TypeError):
+        node = {}
+    if isinstance(node, dict):
+        try:
+            ts = float(node["timestamp"])
+        except (KeyError, TypeError, ValueError):
+            ts = 0.0
+        if ts <= 0:
+            day = str(node.get("upload_date") or "")
+            if len(day) == 8 and day.isdigit():
+                try:
+                    ts = float(calendar.timegm((int(day[:4]), int(day[4:6]),
+                                                int(day[6:]), 0, 0, 0, 0, 0, 0)))
+                except ValueError:
+                    ts = 0.0
+        if ts > 0:
+            src = "json"
+        cap = node.get("description") or node.get("title") or ""
+        if isinstance(cap, str):
+            caption = cap.strip()
+        ttl = node.get("title") or ""
+        if isinstance(ttl, str):
+            title = ttl.strip()
+    if not ts and stem.isdigit():
+        # Snowflake fallback. Bounded to 2016-01-01 .. a day from now so that a
+        # numeric filename which is not a TikTok id cannot invent a date.
+        guess = int(stem) >> 32
+        if 1451606400 <= guess <= time.time() + 86400:
+            ts, src = float(guess), "id"
+    return ts, src, caption, title
+
+
+def _media_info(folder: Path, name: str, platform: str = "instagram") -> dict:
     """One gallery item: name, kind, timestamp and optional caption.
 
     Three sources, best first, and each one is recorded so the UI can be honest
     about what it is showing:
 
-      1. the sidecar JSON instaloader writes next to each post -- the true
-         posting date and the caption;
+      1. the sidecar JSON beside each post -- the true posting date and the
+         caption. Instagram's is `<name>.json` with the fields under `node`;
+         TikTok's is yt-dlp's `<id>.info.json`, read by _tiktok_info;
       2. instaloader's filename stamp, `<YYYY-MM-DD>_<HH-MM-SS>_UTC.ext`;
       3. the file's own mtime.
 
@@ -1063,25 +1142,28 @@ def _media_info(folder: Path, name: str) -> dict:
     """
     path = folder / name
     kind = "video" if path.suffix.lower() in GALLERY_VIDEO_EXTS else "image"
-    ts = _parse_filename_date(name)
-    ts_src = "name" if ts else ""
     caption = ""
     title = ""
     is_video = None
-    try:
-        raw = path.with_suffix(".json").read_bytes()
-        node = (json.loads(raw) or {}).get("node") or {}
-        if node.get("date"):
-            ts = float(node["date"])
-            ts_src = "json"
-        cap = node.get("caption")
-        if isinstance(cap, str):
-            caption = cap.strip()
-        title = (node.get("title") or "").strip()
-        if node.get("is_video") is not None:
-            is_video = bool(node["is_video"])
-    except (OSError, ValueError, TypeError):
-        pass
+    if platform == "tiktok":
+        ts, ts_src, caption, title = _tiktok_info(folder, name)
+    else:
+        ts = _parse_filename_date(name)
+        ts_src = "name" if ts else ""
+        try:
+            raw = path.with_suffix(".json").read_bytes()
+            node = (json.loads(raw) or {}).get("node") or {}
+            if node.get("date"):
+                ts = float(node["date"])
+                ts_src = "json"
+            cap = node.get("caption")
+            if isinstance(cap, str):
+                caption = cap.strip()
+            title = (node.get("title") or "").strip()
+            if node.get("is_video") is not None:
+                is_video = bool(node["is_video"])
+        except (OSError, ValueError, TypeError):
+            pass
     if not ts:
         # No sidecar, no instaloader stamp: fall back to the file's mtime so the
         # item still sorts into the timeline instead of landing in a "no date"
@@ -1432,7 +1514,7 @@ def gallery_posts(self, username: str, section: str = "main",
                     continue
             except OSError:
                 continue
-            info = _media_info(folder, name)
+            info = _media_info(folder, name, platform)
             info["part"] = part
             grouped.setdefault(stamp_name, []).append(info)
 
