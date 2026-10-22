@@ -963,7 +963,9 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
             favs = (q.get("favorites") or ["0"])[0] in ("1", "true", "yes")
-            return self._json(get_engine().timeline(only_favorites=favs))
+            one = (q.get("profile") or [""])[0].strip()[:64] or None
+            return self._json(get_engine().timeline(only_favorites=favs,
+                                                    profile=one))
         if p == "/api/timeline-month":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -974,8 +976,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 offset, limit = 0, 200
             favs = (q.get("favorites") or ["0"])[0] in ("1", "true", "yes")
+            one = (q.get("profile") or [""])[0].strip()[:64] or None
             return self._json(get_engine().timeline_month(
-                month, offset, limit, only_favorites=favs))
+                month, offset, limit, only_favorites=favs, profile=one))
         if p == "/api/gallery/all":
             # Overarching Favourites / Trash across every profile.
             from urllib.parse import parse_qs

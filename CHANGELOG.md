@@ -5,6 +5,17 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A timeline of one profile.** The Timeline chip does what the Shorts tab
+  already did: opened from inside a profile's grid it shows that profile alone —
+  their months on the slider, their posts, their year list — with a chip naming
+  them that goes back to everyone. Opened from the profile list it is still the
+  whole archive. The scope is carried in the API too (`/api/timeline` and
+  `/api/timeline-month` take `profile=`), and each scope is cached separately, so
+  a month request can never be answered from another scope's list. A merged card
+  is one card, so its timeline walks the family's Instagram handles; the same-name
+  twin on the other site is skipped rather than counted twice.
+
 ### Fixed
 - **A saved profile picture is no longer fetched again.** instaloader asks for
   it on every run — `--fast-update` does not cover pictures — and the

@@ -1473,7 +1473,8 @@ def gallery_posts(self, username: str, section: str = "main",
 
 
 def timeline(self, months: int | None = None,
-             only_favorites: bool = False) -> dict:
+             only_favorites: bool = False,
+             profile: str | None = None) -> dict:
     """Every profile's posts in one chronological list, month-grouped.
 
     Returns the months present with their counts, and the posts, so the UI
@@ -1484,18 +1485,45 @@ def timeline(self, months: int | None = None,
     This is the all-profiles view: it reads only the main folder of each
     profile, because merging favourites and trash into "everything" would
     double-count posts that are also in main.
+
+    `profile` narrows the walk to one profile, which is what the timeline
+    shows when it is opened from inside a profile's own grid. Matching is
+    case-insensitive and ignores surrounding space, because the name arrives
+    from a URL.
     """
+    raw = (profile or "").strip()
+    want = raw.lower() or None
+    if want:
+        # One name is one card, and a card can stand for more than one folder:
+        # a merged account keeps its other handles' posts in their own folders,
+        # which is what the grid draws. Walk the family so the timeline of a
+        # card matches the card. Only the Instagram members: this view reads
+        # post folders on the Instagram root, exactly as the all-profiles view
+        # does, so the TikTok side of a merged card is not part of it.
+        sources = []
+        seen: set[str] = set()
+        for who, plat in self.profile_family(raw, "instagram"):
+            # Only the Instagram members: the same-name rule pairs a handle with
+            # its twin on the other site, and reading that twin's folder as an
+            # Instagram profile would count the card's posts twice.
+            if not who or (plat or "").lower() != "instagram":
+                continue
+            key = who.strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append((who, "instagram"))
+    else:
+        sources = [(p.get("username"), "instagram")
+                   for p in self.gallery_profiles() if p.get("username")]
     out: list[dict] = []
     if only_favorites:
         # Favourites-only timeline. These live in each profile's favorites/
         # subfolder rather than main/, so they are read from there; the same
         # post is never listed twice because only one folder is walked.
-        for prof in self.gallery_profiles():
-            username = prof.get("username")
-            if not username:
-                continue
+        for username, plat in sources:
             try:
-                favs = self.gallery_posts(username, "favorites")
+                favs = self.gallery_posts(username, "favorites", plat)
             except Exception:
                 continue
             for p in favs:
@@ -1514,18 +1542,15 @@ def timeline(self, months: int | None = None,
                     "section": "favorites",
                 })
     else:
-        for prof in self.gallery_profiles():
-            username = prof.get("username")
-            if not username:
-                continue
+        for username, plat in sources:
             try:
-                posts = self.gallery_posts(username, "main")
+                posts = self.gallery_posts(username, "main", plat)
             except Exception:
                 continue
             # Which posts are ALSO favourited, so a timeline tile can show the
             # heart already filled and toggle it without a second request.
             try:
-                fav_ids = {p["post"] for p in self.gallery_posts(username, "favorites")}
+                fav_ids = {p["post"] for p in self.gallery_posts(username, "favorites", plat)}
             except Exception:
                 fav_ids = set()
             for p in posts:
@@ -1560,24 +1585,30 @@ def timeline(self, months: int | None = None,
     self._timeline_all = out
     self._timeline_groups = groups
     self._timeline_favs = bool(only_favorites)
-    return {"months": groups, "total": len(out)}
+    # Which profile this list was built for, so a month request for a different
+    # scope cannot be answered from the wrong cache.
+    self._timeline_profile = want
+    return {"months": groups, "total": len(out), "profile": want or ""}
 
 def timeline_month(self, month: str, offset: int = 0,
-                   limit: int = 200, only_favorites: bool = False) -> dict:
+                   limit: int = 200, only_favorites: bool = False,
+                   profile: str | None = None) -> dict:
     """One month's posts from the timeline, and how many there are in all.
 
     The UI drives a slider over the months and asks for just the one it is
     showing. Returning all 30,000 posts to draw one month was 7.6MB and 1.5s
     per request; a month is a few hundred posts.
 
-    `only_favorites` must be passed through: the built list is cached, and the
-    favourites view is a DIFFERENT list, so reusing the cached all-posts list
-    here would quietly serve every post while the UI said "favourites only".
+    `only_favorites` and `profile` must be passed through: the built list is
+    cached, and each combination is a DIFFERENT list, so reusing the cached
+    list here would quietly serve every post while the UI said something else.
     """
+    want = (profile or "").strip().lower() or None
     allp = getattr(self, "_timeline_all", None)
-    stale = getattr(self, "_timeline_favs", None) != bool(only_favorites)
+    stale = (getattr(self, "_timeline_favs", None) != bool(only_favorites)
+             or getattr(self, "_timeline_profile", None) != want)
     if allp is None or not getattr(self, "_timeline_groups", None) or stale:
-        self.timeline(only_favorites=only_favorites)
+        self.timeline(only_favorites=only_favorites, profile=profile)
         allp = getattr(self, "_timeline_all", []) or []
     if month == "all":
         chosen = allp

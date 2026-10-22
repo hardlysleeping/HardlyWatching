@@ -69,6 +69,13 @@ you like.
 by month. The slider jumps between months; the two selectors pick a year and month
 directly. Filter to just favourites if you want.
 
+Open it from inside a profile and it stays on that profile: one person's months,
+their posts only, with a chip naming them that takes you back to everyone. It is
+the same arrangement as Shorts, which opens on one profile when you arrive from
+one. The stream carries Instagram posts (the by-month view reads post folders),
+so a merged card also holding TikTok videos shows fewer posts here than tiles in
+its grid.
+
 ![The timeline: year and month selectors, a month slider, and a row of post tiles](docs/timeline.png)
 
 **Enlarged view** — click any post. Step through posts with the arrows (or the
@@ -596,7 +603,8 @@ archiving is wise.
   separate view from All Favourites.
 - **🗑 All Trash** — everything you set aside, with delete-for-good.
 - **🕒 Timeline** — every post from every profile in one chronological stream,
-  grouped by month, with a favourites-only filter.
+  grouped by month, with a favourites-only filter. Opened from inside a profile
+  it covers that profile alone, and a chip takes you back to everyone.
 
 **Picking several at once.** **☑ Select** in the gallery bar — or holding a tile
 on a phone — turns tapping into picking: tap as many tiles as you like and then

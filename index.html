@@ -3603,7 +3603,16 @@ function buildAllBar(profileCount){
   bar.appendChild(mk("🗑 All Trash", gAll === "trash",
     () => { gAll = "trash"; gProfile = null; gPlatform = "instagram"; renderAllSection("trash"); }));
   bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
-    () => { gAll = "timeline"; gProfile = null; gPlatform = "instagram"; renderTimeline(); }));
+    // Opened from inside a profile, the timeline stays on that profile -- the
+    // same way Shorts opens limited when you arrive from a profile. Opened from
+    // the list it is everybody's, so the chip carries whatever gProfile was.
+    () => {
+      const from = gProfile;
+      gAll = "timeline"; gProfile = null; gPlatform = "instagram";
+      tlProfile = from || null;
+      tlMonths = []; tlIndex = 0; tlCache.clear();
+      renderTimeline();
+    }));
 
   // Interrupted-download leftovers. Only shown when there is something to
   // clean, so it is not permanent clutter for a tidy archive.
@@ -4017,6 +4026,11 @@ async function uploadFiles(fileList){
 // The index is ~2.8KB (176 months, one count each) rather than the 7.6MB of
 // every post: the slider needs the months, and only one month is ever fetched.
 let tlOnlyFavs = false;   // favourites-only timeline
+// One profile's timeline instead of every profile's. Set when the timeline is
+// opened from inside a profile's grid, cleared by the chip in the timeline bar.
+// Same idea as Shorts' ?profile=, which limits the feed to the profile you came
+// from rather than dropping you into everyone's clips.
+let tlProfile = null;
 let tlMonths = [];        // [["2026-10", 513], ...] oldest first
 let tlIndex = 0;          // position in tlMonths
 let tlReq = 0;
@@ -4040,13 +4054,23 @@ function tlDecadeOptions(){
 }
 
 // Which timeline is loaded, so switching the filter refetches the index and
-// does not show the other one's month counts.
+// does not show the other one's month counts. The scope is part of that: a
+// single profile's months are not everybody's months.
 let tlIndexedFavs = null;
+let tlIndexedProfile = null;
+
+function tlQuery(extra){
+  const q = [];
+  if(tlOnlyFavs) q.push("favorites=1");
+  if(tlProfile) q.push("profile=" + encodeURIComponent(tlProfile));
+  if(extra) q.push(extra);
+  return q.length ? "?" + q.join("&") : "";
+}
 
 async function loadTimelineIndex(){
-  const q = tlOnlyFavs ? "?favorites=1" : "";
-  const r = await (await fetch("/api/timeline" + q)).json();
+  const r = await (await fetch("/api/timeline" + tlQuery())).json();
   tlIndexedFavs = tlOnlyFavs;
+  tlIndexedProfile = tlProfile;
   tlCache.clear();
   tlMonths = Object.entries(r.months || {}).sort((a, b) => a[0] < b[0] ? -1 : 1);
   // Open on the newest month with posts: that is what you would look at first.
@@ -4057,9 +4081,8 @@ async function loadTimelineIndex(){
 async function fetchMonth(key){
   if(tlCache.has(key)) return tlCache.get(key);
   // 600 is the server's cap; a month is typically a few hundred posts.
-  const r = await (await fetch(
-    `/api/timeline-month?month=${encodeURIComponent(key)}&limit=600`
-    + (tlOnlyFavs ? "&favorites=1" : ""))).json();
+  const r = await (await fetch("/api/timeline-month"
+    + tlQuery("month=" + encodeURIComponent(key) + "&limit=600"))).json();
   const posts = r.posts || [];
   tlCache.set(key, posts);
   return posts;
@@ -4208,13 +4231,35 @@ async function renderTimeline(){
   const mine = ++tlReq;
   host.innerHTML = `<div class="gempty">Loading the timeline…</div>`;
 
-  if(!tlMonths.length || tlIndexedFavs !== tlOnlyFavs){
+  if(!tlMonths.length || tlIndexedFavs !== tlOnlyFavs
+     || tlIndexedProfile !== tlProfile){
     try { await loadTimelineIndex(); }
     catch(e){ host.innerHTML = `<div class="gempty">Could not load the timeline.</div>`; return; }
     if(mine !== tlReq) return;
   }
   if(!tlMonths.length){
-    host.innerHTML = `<div class="gempty">Nothing to show yet.</div>`;
+    host.innerHTML = "";
+    if(!tlProfile){
+      host.innerHTML = `<div class="gempty">Nothing to show yet.</div>`;
+      return;
+    }
+    // Scoped to a profile with nothing archived: say so and offer the way out,
+    // rather than a dead "nothing to show" with no controls at all.
+    const back = document.createElement("button");
+    back.className = "fchip";
+    back.style.gridColumn = "1/-1";
+    back.style.justifySelf = "start";
+    back.textContent = "✕ All profiles";
+    back.onclick = () => { tlProfile = null; tlMonths = []; renderTimeline(); };
+    const msg = document.createElement("div");
+    msg.className = "gempty";
+    msg.style.gridColumn = "1/-1";
+    // Say which emptiness this is. "No posts archived" would be a lie about a
+    // profile that has plenty of posts and none of them favourited.
+    msg.textContent = tlOnlyFavs
+      ? `No favourite posts from @${tlProfile}.`
+      : `No posts archived for @${tlProfile} yet.`;
+    host.append(back, msg);
     return;
   }
 
@@ -4258,7 +4303,9 @@ async function renderTimeline(){
   const favChip = document.createElement("button");
   favChip.className = "fchip" + (tlOnlyFavs ? " on" : "");
   favChip.textContent = "♥ Favourites only";
-  favChip.title = "Show only posts you have favourited, across every profile";
+  favChip.title = tlProfile
+    ? `Only what you have favourited from @${tlProfile}`
+    : "Show only posts you have favourited, across every profile";
   favChip.onclick = () => {
     tlOnlyFavs = !tlOnlyFavs;
     tlMonths = [];
@@ -4267,6 +4314,23 @@ async function renderTimeline(){
     renderTimeline();
   };
 
+  // Which profile this timeline is limited to, with the way back to everyone.
+  // Always drawn while scoped, so the user is never looking at one person's
+  // months believing they are seeing the whole archive.
+  const scopeChip = document.createElement("button");
+  scopeChip.className = "fchip on";
+  scopeChip.id = "tlScope";
+  scopeChip.textContent = `@${tlProfile} ✕`;
+  scopeChip.title = "Limited to this profile — click to show every profile";
+  scopeChip.onclick = () => {
+    tlProfile = null;
+    tlMonths = [];
+    tlIndex = 0;
+    tlCache.clear();
+    renderTimeline();
+  };
+
+  if(tlProfile) bar.appendChild(scopeChip);
   bar.append(prev, ySel, mSel, slider, next, jump, favChip, count);
   host.innerHTML = "";
   host.appendChild(bar);
@@ -4312,7 +4376,11 @@ async function renderTimeline(){
     for(const p of [...posts].reverse()) grid.appendChild(tlTile(p, key));
     shown = posts.length;
     const total = tlMonths[tlIndex][1];
-    count.textContent = `${tlLabel(key)} · ${total} post${total===1?"":"s"}`
+    // Scoped to one card, say which platform's posts these are: a merged card
+    // also holds TikTok videos, which this by-month view does not carry, so the
+    // count here is deliberately smaller than the card's own tile count.
+    count.textContent = (tlProfile ? "Instagram · " : "")
+      + `${tlLabel(key)} · ${total} post${total===1?"":"s"}`
       + (shown < total ? ` (showing ${shown})` : "")
       + ` · ${tlIndex + 1} of ${tlMonths.length}`;
   }
