@@ -439,6 +439,24 @@
   .gempty{color:var(--muted);font-size:13.5px;padding:22px 0}
 
   /* ---------- gallery filters + per-photo actions ---------- */
+  /* Whose profile is open, on which site, and whether the card merges both.
+     The grid used to begin with a row of controls and no name anywhere. */
+  .phead{display:flex;gap:12px;align-items:center;margin:0 0 13px;flex-wrap:wrap}
+  .phead .pav{width:46px;height:46px;border-radius:50%;object-fit:cover;flex:none;
+    border:1px solid var(--line-2);background:var(--panel-2)}
+  .phead .pid{min-width:0}
+  .phead .pname{display:flex;gap:9px;align-items:center;flex-wrap:wrap;
+    font-size:17.5px;font-weight:650;letter-spacing:-.01em;line-height:1.25}
+  .phead .pname .at{color:var(--muted);font-weight:400}
+  .phead .psub{color:var(--muted);font-size:12.5px;margin-top:3px}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;
+    border-radius:999px;border:1px solid var(--line-2);background:var(--panel-2);
+    color:var(--text);font-size:11px;font-weight:600;letter-spacing:.03em;
+    text-transform:uppercase}
+  .badge .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+  .badge.ig .dot{background:#d27ae0}
+  .badge.tt .dot{background:#48dccd}
+  .badge.merged .dot{background:linear-gradient(90deg,#d27ae0 0 50%,#48dccd 50% 100%)}
   .gbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
   .fchip{background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
     border-radius:20px;padding:5px 14px;font-size:12.5px;cursor:pointer;
@@ -603,7 +621,7 @@
 
   <div id="galleryPane" class="pane" style="display:none">
     <div class="gallery-head">
-      <b style="font-size:16px">Gallery — select a profile</b>
+      <b id="galleryTitle" style="font-size:16px">Gallery — select a profile</b>
       <span class="hint" id="galleryHint" style="margin-left:auto">done archives only</span>
     </div>
     <div class="gbar" id="allBar" style="margin-bottom:16px"></div>
@@ -4640,6 +4658,8 @@ async function renderGallery(){
   fillUploadProfiles(profiles);
   buildAllBar(profiles.length);
   const live = profiles.filter(p => p.downloading).length;
+  const gt = $("galleryTitle");
+  if(gt) gt.textContent = "Gallery — select a profile";
   $("galleryHint").textContent = profiles.length
     ? `${profiles.length} ${profiles.length===1?"profile":"profiles"}`
       + (live ? ` · ${live} downloading` : "")
@@ -4660,7 +4680,10 @@ async function renderGallery(){
         : ""}
       <div class="nm">${esc(p.username)}</div>
       <div class="ct">${p.count} ${p.count===1?"item":"items"}</div>
-      ${p.merged ? `<div class="mg" title="${esc((p.merged_platforms||[]).join(" + ") || "same site")}">+ @${p.merged.map(esc).join(" @")}</div>` : ""}
+      ${p.merged ? `<div class="mg" title="${esc((p.merged_platforms||[]).join(" + ") || "same site")}">+ @${p.merged.map(esc).join(" @ ")}${
+        (p.merged_platforms||[]).length
+          ? ` · ${(p.merged_platforms||[]).map(s => s === "tiktok" ? "TikTok" : "Instagram").join(" + ")}`
+          : ""}</div>` : ""}
       ${p.merged ? `<button class="split" title="Different people — keep them apart">&#8901;&#8901;&#8901;</button>` : ""}
     </div>`).join("");
   for(const card of host.querySelectorAll(".pcard")){
@@ -5078,6 +5101,61 @@ function drawPhotos(username, sec){
   const items = allPosts.reduce((n,p) => n + p.count, 0);
   const vids = allPosts.reduce((n,p) => n + p.items.filter(i => i.kind === "video").length, 0);
 
+  // Whose profile is open, and is it one site or two? A card can merge the same
+  // handle from Instagram and TikTok, and the grid looked identical either way
+  // -- there was no name on screen at all, just a row of controls. Count what
+  // is actually here rather than trusting the tab we came from: a merged card
+  // shows up under both tabs.
+  const byPlat = {instagram: 0, tiktok: 0};
+  for(const p of allPosts) byPlat[p.platform === "tiktok" ? "tiktok" : "instagram"] += 1;
+  const sites = ["instagram", "tiktok"].filter(k => byPlat[k]);
+  const merged = sites.length > 1;
+  const look = merged ? (gPlatform === "tiktok" ? "tiktok" : "instagram")
+                      : (sites[0] || gPlatform || "instagram");
+  const head = document.createElement("div");
+  head.className = "phead";
+  head.style.gridColumn = "1/-1";
+  const face = document.createElement("img");
+  face.className = "pav";
+  face.alt = "";
+  face.loading = "lazy";
+  face.src = `/api/profile-pic?profile=${encodeURIComponent(username)}`
+    + `&platform=${encodeURIComponent(look)}`;
+  face.onerror = () => { face.style.visibility = "hidden"; };
+  const pid = document.createElement("div");
+  pid.className = "pid";
+  const nm = document.createElement("div");
+  nm.className = "pname";
+  const badge = merged
+    ? `<span class="badge merged"><span class="dot"></span>Instagram + TikTok</span>`
+    : `<span class="badge ${look === "tiktok" ? "tt" : "ig"}"><span class="dot"></span>${
+        look === "tiktok" ? "TikTok" : "Instagram"}</span>`;
+  // Escaped: the handle is the only variable here, and esc() is the same guard
+  // the rest of the bar uses.
+  nm.innerHTML = `<span>@${esc(username)}</span>${badge}`;
+  pid.appendChild(nm);
+  if(merged){
+    // Why the grid holds two kinds of tile, said once instead of left to be
+    // puzzled over.
+    const sub = document.createElement("div");
+    sub.className = "psub";
+    sub.textContent = `Same handle on both sites · ${byPlat.instagram} Instagram`
+      + ` · ${byPlat.tiktok} TikTok`;
+    pid.appendChild(sub);
+  }
+  head.appendChild(face);
+  head.appendChild(pid);
+
+  // The heading said "select a profile" while one was open, which read as a
+  // bug from inside a profile. Name it here; renderGallery puts it back.
+  const gt = $("galleryTitle");
+  if(gt) gt.textContent = `Gallery — @${username}`;
+  const gh = $("galleryHint");
+  if(gh){
+    gh.textContent = merged ? "Instagram + TikTok"
+      : (look === "tiktok" ? "TikTok" : "Instagram");
+  }
+
   // Media-type filter. A post counts as video if ANY of its parts is a video,
   // so a carousel mixing images and a clip lands under Videos.
   const isVideoPost = (p) => p.items.some(i => i.kind === "video");
@@ -5121,6 +5199,7 @@ function drawPhotos(username, sec){
     sgroup.appendChild(b);
   }
   bar.appendChild(sgroup);
+  host.appendChild(head);
   host.appendChild(bar);
 
   const grid = document.createElement("div");
@@ -5168,6 +5247,8 @@ function drawPhotos(username, sec){
       : gFilter === "favorites" ? "No favorites yet — tap ♡ on a photo to add one."
       : gFilter === "trash" ? "Trash is empty."
       : "No displayable media in this archive."}</div>`;
+    // Still say whose profile this is, even with nothing to show.
+    host.appendChild(head);
     host.appendChild(grid);
     return;
   }
@@ -5228,7 +5309,7 @@ async function patchGalleryCounts(){
   }
   const live = (data.profiles || []).filter(p => p.downloading).length;
   const hint = $("galleryHint");
-  if(hint){
+  if(hint && !gProfile){
     const n = (data.profiles || []).length;
     hint.textContent = `${n} ${n===1?"profile":"profiles"}`
       + (live ? ` · ${live} downloading` : "");

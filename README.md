@@ -61,7 +61,9 @@ archive-wide views and a box to add your own photos or folders.
 ![The gallery: profile cards, with All Favourites, All Trash and Timeline](docs/gallery.png)
 
 **One profile** — its posts as a grid, filterable by media type and sorted however
-you like.
+you like. The top says whose profile you are in and which site it came from; a
+card that folds the same handle from both sites says so and gives each site's
+share, and the heading names the profile instead of asking you to select one.
 
 ![A single profile's post grid with media filters and sort options](docs/gallery-profiles.png)
 

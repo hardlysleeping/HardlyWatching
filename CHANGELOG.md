@@ -6,6 +6,16 @@ versioning is [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A profile view says whose profile it is.** The grid used to open with a row
+  of controls and no name anywhere: a plain card, a merged one and either site
+  all looked alike. It now leads with the avatar, the handle, and a badge naming
+  the site — Instagram, TikTok, or *Instagram + TikTok* when the card folds the
+  same handle from both. A merged card also spells out its split ("Same handle
+  on both sites · 3 Instagram · 379 TikTok"), which is the answer to the obvious
+  puzzle of why one grid holds two kinds of tile. Merged cards in the profile
+  list name the other site too (`+ @handle · TikTok`). Which badge shows is
+  counted from the posts actually loaded, not from the tab you arrived on, since
+  a merged card appears under both tabs.
 - **A timeline of one profile.** The Timeline chip does what the Shorts tab
   already did: opened from inside a profile's grid it shows that profile alone —
   their months on the slider, their posts, their year list — with a chip naming
