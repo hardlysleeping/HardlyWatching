@@ -27,6 +27,15 @@ versioning is [SemVer](https://semver.org/).
   twin on the other site is skipped rather than counted twice.
 
 ### Fixed
+- **A photo you added by hand shows the day it was taken, not the day it was
+  copied here.** With no sidecar and no instaloader stamp, the gallery fell back
+  to the file's own timestamp, so a batch of camera JPEGs all claimed the day
+  they were dropped into the folder. The EXIF capture time is now read first
+  (`DateTimeOriginal`, then `DateTimeDigitized`, then `DateTime`), which is the
+  only place a hand-added photo records when it was taken. EXIF carries no
+  timezone and is read as UTC, and a date before 2000 or after tomorrow is
+  rejected as a wrong camera clock rather than believed. A photo with no EXIF
+  still falls back to the file timestamp and is still marked with `~`.
 - **TikTok dates were the date you downloaded a video, not the date it was
   posted.** TikTok files are named by video id and their yt-dlp metadata lives in
   `<id>.info.json`, which the gallery never looked at — it looked for `<id>.json`,

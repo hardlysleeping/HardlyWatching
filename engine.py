@@ -717,7 +717,8 @@ CACHE_DB = Path(os.environ.get(
 # are only right for the parser that produced them, and the stamp is built from
 # file metadata -- so a parser fix would otherwise leave every old row valid and
 # in service forever. 2: TikTok dates come from the video's metadata.
-POSTS_RECIPE = 2
+# 3: a photo with no other date uses its EXIF capture time.
+POSTS_RECIPE = 3
 
 
 class _Cache:
@@ -1063,6 +1064,51 @@ def _parse_filename_date(name: str) -> float:
         return 0.0
 
 
+def _exif_date(path: Path) -> tuple[float, str]:
+    """Epoch seconds from a photo's EXIF capture time, or (0.0, "").
+
+    This is the date the picture was *taken*, which is not the posting date and
+    is much better than the date the file was copied here: a photo added by hand
+    keeps its EXIF, while the copy carries only today's timestamp.
+
+    EXIF stores no timezone, so the value is read as UTC -- the same clock the
+    rest of the app prints. A camera whose clock was wrong will be wrong here
+    too; this reports what the file says rather than guessing.
+
+    Called only when nothing better exists (no sidecar, no filename stamp), so
+    it costs nothing on the thousands of downloaded posts that never reach it.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return 0.0, ""
+    raw = ""
+    try:
+        with Image.open(path) as im:
+            exif = im.getexif()
+            # DateTimeOriginal is when the shutter fired; the others are
+            # fallbacks for editors that only write those.
+            for tag in (36867, 36868, 306):
+                val = exif.get(tag)
+                if val:
+                    raw = str(val).strip()
+                    break
+    except (OSError, ValueError, TypeError):
+        return 0.0, ""
+    m = re.match(r"(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})", raw)
+    if not m:
+        return 0.0, ""
+    try:
+        y, mo, d, h, mi, s = (int(x) for x in m.groups())
+        ts = float(calendar.timegm((y, mo, d, h, mi, s, 0, 0, 0)))
+    except ValueError:
+        return 0.0, ""
+    # A date before 2000 or after tomorrow is a wrong clock, not evidence.
+    if not (946684800 < ts < time.time() + 86400):
+        return 0.0, ""
+    return ts, "exif"
+
+
 def _tiktok_info(folder: Path, name: str) -> tuple[float, str, str, str]:
     """Date, caption and title for one TikTok file downloaded by yt-dlp.
 
@@ -1135,9 +1181,10 @@ def _media_info(folder: Path, name: str, platform: str = "instagram") -> dict:
 
     Step 3 exists because a folder of your own photos has neither of the first
     two: without it every such file was ts=0, which sorted as "no date" and
-    showed a blank label. The mtime is not the date the photo was taken (the
-    camera writes that into EXIF, which is not read here), so a file dated this
-    way is marked `ts_src: "mtime"` and the UI can say so rather than pass a
+    showed a blank label. Before the file's mtime is used, a photo's EXIF
+    capture time is tried (see _exif_date) -- that is the date taken, which is
+    what a hand-added picture should show. What is left is marked
+    `ts_src: "mtime"` and the UI writes it with a `~`, rather than passing a
     guess off as a fact.
     """
     path = folder / name
@@ -1164,6 +1211,10 @@ def _media_info(folder: Path, name: str, platform: str = "instagram") -> dict:
                 is_video = bool(node["is_video"])
         except (OSError, ValueError, TypeError):
             pass
+    if not ts and kind == "image":
+        # Date taken beats date copied: a hand-added photo keeps its EXIF but
+        # carries today's timestamp on the copy.
+        ts, ts_src = _exif_date(path)
     if not ts:
         # No sidecar, no instaloader stamp: fall back to the file's mtime so the
         # item still sorts into the timeline instead of landing in a "no date"
