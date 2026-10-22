@@ -5,6 +5,17 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A saved profile picture is no longer fetched again.** instaloader asks for
+  it on every run — `--fast-update` does not cover pictures — and the
+  high-quality copy costs its own API call. When Instagram answers that call
+  with a `"fail"` payload, instaloader exits non-zero for "Errors or warnings
+  occurred" and the profile is retried, repeatedly, over a picture it already
+  has on disk. `--no-profile-pic` is now passed once a picture is saved in the
+  profile's folder, and that warning on its own can never set a run's error,
+  its retry, or a fatal verdict. A profile with no picture yet still asks for
+  it, so the gallery keeps getting one.
+
 ## [0.2.0] — 2026-10-21
 
 ### Added

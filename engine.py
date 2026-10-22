@@ -272,6 +272,10 @@ BLOCKED_HINT = re.compile(
 
 # instaloader's per-post progress: "[ 404/764]". The only honest progress figure.
 PROGRESS_RE = re.compile(r"\[\s*(\d+)\s*/\s*(\d+)\s*\]")
+# instaloader's aside when the higher-quality copy of the picture cannot be
+# fetched. It logs this and then exits non-zero for "Errors or warnings
+# occurred", which says nothing about whether the archive itself is complete.
+PROFILE_PIC_WARN = re.compile(r"Unable to fetch high quality profile pic", re.IGNORECASE)
 
 PROFILE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 
@@ -2777,6 +2781,22 @@ class Job:
         return asdict(self)
 
 
+def has_profile_pic(folder: Path) -> bool:
+    """Whether this profile's picture is already saved in its folder.
+
+    instaloader asks for the picture on every run -- --fast-update does not
+    cover it -- and the high-quality copy costs a separate API round trip that
+    Instagram throttles like any other. The call is worth making once: the
+    picture is what the gallery draws. After that it buys nothing, and a failed
+    one ends the run with "Errors or warnings occurred" over a picture that is
+    already on disk.
+    """
+    try:
+        return any(folder.glob("*profile_pic.*"))
+    except OSError:
+        return False
+
+
 class Engine:
     """Single background worker with a mutable, reorderable queue."""
 
@@ -5163,6 +5183,13 @@ class Engine:
                    s: Settings) -> list[str]:
         cmd = [INSTALOADER, f"--dirname-pattern={target_dir}"]
 
+        # The picture is fetched on every run whatever --fast-update says, and
+        # the high-quality copy is an extra API call. Once the picture is on
+        # disk there is nothing left to collect, so stop asking: a "fail"
+        # payload on that call is what turns a finished profile into a run that
+        # exits non-zero, retries, and fails again over a picture it already has.
+        want_pic = s.profile_pic and not has_profile_pic(target_dir)
+
         # metadata / json
         if s.compress_json:
             pass  # default compresses
@@ -5194,18 +5221,18 @@ class Engine:
             # group, so --reels with everything else off does just reels.
             cmd.append("--reels")
             cmd.append("--no-posts")
-            if not s.profile_pic:
+            if not want_pic:
                 cmd.append("--no-profile-pic")
         elif job.kind == "tagged":
             # Tagged posts as their own pass, same reasoning as reels.
             cmd.append("--tagged")
             cmd.append("--no-posts")
-            if not s.profile_pic:
+            if not want_pic:
                 cmd.append("--no-profile-pic")
         else:
             if not s.posts:
                 cmd.append("--no-posts")
-            if not s.profile_pic:
+            if not want_pic:
                 cmd.append("--no-profile-pic")
             if s.stories:
                 cmd.append("--stories")
@@ -5257,6 +5284,7 @@ class Engine:
         crash_hit = False
         crash_optional = False
         crash_line = ""
+        pic_warn = False
         last_err = ""
         try:
             proc = subprocess.Popen(
@@ -5301,7 +5329,14 @@ class Engine:
                     # instaloader's own note that it is retrying anonymously
                     # because this may be a block rather than a deletion.
                     blocked_hint = True
-                if FATAL.search(line):
+                if PROFILE_PIC_WARN.search(line):
+                    # Nothing about the picture may fail a run. instaloader
+                    # files it under "Errors or warnings occurred" and exits
+                    # non-zero, often over a profile that is already fully
+                    # archived -- so it must not set the error, a retry, or a
+                    # fatal verdict.
+                    pic_warn = True
+                elif FATAL.search(line):
                     fatal_hit = True
                     last_err = line.strip()
                 elif RETRYABLE.search(line):
@@ -5352,7 +5387,8 @@ class Engine:
                 return "ok_warned"
             # No content at all and no recognised marker: treat as a crash, not
             # a rate limit, so we don't wait 15 minutes for nothing.
-            self._set(job, error=last_err or f"exit code {proc.returncode}")
+            note = " (the profile picture was the only thing reported)" if pic_warn else ""
+            self._set(job, error=last_err or f"exit code {proc.returncode}{note}")
             return "crash"
         self._set(job, error=last_err or f"exit code {proc.returncode}")
         return "retryable"
