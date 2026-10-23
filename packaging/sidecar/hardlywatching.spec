@@ -42,6 +42,8 @@ WEB_ASSETS = [
     "icon-512.png",
     "icon-512-maskable.png",
     "apple-touch-icon.png",
+    # /api/version reads this from HERE; without it a frozen bundle says "dev".
+    "VERSION",
 ]
 
 datas = []
