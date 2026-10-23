@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>HardlyWatching</title>
 <!-- Installed phone app: opens the whole app, not the standalone /shorts page,
      so Shorts is a tab you can swap away from and the menu is always there. -->
@@ -29,7 +29,14 @@
   body{margin:0;background:var(--bg);color:var(--text);
     font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
     -webkit-font-smoothing:antialiased}
-  .wrap{max-width:1120px;margin:0 auto;padding:26px 20px 90px}
+  /* Installed on a phone this app draws under the status bar (the PWA meta asks
+     for a translucent one), so the top of the page has to clear the inset or the
+     heading and tabs sit behind the clock. env() is 0 everywhere else. */
+  .wrap{max-width:1120px;margin:0 auto;
+    padding:calc(env(safe-area-inset-top) + 26px)
+            calc(env(safe-area-inset-right) + 20px)
+            calc(env(safe-area-inset-bottom) + 90px)
+            calc(env(safe-area-inset-left) + 20px)}
   header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
   h1{font-size:22px;margin:0;font-weight:650;letter-spacing:-.01em}
   h1 span{background:linear-gradient(90deg,var(--accent),var(--accent-2));
@@ -105,6 +112,10 @@
   .settings>summary::-webkit-details-marker{display:none}
   .settings>summary::before{content:"▸";color:var(--muted);transition:transform .15s}
   .settings[open]>summary::before{transform:rotate(90deg)}
+  /* scrollIntoView lines an element up with the very top of the viewport, which
+     in the installed app is behind the status bar -- the Settings button landed
+     its own summary under the clock. Keep the inset clear when scrolling to one. */
+  .settings{scroll-margin-top:calc(env(safe-area-inset-top) + 10px)}
   .sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));
     gap:4px 22px;padding:4px 0 15px}
   .sgroup{grid-column:1/-1;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;
@@ -840,20 +851,13 @@ some.profile
              never shows it and the videos look like they went somewhere else. -->
         <div class="hint" id="ttPath" style="margin-top:10px"></div>
       </div>
-      <div class="card" style="margin-top:12px">
-        <h3 style="margin-top:0">TikTok session (private accounts)</h3>
-        <p class="hint" style="margin-top:0">
-          Private TikTok profiles only download if you are logged in. Take the
-          login from a browser that is signed into TikTok and the app keeps its
-          own copy of it, the way Instagram has its own sessions — so a download
-          does not depend on that browser staying signed in. Public profiles need
-          none of this.
-        </p>
-        <div class="row" style="margin-top:10px;gap:8px">
-          <button class="small primary" id="ttSessionBtn">Save session from browser</button>
-          <button class="small" id="ttSessionForget" style="display:none">Forget session</button>
-        </div>
-        <div class="hint" id="ttSessionState" style="margin-top:9px">checking…</div>
+      <!-- TikTok's logins live in the Sessions panel, which lists every saved
+           login with the one in use and lets each be renamed or deleted. This tab
+           used to carry a second, single-slot copy of that control; one place, and
+           a pointer from here. -->
+      <div class="hint" id="ttSessWhere" style="margin-top:10px">
+        TikTok logins are kept in <b>Sessions</b> — every saved login is listed
+        there, with the one downloads use, and each can be renamed or deleted.
       </div>
 
   </div><!-- /ttPane -->
@@ -1052,33 +1056,6 @@ async function loadSessions(){
   renderSessions(st.sessions||[], st.active_session, st.session_ok, st.session_username);
   const br = await post("/api/session/browsers", {});
   renderBrowsers(br.browsers||[]);
-}
-
-// What the TikTok side will actually use for the next download.
-//
-// Read from the server rather than remembered here, so the line cannot go on
-// claiming a session is held after the file has gone.
-function renderTiktokSession(s){
-  const el = $("ttSessionState"), forget = $("ttSessionForget");
-  if(!el) return;
-  if(forget) forget.style.display = (s && s.held) ? "" : "none";
-  if(!s){ el.textContent = "—"; return; }
-  if(!s.held){
-    el.textContent = s.browser
-      ? "No session of its own — reading the browser each run "
-        + `(${s.browser.split(":").pop().split("/").pop()}). Public profiles work without it.`
-      : "No session, and no browser login found. Public profiles work without one.";
-    return;
-  }
-  const when = s.saved ? new Date(s.saved*1000).toLocaleString() : "unknown";
-  const login = s.login
-    ? `${s.login} login cookie${s.login===1?"":"s"}`
-    : "no login cookies — this will not unlock private profiles";
-  // Named, when we know which one it is: with more than one saved session the
-  // card has to say which is in use, and the Sessions panel is where they swap.
-  const which = s.label && s.label !== "TikTok session" ? ` <b>${esc(s.label)}</b>` : "";
-  el.innerHTML = `Held by the app${which}: <b>${login}</b> of ${s.cookies} cookies, `
-    + `saved ${esc(when)}. Downloads use this, not the browser.`;
 }
 
 function renderSessions(sessions, active, ok, username){
@@ -2231,10 +2208,6 @@ function render(st){
   } else cb.style.display = "none";
 
   if(!settings) fillSettings(st.settings||{});
-  // Painted from every poll, not only when the session panel is opened: the
-  // TikTok session line has to reflect the file on disk, and it has to be right
-  // on the tab you are looking at rather than only after a trip to settings.
-  renderTiktokSession(st.tiktok_session);
 
   // Split the jobs into four groups:
   //   1. what's downloading right now  (pinned, full width)
@@ -3665,53 +3638,6 @@ $("ttCheckBtn").onclick = async () => {
     }
     $("ttResult").textContent = msg;
   }catch(e){ $("ttResult").textContent = "Error: " + e.message; }
-};
-
-// The TikTok-only "Add to queue" used to be a second button in a second box.
-// One box and one button now: startBtn above routes each line by its link, so a
-// TikTok-only paste does not need its own control.
-// (ttClearBtn removed with the second paste box; the shared Clear text button
-// clears the one box and its result line.)
-// A cookie spec can be "firefox:/home/you/.zen/abc.Default (release)", which is
-// the value yt-dlp needs but an unreadable thing to show next to a button. Say
-// which browser it came from instead.
-
-// Take the browser's TikTok login and keep it as the app's own session.
-//
-// This replaces a button that only pointed yt-dlp at a browser profile. That
-// left TikTok with nothing of its own: the login existed only inside the
-// browser, so signing out there silently ended it, and nothing in the app could
-// report whether a session was there at all.
-$("ttSessionBtn").onclick = async () => {
-  const el = $("ttSessionState"), btn = $("ttSessionBtn");
-  const was = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Saving…";
-  if(el) el.textContent = "Reading the browser’s TikTok login…";
-  try{
-    const r = await post("/api/tiktok/session/capture", {});
-    if(!r.ok){
-      if(el) el.textContent = r.error || "Could not save a session";
-      toast(r.error || "Could not save a session");
-      return;
-    }
-    toast(`TikTok session saved — ${r.login} login cookie${r.login===1?"":"s"} of ${r.cookies}`);
-    tick();
-  }catch(e){
-    if(el) el.textContent = "Error: " + e.message;
-  }finally{
-    btn.disabled = false;
-    btn.textContent = was;
-  }
-};
-
-$("ttSessionForget").onclick = async () => {
-  if(!confirm("Forget the saved TikTok session?\n\nPrivate profiles will stop "
-    + "downloading until you save it again. Nothing else is affected.")) return;
-  const r = await post("/api/tiktok/session/forget", {});
-  if(!r || r.ok === false){ toast((r && r.error) || "Could not forget it"); return; }
-  toast("Session forgotten — reading the browser again");
-  tick();
 };
 
 function buildAllBar(profileCount){

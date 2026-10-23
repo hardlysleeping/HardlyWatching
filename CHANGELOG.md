@@ -59,8 +59,23 @@ versioning is [SemVer](https://semver.org/).
   the URL (`?tab=gallery&profile=…&platform=…`, plus `plat=tiktok` for the queue),
   so reloading keeps the tab, the site and the open profile instead of dropping
   you back on Download. Pasting that link elsewhere opens the same page.
+- **TikTok's logins live in one place: Sessions.** The Download → TikTok tab
+  carried its own session card (save from browser, forget) on top of the list the
+  Sessions panel already keeps — two copies of the same control, and only the
+  panel could show more than one saved login, rename one or say which was in use.
+  The card is gone; the tab keeps a line pointing at Sessions, which lists every
+  saved login, marks the one downloads use, and renames or deletes each.
 
 ### Fixed
+- **The installed app no longer opens under the phone's status bar.** The page asks
+  for a translucent status bar, so on a phone home-screen install the web view
+  draws full-screen and the heading, subtitle and tabs sat behind the clock and
+  the notch. It now asks for `viewport-fit=cover` and pads the top (and the sides
+  and bottom) by the device's safe-area insets, so the layout starts below the
+  status bar and the home indicator; on a desktop browser the insets are zero and
+  nothing moves. Anything scrolled to — the Download settings section the header
+  button opens, the Excluded list — also keeps the inset clear instead of landing
+  its own heading under the clock.
 - **The heart agrees with itself in All Favourites and All Trash.** Un-favouriting
   from the enlarged view in an archive-wide list flipped the heart in the viewer
   but left the tile behind it showing ♥ — and the count line still claimed the old
