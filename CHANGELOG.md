@@ -36,6 +36,15 @@ versioning is [SemVer](https://semver.org/).
   you back on Download. Pasting that link elsewhere opens the same page.
 
 ### Fixed
+- **A throttled session is no longer reported as a crash.** When instaloader
+  cannot verify the saved session it falls back to asking for a password; in the
+  queue there is no terminal to ask, so `getpass` died with `EOFError` and the
+  job was filed as "instaloader crashed", losing an attempt, when the truth was
+  Instagram answering the session check with `401 … Please wait a few minutes`.
+  The password prompt is now recognised before the traceback is, and the run
+  backs off like any other rate limit with a message that says so. A genuine
+  Python crash still fails the job, and a profile that really is gone still
+  goes fatal.
 - **A favourite that had left a placeholder behind could not be undone.** A post
   moved to `favorites/` leaves a 0-byte placeholder in `main/` — that is what
   stops instaloader fetching a deleted post again — and the move code took that

@@ -278,6 +278,17 @@ PROGRESS_RE = re.compile(r"\[\s*(\d+)\s*/\s*(\d+)\s*\]")
 # occurred", which says nothing about whether the archive itself is complete.
 PROFILE_PIC_WARN = re.compile(r"Unable to fetch high quality profile pic", re.IGNORECASE)
 
+# When instaloader cannot verify the saved session it falls back to
+# interactive_login() and asks for a password. In a headless worker stdin is
+# /dev/null, so getpass dies with EOFError and the whole run looks like a
+# Python crash -- which failed the job and burned an attempt, when the real
+# cause was Instagram answering the session check with 401 "please wait a few
+# minutes". Recognise the prompt itself, before CRASH sees the traceback.
+SESSION_PROMPT = re.compile(
+    r"(Enter Instagram password|GetPassWarning|Can not control echo)",
+    re.IGNORECASE,
+)
+
 PROFILE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 
 
@@ -1193,6 +1204,7 @@ def _media_info(folder: Path, name: str, platform: str = "instagram") -> dict:
     caption = ""
     title = ""
     is_video = None
+    owner = ""
     if platform == "tiktok":
         ts, ts_src, caption, title = _tiktok_info(folder, name)
     else:
@@ -4782,6 +4794,56 @@ class Engine:
             # Remember the latest line so a resumed job still shows context.
             job.last_line = line.strip()[:200]
 
+    def _retry_due_in(self, platform: str = "instagram") -> float | None:
+        """Seconds until this platform's next automatic retry is due.
+
+        None means nothing is waiting on the sweep: no failed job that is still
+        eligible, or every eligible one has used its retries. Zero means a retry
+        is due right now (a job that failed with no backoff set yet).
+        """
+        now = time.time()
+        soonest: float | None = None
+        with self.lock:
+            for j in self.jobs.values():
+                if getattr(j, "platform", "instagram") != platform:
+                    continue
+                if j.status != "failed" or j.fatal:
+                    continue
+                if j.auto_retries >= AUTO_RETRY_MAX:
+                    continue
+                if not j.next_retry_at or j.next_retry_at <= now:
+                    return 0.0
+                soonest = j.next_retry_at if soonest is None else min(soonest, j.next_retry_at)
+        return None if soonest is None else max(0.0, soonest - now)
+
+    def retry_now(self, platform: str = "instagram") -> int:
+        """Put this platform's failed profiles back in the queue immediately.
+
+        The sweep's delay exists so Instagram forgets a throttle, not to make a
+        person wait after they have asked for a profile again. This does not
+        spend an automatic retry, so pressing Start can never write a job off.
+        """
+        n = 0
+        with self.lock:
+            for jid, j in self.jobs.items():
+                if getattr(j, "platform", "instagram") != platform:
+                    continue
+                if j.status != "failed" or j.fatal:
+                    continue
+                j.status = "queued"
+                j.attempts = 0
+                j.error = ""
+                j.message = "retrying now"
+                j.next_retry_at = 0.0
+                j.finished_at = None
+                self.pending[:] = [x for x in self.pending if x != jid]
+                self.pending.append(jid)
+                n += 1
+        if n:
+            self._kick()
+            self.save_state()
+        return n
+
     def _has_pending(self, platform: str) -> bool:
         """Is there a queued job for this platform waiting in the order?"""
         with self.lock:
@@ -4916,6 +4978,28 @@ class Engine:
                         with self.lock:
                             self.current["instagram"] = None
                     if self._has_pending("instagram"):
+                        continue
+
+                # Nothing queued -- but a failed profile may be waiting out its
+                # retry backoff. That retry is only ever fired by the sweep at
+                # the top of this loop, so returning here would kill the one
+                # thread that could pick it up: the job stayed red for good and
+                # the platform looked stopped until someone pressed Start.
+                # Stay alive until the earliest retry is due instead.
+                wait = self._retry_due_in(platform)
+                if wait is not None:
+                    self.save_state()
+                    end = time.time() + wait
+                    while not self.stop_requested and time.time() < end:
+                        # Start on this tab means "try it again now", not "wait
+                        # out the rest of the backoff".
+                        if self._skip_gap.get(platform):
+                            with self.lock:
+                                self._skip_gap[platform] = False
+                            self.retry_now(platform)
+                            break
+                        time.sleep(min(2.0, max(0.1, end - time.time())))
+                    if not self.stop_requested:
                         continue
 
                 self.save_state()
@@ -5055,6 +5139,12 @@ class Engine:
 
         count = int(getattr(job, "tiktok_count", 0) or 0)
         if job.attempts >= job.max_attempts:
+            # Handing a job over that has nothing left to spend must not leave it
+            # looking like it is still running: the worker never returns a
+            # "running" job to the queue, so the row would sit there forever.
+            self._set(job, status="failed", finished_at=time.time(),
+                      message="gave up after max attempts",
+                      error=job.error or f"stopped after {job.attempts} attempts")
             return
         job.attempts += 1
 
@@ -5357,6 +5447,8 @@ class Engine:
             # Longer at random, never shorter: this exists to let a block clear,
             # and coming back early is what makes the block longer.
             backoff = jitter(backoff, COOLDOWN_JITTER, up_only=True)
+            note = getattr(self, "_retry_note", "")
+            self._retry_note = ""
             with self.lock:
                 self.cooldown_until = max(self.cooldown_until, time.time() + backoff)
                 self.consecutive_limits += 1
@@ -5365,8 +5457,9 @@ class Engine:
                     self.paused = True
                     self._limit_paused = True  # auto-clears when cooldown ends
             self._set(job, status="retrying",
-                      message=f"rate limited — cooling down {max(1, round(backoff / 60))} min "
-                              f"(attempt {job.attempts})")
+                      message=note or
+                      f"rate limited — cooling down {max(1, round(backoff / 60))} min "
+                      f"(attempt {job.attempts})")
             self.save_state()
             if tripped:
                 # Stop hammering entirely; the user resumes when it's safe.
@@ -5502,6 +5595,7 @@ class Engine:
         crash_optional = False
         crash_line = ""
         pic_warn = False
+        session_hit = False
         last_err = ""
         try:
             proc = subprocess.Popen(
@@ -5537,16 +5631,21 @@ class Engine:
                         job.retry_after = max(job.retry_after, int(m.group(1)))
                     except ValueError:
                         pass
-                if CRASH.search(line):
+                if CRASH.search(line) and not session_hit:
                     crash_hit = True
                     crash_line = line.strip()
-                if CRASH_IN_OPTIONAL.search(line):
+                if CRASH_IN_OPTIONAL.search(line) and not session_hit:
                     crash_optional = True
                 if BLOCKED_HINT.search(line):
                     # instaloader's own note that it is retrying anonymously
                     # because this may be a block rather than a deletion.
                     blocked_hint = True
-                if PROFILE_PIC_WARN.search(line):
+                if SESSION_PROMPT.search(line):
+                    # It is asking for a password because the session check
+                    # failed. Everything after this -- the traceback, the
+                    # EOFError -- is fallout, not the diagnosis.
+                    session_hit = True
+                elif PROFILE_PIC_WARN.search(line):
                     # Nothing about the picture may fail a run. instaloader
                     # files it under "Errors or warnings occurred" and exits
                     # non-zero, often over a profile that is already fully
@@ -5566,6 +5665,19 @@ class Engine:
 
         if self.cancel_current["instagram"]:
             return "ok"
+
+        # instaloader could not verify the saved session, so it asked for a
+        # password and died on an empty stdin. Nothing is wrong with the profile
+        # or the archive: Instagram answered the session check with 401 "please
+        # wait a few minutes", which is a throttle. Back off like a rate limit
+        # rather than failing the job, burning an attempt, or retrying at once.
+        if session_hit:
+            self._set(job, error="")
+            self._retry_note = (
+                "Instagram rejected the session check (401) — cooling down. "
+                "If this keeps happening, switch to another saved session."
+            )
+            return "retryable"
 
         # A Python crash must never be mistaken for a rate limit: retrying the
         # same arguments would crash identically and falsely burn a cooldown.
