@@ -1,0 +1,70 @@
+name: CI
+
+# Every push, plus pull requests that target master. One job, Linux only.
+on:
+  push:
+  pull_request:
+    branches: [master]
+
+# Read-only: the job checks out and runs tests, nothing else.
+permissions:
+  contents: read
+
+# github.ref is used only as a concurrency key, never interpolated into a
+# shell command, so it is not an injection surface.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Unit tests (ubuntu-latest, Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The 46-case suite imports only the standard library -- it passes in a
+      # venv holding nothing but pip (see docs/ci.md). Pillow is installed
+      # because every real install of the app has it and the image code paths
+      # import it lazily; it is not what makes the suite green.
+      # This list is duplicated on purpose from scripts/ci-local.sh: keep the
+      # two identical, and change both when a test gains a dependency.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'Pillow>=10.4,<12'
+
+      - name: Show the interpreter
+        run: python -V
+
+      - name: Compile check
+        run: python -m compileall -q server.py engine.py shorts.py profile_db.py control-panel.py
+
+      # Same command as scripts/ci-local.sh. tests/sandbox.py builds its own
+      # temp HOME, stubs instaloader/yt-dlp on PATH and binds a port at or above
+      # 8899, so nothing here touches real state and no test needs the network.
+      # Green with zero tests is not green, so the summary line is checked too
+      # (a broken discovery pattern would otherwise pass silently).
+      - name: Unit tests
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/unittest.log"
+          python -m unittest discover -s tests -v 2>&1 | tee "$log"
+          ran="$(grep -E '^Ran [0-9]+ tests? in ' "$log" | tail -1 || true)"
+          echo "summary: ${ran:-<none>}"
+          case "$ran" in
+            "Ran 0 tests"*) echo "::error::unittest discovered 0 tests"; exit 1 ;;
+            "Ran "*) ;;
+            *) echo "::error::no unittest summary line"; exit 1 ;;
+          esac
