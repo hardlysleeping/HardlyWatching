@@ -319,9 +319,13 @@
   .banner{display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:11px;
     background:#1c1416;border:1px solid #5a2b2b;color:#fca5a5;font-size:13.5px;margin:14px 0}
   .banner.warn{background:#241c0f;border-color:#5a4a1e;color:#fcd34d}
+  /* Above the viewer (70) as well as the page: a like or a trash raised from
+     the full-screen viewer reported its result to a toast that was drawn
+     underneath it, so the action looked like it had done nothing. Below the
+     confirm dialog (90) so a toast never covers a question being asked. */
   .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
     background:var(--panel-3);border:1px solid var(--line-2);border-radius:10px;
-    padding:11px 18px;font-size:13.5px;opacity:0;transition:.2s;pointer-events:none;z-index:50;max-width:90vw}
+    padding:11px 18px;font-size:13.5px;opacity:0;transition:.2s;pointer-events:none;z-index:85;max-width:90vw}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
   /* ---------- tabs ---------- */
@@ -667,6 +671,9 @@
     color:#fff;border-radius:7px;width:32px;height:32px;font-size:15px;line-height:1;
     cursor:pointer;padding:0;font-family:inherit;transition:.15s}
   .vact:hover{background:rgba(255,255,255,.20)}
+  /* A tap has to be visible. There is no hover on a phone, so without this the
+     only sign a press landed was the result arriving a request later. */
+  .vact:active{background:rgba(255,255,255,.32);border-color:rgba(255,255,255,.45)}
   .vact.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .vcap{padding:11px 15px;font-size:13px;color:var(--muted);
     max-height:110px;overflow-y:auto;border-top:1px solid var(--line);
@@ -1485,6 +1492,9 @@ const IG_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const TT_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.2 3c.3 2.1 1.6 3.5 3.8 3.7v2.7c-1.4.1-2.7-.3-3.9-1v5.9c0 3.5-2.6 5.9-5.8 5.4-2.6-.4-4.4-2.5-4.4-5 0-3 2.6-5.3 5.8-4.8v2.8c-.4-.1-.8-.2-1.2-.1-1.3.1-2.2 1.1-2.1 2.4.1 1.3 1.2 2.2 2.5 2.1 1.2-.1 2-1 2-2.4V3h3.3z"/></svg>';
 
 let lastState = null;   // cached snapshot so reorder handlers can update locally
+// Interval that repaints the gallery's profile list while a download is live.
+// Declared here, above render(), because render() both arms and disarms it.
+let gTickLive = null;
 let paused=false, settings=null, adv=false, lastHash="";
 
 /* ---------- settings panel ---------- */
@@ -4557,7 +4567,8 @@ function tlTile(post, monthKey){
       faved = !faved;
       paintHeart(btn, tile, faved);
       const section = faved ? "favorites" : "main";
-      const res = await movePhoto(post.username, post.file, section, true);
+      const res = await movePhoto(post.username, post.file, section, true,
+                                  postPlatform(post));
       if(!res){
         faved = was;
         paintHeart(btn, tile, faved);
@@ -4579,7 +4590,8 @@ function tlTile(post, monthKey){
 
   acts.appendChild(mk("🗑", "Move to trash", async () => {
     if(!confirm(`Move this post by ${post.username} to trash?`)) return;
-    const ok = await movePhoto(post.username, post.file, "trash", true);
+    const ok = await movePhoto(post.username, post.file, "trash", true,
+                               postPlatform(post));
     if(!ok) return;
     toast("Moved to trash");
     tile.remove();
@@ -5303,7 +5315,7 @@ function tileFor(username, post, section){
     return b;
   };
   const names = post.items.map(i => i.file);
-  const every = (sec) => Promise.all(names.map(n => movePhoto(username, n, sec, true)));
+  const every = (sec) => Promise.all(names.map(n => movePhoto(username, n, sec, true, plat)));
 
   // Favouriting toggles IN PLACE: the heart flips instantly and the post stays
   // exactly where it is, so the grid never reshuffles under you. Un-favouriting
@@ -5397,7 +5409,7 @@ function tileFor(username, post, section){
       dropTiles(username, done, "main");
     }));
   } else {
-    actsRight.appendChild(mkBtn("🗑","Move to trash", () => confirmTrash(username, names)));
+    actsRight.appendChild(mkBtn("🗑","Move to trash", () => confirmTrash(username, names, null, plat)));
   }
   tile.appendChild(acts);
   tile.appendChild(actsRight);
@@ -5939,9 +5951,10 @@ async function setFlagLike(username, file, plat, section, on){
 }
 
 async function movePhoto(username, name, section, quiet, platform){
-  // Default to the platform whose profile is open: every caller works on the
-  // profile currently on screen, and dropping this is what made the heart and
-  // trash buttons fail on every TikTok post.
+  // The caller passes the platform of the post it is acting on. Falling back to
+  // the open tab's platform is what made the heart and trash buttons fail on
+  // every TikTok post seen from a mixed view (Liked, Timeline, a merged card):
+  // the file was looked for in the other site's root and never found.
   const plat = platform || gPlatform || "instagram";
   const r = await post("/api/gallery/move", {profile:username, file:name, section, platform:plat});
   if(!r.ok){
@@ -6076,15 +6089,25 @@ let vState = null;   // {username, post, section, idx, srcs}
 // True while a like move from the viewer is still in flight.
 let vFavBusy = false;
 
-function mediaSrc(item, username, section){
+function mediaSrc(item, username, section, platform, raw){
   // HEIC is converted server-side for viewing: no browser except Safari can
   // draw one, and an <img> pointed at the original shows a broken icon. The
   // download button still fetches the untouched original through /media.
   const heic = /\.(heic|heif)$/i.test(item.file || "");
   const ep = heic ? "/view" : "/media";
+  // `platform` decides which root the file is looked up in, so it must come
+  // from the POST, never from the gallery's current platform: the Liked,
+  // Trash, Bookmarks and Timeline views mix both sites, and defaulting to the
+  // open tab's platform 404s every post from the other one -- a tile that
+  // shows and then opens blank.
+  const plat = platform || gPlatform || "instagram";
+  // `raw` asks for the stored file itself. The server remuxes a .mov into an
+  // MP4 for playing, which is right for the stage and wrong for a download
+  // that promises the original.
   return `${ep}?profile=${encodeURIComponent(username)}&file=${encodeURIComponent(item.file)}`
        + (section === "main" ? "" : `&section=${section}`)
-       + `&platform=${gPlatform}`;
+       + `&platform=${plat}`
+       + (raw ? "&raw=1" : "");
 }
 
 function openViewer(username, post, section, idx){
@@ -6094,7 +6117,7 @@ function openViewer(username, post, section, idx){
   // payload, and then keep them in step.
   const srcSection = section || post.section || "main";
   post.section = srcSection;
-  const srcs = post.items.map(i => ({item:i, src:mediaSrc(i, username, srcSection)}));
+  const srcs = post.items.map(i => ({item:i, src:mediaSrc(i, username, srcSection, postPlatform(post))}));
   vState = {username, post, section: srcSection, idx: idx||0, srcs};
   // Remember where this post sits in the grid, so ← and → continue from here
   // rather than jumping back to the top of the list every time.
@@ -6427,7 +6450,7 @@ function paintViewerActions(pop){
   const isVideo = !!(cur && cur.item.kind === "video");
   VIEWER_BTN.dl.hidden = !isVideo;
   if(isVideo && file){
-    VIEWER_BTN.dl.dataset.href = mediaSrc(cur.item, vState.username, srcSection);
+    VIEWER_BTN.dl.dataset.href = mediaSrc(cur.item, vState.username, srcSection, postPlatform(vState.post), true);
   }
 }
 
@@ -6436,7 +6459,7 @@ function viewerDownload(){
   const cur = vState.srcs[vState.idx];
   if(!cur || cur.item.kind !== "video") return;
   const a = document.createElement("a");
-  a.href = mediaSrc(cur.item, vState.username, vState.section);
+  a.href = mediaSrc(cur.item, vState.username, vState.section, postPlatform(vState.post), true);
   a.download = cur.item.file;
   document.body.appendChild(a);
   a.click();
@@ -6483,7 +6506,8 @@ async function viewerToggleFav(){
   st.section = target;
   post.section = target;
   paintViewerActions(true);
-  const res = await Promise.all(names.map(n => movePhoto(st.username, n, target, true)));
+  const res = await Promise.all(names.map(n => movePhoto(st.username, n, target, true,
+                                                         postPlatform(post))));
   vFavBusy = false;
   if(vState !== st){
     // Viewer closed while the move was in flight: nothing left to repaint, but
@@ -6499,6 +6523,11 @@ async function viewerToggleFav(){
     return;
   }
   toast(target === "favorites" ? "Liked" : "Unliked");
+  // The files have moved, so every URL this viewer holds still points at the
+  // folder they just left. Rebuild them, or stepping to the next part of a
+  // carousel 404s and shows a blank frame on the photo after the like.
+  st.srcs = post.items.map(i => ({item:i,
+    src: mediaSrc(i, st.username, st.section, postPlatform(post))}));
   // The grid is still behind the overlay and holds its own copy of the state.
   // Pass the post and its new home so the matching tile is updated in place --
   // redrawing the grid here is what made it flash and lose its scroll.
@@ -6568,14 +6597,16 @@ async function viewerTrash(){
     const st = vState;
     closeViewer();
     const done = [];
-    for(const n of names){ if(await movePhoto(st.username, n, "main", true)) done.push(n); }
+    for(const n of names){ if(await movePhoto(st.username, n, "main", true,
+                                              postPlatform(st.post))) done.push(n); }
     if(!done.length){ toast("Could not restore"); return; }
     dropTiles(st.username, done, "main");
     toast("Restored");
     return;
   }
   const names = vState.post.items.map(i => i.file);
-  confirmTrash(vState.username, names, () => { closeViewer(); });
+  confirmTrash(vState.username, names, () => { closeViewer(); },
+               postPlatform(vState.post));
 }
 
 /* ---------- viewer: flat swipe list across profiles ---------- */
@@ -6792,9 +6823,13 @@ function dropTiles(username, names, toSection){
   return posts;
 }
 
-async function confirmTrash(username, names, onDone){
+async function confirmTrash(username, names, onDone, platform){
   const list = Array.isArray(names) ? names : [names];
   const many = list.length > 1;
+  // The platform of the post being trashed, not of the tab: a merged card and
+  // the Liked/Trash views mix both sites, and a move against the wrong root
+  // fails silently from the user's side -- the dialog just goes away.
+  const plat = platform || gPlatform || "instagram";
   const wrap = document.createElement("div");
   wrap.className = "confirm";
   const box = document.createElement("div");
@@ -6813,8 +6848,11 @@ async function confirmTrash(username, names, onDone){
   go.textContent = "Move to trash";
   go.onclick = async () => {
     wrap.remove();
+    // Say something immediately. The move is a round trip per file, and on a
+    // phone the dialog vanishing was the only feedback until the toast landed.
+    toast(many ? `Moving ${list.length} to trash…` : "Moving to trash…");
     const done = [];
-    for(const n of list){ if(await movePhoto(username, n, "trash", true)) done.push(n); }
+    for(const n of list){ if(await movePhoto(username, n, "trash", true, plat)) done.push(n); }
     if(!done.length){ toast("Nothing moved"); return; }
     // The tiles leave the grid now, not on the next reload. That reload was the
     // whole complaint: trashing looked like nothing had happened, and reloading

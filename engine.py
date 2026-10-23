@@ -2761,6 +2761,56 @@ def make_preview(src: Path) -> Path | None:
     return None
 
 
+def _playable_path(name: str) -> Path:
+    return THUMB_CACHE / "play" / (name + ".mp4")
+
+
+def make_playable(src: Path) -> Path | None:
+    """Remux a clip into an MP4 every browser will actually play.
+
+    Only QuickTime needs this. Safari plays a .mov, but Chrome and Firefox
+    refuse that container even when the streams inside are H.264/AAC, so a clip
+    archived from an iPhone shows a black frame everywhere but Safari. The
+    streams are copied rather than re-encoded -- it is a container change, so it
+    costs a second and loses nothing.
+
+    A codec that cannot live in an MP4 (ProRes, say) makes the copy fail, and
+    that is when the fallback transcode earns its keep. Both stages are
+    bounded; a failure returns None so the caller serves the original instead.
+    """
+    dest = _playable_path(_cache_key(src))
+    if dest.is_file() and dest.stat().st_size > 0:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".part.mp4")
+    import subprocess
+    stages = [
+        ("copy", ["-c", "copy"]),
+        ("x264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                  "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k"]),
+    ]
+    for label, codec in stages:
+        try:
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", str(src),
+                 "-map", "0:v:0", "-map", "0:a:0?", *codec,
+                 "-movflags", "+faststart", "-f", "mp4", str(tmp)],
+                check=True, timeout=180,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if tmp.is_file() and tmp.stat().st_size > 0:
+                tmp.replace(dest)
+                return dest
+        except Exception as e:
+            print(f"playable ({label}) failed for {src.name}: {e}")
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+    return None
+
+
 def resolve_media(self, username: str, rel: str, section: str = "",
                   platform: str = "instagram") -> Path | None:
     """Map a requested gallery filename to a real file, or None.

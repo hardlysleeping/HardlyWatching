@@ -34,7 +34,7 @@ if str(_HERE / "tools") not in sys.path:
 from urllib.parse import urlparse
 
 from engine import (Engine, UPLOAD_EXTS, clean_profile_name, ensure_pillow_formats,
-                    make_preview, make_thumb, _cache, _media_cache_forget)
+                    make_playable, make_preview, make_thumb, _cache, _media_cache_forget)
 
 HERE = Path(__file__).resolve().parent
 
@@ -1098,6 +1098,17 @@ class Handler(BaseHTTPRequestHandler):
             target = get_engine().resolve_media(name, rel, sub, plat)
             if target is None:
                 return self.send_error(404)
+            # A QuickTime container is refused by every browser except Safari,
+            # even when the streams inside are H.264/AAC. Hand out a remuxed
+            # MP4 when one can be made, and fall through to the original if the
+            # remux fails -- that still plays in Safari, which is better than a
+            # 404. `raw=1` asks for the untouched file, which is what the
+            # viewer's download button wants.
+            raw = (q.get("raw") or [""])[0] == "1"
+            if not raw and target.suffix.lower() == ".mov":
+                playable = make_playable(target)
+                if playable is not None:
+                    return self._serve_file(playable, cache=True)
             # Allow the browser to cache: these files never change in place.
             return self._serve_file(target, cache=True)
         if p == "/view":
