@@ -36,6 +36,15 @@ versioning is [SemVer](https://semver.org/).
   twin on the other site is skipped rather than counted twice.
 
 ### Changed
+- **Adding photos defaults to the profile you are in.** The upload box's picker
+  started on "(new name…)" no matter where you were, so putting a photo into the
+  profile you had open meant finding that name again in a list of hundreds.
+  Opening someone's gallery now points the picker at them, and it follows you
+  between profiles; a name typed by hand still takes priority. Leaving the
+  profile keeps the last default rather than resetting, since the person you were
+  just looking at is the likeliest destination. Opening a profile from a link —
+  which never renders the list — adds that one name to the picker instead of
+  leaving it empty.
 - **The heart reacts, and the view you were in survives a reload.** A heart
   springs once when it changes, so the tap registers before the server answers,
   and each post takes one favourite move at a time — a second tap mid-flight used

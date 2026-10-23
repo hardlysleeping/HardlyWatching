@@ -4041,6 +4041,30 @@ function uploadTarget(){
   return sel ? sel.value : "";
 }
 
+// The upload box follows the profile you are looking at. Opening someone's
+// gallery points "into" at them, so adding a photo to the person whose page you
+// are on does not mean finding them again in a list of four hundred. Leaving a
+// profile does not clear it — the last one you were in is still the likeliest
+// destination, and a name typed by hand always wins anyway.
+let uploadDefault = "";
+
+function syncUploadDefault(username){
+  if(!username || username === uploadDefault) return;
+  uploadDefault = username;
+  const sel = $("upProfile");
+  if(!sel) return;
+  // Opening a profile straight from a link never renders the profile list, so
+  // the picker still holds nothing but "(new name…)". Add this person to it
+  // rather than defaulting to a name the box cannot show.
+  if(![...sel.options].some(o => o.value === username)){
+    const o = document.createElement("option");
+    o.value = username;
+    o.textContent = username;
+    sel.appendChild(o);
+  }
+  sel.value = username;
+}
+
 // Keep the picker in step with the profiles on screen, without clobbering a
 // choice the user already made.
 function fillUploadProfiles(profiles){
@@ -4054,6 +4078,7 @@ function fillUploadProfiles(profiles){
   sel.innerHTML = `<option value="">(new name…)</option>`
     + want.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join("");
   if(want.includes(keep)) sel.value = keep;
+  else if(uploadDefault && want.includes(uploadDefault)) sel.value = uploadDefault;
 }
 
 function sayUpload(msg){
@@ -5300,6 +5325,8 @@ function drawPhotos(username, sec){
   // bug from inside a profile. Name it here; renderGallery puts it back.
   const gt = $("galleryTitle");
   if(gt) gt.textContent = `Gallery — @${username}`;
+  // Add-your-own-photos defaults to the profile you are in.
+  syncUploadDefault(username);
   const gh = $("galleryHint");
   if(gh){
     gh.textContent = merged ? "Instagram + TikTok"

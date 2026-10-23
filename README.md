@@ -64,6 +64,9 @@ archive-wide views and a box to add your own photos or folders.
 you like. The top says whose profile you are in and which site it came from; a
 card that folds the same handle from both sites says so and gives each site's
 share, and the heading names the profile instead of asking you to select one.
+The "add your own photos" box points into the profile you are looking at, so
+adding something to the page you are on needs no second selection; type in the
+name box instead and that wins.
 
 ![A single profile's post grid with media filters and sort options](docs/gallery-profiles.png)
 
