@@ -1,0 +1,26 @@
+[package]
+name = "hardlywatching"
+version = "0.1.0"
+description = "HardlyWatching - desktop shell for the HardlyWatching server"
+authors = ["hardlysleeping"]
+edition = "2021"
+rust-version = "1.77"
+
+# The shell is a window onto a URL. It bundles no copy of the web UI: the UI
+# ships inside the Python server, so this crate only resolves a server URL and
+# points a WebView at it.
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
