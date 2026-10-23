@@ -3,11 +3,25 @@
 Run:  python3 server.py
 Then open http://127.0.0.1:8765
 
+Flags:
+  --attach       print the URL of an instance that is already running, then exit
+                 (0 when one is up, 1 when none is). Starts nothing.
+  --no-browser   do not open a browser tab (for autostart, sidecars, headless)
+  --force        start even though the lock says an instance is already running
+  --port N       port to bind (same as INSTA_PORT)
+  --host ADDR    address to bind (same as INSTA_HOST)
+
 Environment:
   INSTA_PORT    port to bind (default 8765)
   INSTA_HOST    address to bind (default 127.0.0.1; use 0.0.0.0 for LAN/tailnet)
   INSTA_OUTPUT  where downloads go (default ~/instagram)
   INSTA_STATE   where app state is kept (default ~/.config/hardlywatching/state.json)
+  INSTA_LOCK    where the single-instance lock lives
+                (default run/hardlywatching.lock beside the state file)
+
+Only one instance may own a state file. A second start finds the lock, proves the
+recorded process is alive and answering /api/health, prints where it is and exits
+0 instead of binding a second port onto the same queue and the same archive.
 """
 
 from __future__ import annotations
@@ -23,8 +37,10 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 import webbrowser
 import zipfile
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -36,7 +52,7 @@ if str(_HERE / "tools") not in sys.path:
 
 from urllib.parse import urlparse
 
-from engine import (Engine, UPLOAD_EXTS, cache_dir, clean_profile_name,
+from engine import (Engine, STATE_FILE, UPLOAD_EXTS, cache_dir, clean_profile_name,
                     ensure_pillow_formats,
                     make_playable, make_preview, make_thumb, _cache, _media_cache_forget)
 
@@ -73,8 +89,11 @@ HOST = _opt("--host", "INSTA_HOST", "127.0.0.1")
 def find_free_port(start: int, host: str = "127.0.0.1") -> int:
     """Return the first free port at or after `start`.
 
-    Lets the app just work when the default port is taken by something else,
-    instead of dying with 'Address already in use'.
+    For a port taken by some *other* program, so the app still comes up
+    instead of dying with 'Address already in use'. A second copy of
+    HardlyWatching never gets this far: the lock in `running_instance()`
+    catches that first, because two servers on one state file are a bug,
+    not a fallback.
     """
     import socket
     for port in range(start, start + 50):
@@ -86,6 +105,176 @@ def find_free_port(start: int, host: str = "127.0.0.1") -> int:
             except OSError:
                 continue
     return start  # give up; let the real bind produce the error
+
+
+# ---------------------------------------------------------------------------
+# One instance per state file
+#
+# Two servers sharing a state file means two workers pulling the same queue and
+# two UIs writing over each other, and before this the second one silently moved
+# itself to 8766 and looked perfectly healthy. The lock makes that a non-event:
+# the second start notices the first, says where it is, and exits 0.
+#
+# The lock sits beside the state file, because it belongs to that state and not
+# to a port. `INSTA_LOCK` overrides the path outright.
+# ---------------------------------------------------------------------------
+
+# Bumped when the shape of /api/* changes; the desktop shell compares it.
+API_VERSION = 1
+# When this process started, for /api/version and the lock. Module import is as
+# close to process start as it gets, and it is the same value in both places.
+STARTED_AT = datetime.now().astimezone().isoformat(timespec="seconds")
+VERSION_FILE = HERE / "VERSION"
+# Loopback probes must never go through a proxy from the environment.
+_PROBE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def app_version() -> str:
+    """The version in VERSION at the repo root, or 'dev' when there is none.
+
+    Read per call rather than cached: a development checkout can be edited
+    underneath a running server, and 'dev' is the honest answer for a tree that
+    was never given a version.
+    """
+    try:
+        text = VERSION_FILE.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return "dev"
+    return text or "dev"
+
+
+def lock_path() -> Path:
+    """Where the lock file belongs: run/hardlywatching.lock beside the state."""
+    override = (os.environ.get("INSTA_LOCK") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(STATE_FILE).expanduser().parent / "run" / "hardlywatching.lock"
+
+
+def read_lock() -> dict:
+    """The lock's contents, or {} when it is missing, unreadable or malformed."""
+    try:
+        data = json.loads(lock_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_lock(port: int) -> dict:
+    """Record this process as the owner of the state file, atomically.
+
+    Written to a temp file and renamed over the lock, so a crash mid-write
+    leaves the old lock (or none) rather than half a JSON object that would
+    read as garbage on the next start.
+    """
+    info = {"pid": os.getpid(), "port": int(port),
+            "started": STARTED_AT, "version": app_version()}
+    path = lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".hardlywatching-", suffix=".lock",
+                               dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(info, fh)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return info
+
+
+def remove_lock() -> None:
+    """Delete the lock on the way out -- but only if it is ours.
+
+    A lock owned by another pid is left alone: it is either a live instance this
+    process was told to start alongside (--force), or a stale one that the next
+    start will take over.
+    """
+    info = read_lock()
+    if info.get("pid") not in (None, os.getpid()):
+        return
+    try:
+        lock_path().unlink()
+    except OSError:
+        pass
+
+
+def pid_alive(pid: int) -> bool:
+    """Is a process with this pid running?"""
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        # os.kill(pid, 0) *terminates* the target on Windows, so liveness there
+        # is left to the health probe that follows it.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # it exists, it is just not ours to signal
+    except OSError:
+        return False
+    return True
+
+
+def health_ok(port: int, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
+    """Does a HardlyWatching answer /api/health on that port right now?"""
+    try:
+        # A probe is loopback traffic: an http_proxy in the environment must not
+        # be allowed to answer for it, or a second instance would start.
+        req = urllib.request.Request(f"http://{host}:{port}/api/health")
+        with _PROBE_OPENER.open(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return False
+            return bool(json.loads(resp.read(4096) or b"{}").get("ok"))
+    except Exception:
+        return False
+
+
+def running_instance() -> dict | None:
+    """The lock's record of a live instance, or None when it is stale.
+
+    Stale means: no lock, unreadable lock, a dead pid, or a pid that no longer
+    answers /api/health. All four are safe to take over -- a lock left behind by
+    a killed process must never keep the app from starting.
+    """
+    info = read_lock()
+    try:
+        pid = int(info.get("pid") or 0)
+        port = int(info.get("port") or 0)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0 or not 1 <= port <= 65535:
+        return None
+    if not pid_alive(pid) or not health_ok(port):
+        return None
+    return {"pid": pid, "port": port,
+            "started": str(info.get("started") or ""),
+            "version": str(info.get("version") or ""),
+            "url": f"http://127.0.0.1:{port}"}
+
+
+def attach() -> int:
+    """Print the running instance's URL. 0 when one is up, 1 when none is.
+
+    The desktop shell and control-panel.py use this instead of guessing a port,
+    so nothing here may start a server, build an Engine or touch the browser.
+    """
+    run = running_instance()
+    if run is None:
+        print("HardlyWatching is not running.")
+        return 1
+    print(run["url"])
+    return 0
 
 # The Engine is created lazily so that importing this module (tests, tooling,
 # anything that just wants Handler) never constructs a worker or touches the
@@ -1156,6 +1345,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         if p == "/api/health":
             return self._json({"ok": True})
+        if p == "/api/version":
+            # Which build owns this port, and what API shape it speaks. The
+            # desktop shell calls this before trusting the rest of the API.
+            port = int(getattr(self.server, "server_address", ("", PORT))[1] or PORT)
+            return self._json({"version": app_version(), "pid": os.getpid(),
+                               "port": port, "started": STARTED_AT,
+                               "api": API_VERSION})
         if p == "/api/job-log":
             # Full log for one job. The state poll carries logs only for
             # running/failed jobs, so an opened log panel fetches the rest here.
@@ -2351,7 +2547,26 @@ def _ensure_instaloader() -> bool:
     return False
 
 
-def main() -> None:
+def main() -> int:
+    """Start the server. Returns the process exit code.
+
+    A second copy on the same state file is refused before anything expensive
+    happens -- no Engine, no instaloader prompt, no browser, no second port.
+    """
+    argv = sys.argv[1:]
+
+    if "--attach" in argv:
+        # Print where the running instance is and get out of the way. Nothing
+        # below may run: the caller wants a URL, not another server.
+        return attach()
+
+    # `active` is the live owner of this state file, if there is one. It decides
+    # both whether to start and whether this process may claim the lock.
+    active = running_instance()
+    if active is not None and "--force" not in argv:
+        print(f"HardlyWatching is already running at {active['url']}")
+        return 0
+
     eng = get_engine()
     eng.output_root.mkdir(parents=True, exist_ok=True)
     _ensure_instaloader()
@@ -2367,27 +2582,53 @@ def main() -> None:
     PORT = find_free_port(want, "127.0.0.1" if HOST in ("0.0.0.0", "::") else HOST)
     srv = QuietServer((HOST, PORT), Handler)
     url = f"http://{'127.0.0.1' if HOST in ('0.0.0.0', '::') else HOST}:{PORT}"
+    # Claim the state file only once the port is really ours, and never over a
+    # live owner: with --force the first instance keeps the lock, so --attach
+    # still points at the canonical one and this process does not delete it on
+    # the way out. A write failure (read-only config dir, say) must not keep the
+    # app from running; it just loses the protection, which is worth saying.
+    if active is None:
+        try:
+            write_lock(PORT)
+        except OSError as e:
+            print(f"  (could not write the lock file {lock_path()}: {e})")
+    else:
+        print(f"  (--force: {active['url']} is still running; it keeps the lock)")
     print()
     print("=" * 56)
     print(f"  HardlyWatching is running at {url}")
     if PORT != want:
         print(f"  (port {want} was busy, so it used {PORT})")
-    print("  It should have opened in your browser.")
-    print("  If not, copy that address into your browser.")
+    if "--no-browser" in argv:
+        print("  Open that address in your browser.")
+    else:
+        print("  It should have opened in your browser.")
+        print("  If not, copy that address into your browser.")
     print(f"  Downloads land in: {eng.output_root}")
     print("  Press Ctrl-C here to stop.")
     print("=" * 56)
     if HOST in ("0.0.0.0", "::"):
         print(f"Reachable from other devices at http://<this-box-ip>:{PORT}")
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    if "--no-browser" not in argv:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped.")
+    finally:
+        # Only a clean stop gets here. A killed process leaves the lock behind
+        # on purpose: the next start sees a dead pid, calls it stale and takes
+        # over, which costs one /api/health probe and no surprises.
+        remove_lock()
+        try:
+            srv.server_close()
+        except Exception:
+            pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
