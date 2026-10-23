@@ -6,6 +6,15 @@ versioning is [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Finished can be sorted by how much it got.** The finished list has a `sort:`
+  button that cycles *as added* → *most files* → *fewest files*. "Most" reads the
+  folder count taken when each run finished (falling back to the posts that run
+  grabbed), so the list answers "who did I actually get a lot from" instead of
+  making you scroll 41 pages to find out. A grouped profile takes the largest
+  count across its passes — each pass recounts the folder, and the fullest is the
+  archive's size. "As added" is the default and is exactly the old order, so the
+  list does not move unless you ask it to. The choice is remembered between
+  visits, and re-sorting jumps back to page 1.
 - **A profile view says whose profile it is.** The grid used to open with a row
   of controls and no name anywhere: a plain card, a merged one and either site
   all looked alike. It now leads with the avatar, the handle, and a badge naming

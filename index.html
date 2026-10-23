@@ -588,7 +588,11 @@
   .vact:hover{background:rgba(255,255,255,.20)}
   .vact.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .vcap{padding:11px 15px;font-size:13px;color:var(--muted);
-    max-height:110px;overflow-y:auto;border-top:1px solid var(--line)}
+    max-height:110px;overflow-y:auto;border-top:1px solid var(--line);
+    white-space:pre-wrap}
+  /* A mention is a door: look like one, and do not wrap mid-handle. */
+  .vcap a{color:var(--accent);text-decoration:none;white-space:nowrap}
+  .vcap a:hover{text-decoration:underline}
   .vcap:empty{display:none}
   /* On phones the arrows sit over the image; keep them usable. */
   @media (max-width:640px){
@@ -979,6 +983,8 @@ some.profile
             <span class="hint" id="doneHint"></span>
             <button class="small" id="ttAllPlus" style="margin-left:auto;display:none"
               title="Grab 5 more videos from every finished TikTok profile">+5 all</button>
+            <button class="small" id="doneSortBtn" style="display:none"
+              title="Sort the finished list — click to change">sort: as added</button>
             <button class="small" id="clearFinishedBtn">Clear</button></div>
           <div class="listsearch-row" id="doneSearch" style="display:none"></div>
           <div id="doneList" class="list"></div>
@@ -2289,7 +2295,10 @@ function render(st){
   }
   if(finished.length){
     doneSec.style.display = "block";
-    paintPaged("done", finished, $("doneHint"), "done");
+    paintPaged("done", sortFinished(finished), $("doneHint"), "done");
+    const sb = $("doneSortBtn");
+    if(sb){ sb.style.display = ""; }
+    paintDoneSortBtn();
   } else {
     doneSec.style.display = "none";
     setListHtml("doneList", "");
@@ -2534,8 +2543,56 @@ function repaintList(key){
   else paintPaged("done", listData.done, $("doneHint"), "done");
 }
 
-/* Build one job card. `pos` is the queue position label ("" for pinned rows);
-   `qpos` is the numeric position, used to decide where reorder buttons show. */
+/* ---------- sorting the finished list ---------- */
+
+// How many files this profile holds, as the card states it: the folder count
+// taken when the run finished, falling back to the count of this run's posts.
+function doneFiles(j){
+  return j.total_files || j.posts || 0;
+}
+
+// "as added" is the default and means keep the order the queue produced, so
+// nothing about the list changes for anyone who never touches the button.
+const DONE_SORTS = [
+  {key:"added", label:"as added",    title:"In the order they were queued"},
+  {key:"most",  label:"most files",  title:"Most files grabbed first"},
+  {key:"few",   label:"fewest files",title:"Fewest files grabbed first"},
+];
+
+let doneSort = localStorage.getItem("doneSort") || "added";
+if(!DONE_SORTS.some(s => s.key === doneSort)) doneSort = "added";
+
+function doneSortIndex(){ return DONE_SORTS.findIndex(s => s.key === doneSort); }
+
+function sortFinished(list){
+  const out = [...list];
+  if(doneSort === "added") return out;
+  const byName = (a,b) => String(a.username || "").toLowerCase()
+                            .localeCompare(String(b.username || "").toLowerCase());
+  if(doneSort === "most") out.sort((a,b) => (doneFiles(b) - doneFiles(a)) || byName(a,b));
+  else                    out.sort((a,b) => (doneFiles(a) - doneFiles(b)) || byName(a,b));
+  return out;
+}
+
+function paintDoneSortBtn(){
+  const b = $("doneSortBtn");
+  if(!b) return;
+  const s = DONE_SORTS[doneSortIndex()] || DONE_SORTS[0];
+  b.textContent = "sort: " + s.label;
+  b.title = s.title + " — click to change";
+}
+
+// Re-sorting a paged list invalidates the page number: page 3 of "most files"
+// is not page 3 of "as added". Re-read from the cached list, already sorted.
+function cycleDoneSort(){
+  doneSort = DONE_SORTS[(doneSortIndex() + 1) % DONE_SORTS.length].key;
+  localStorage.setItem("doneSort", doneSort);
+  if(listData.done) listData.done = sortFinished(listData.done);
+  listUI.done.page = 0;
+  paintDoneSortBtn();
+  repaintList("done");
+}
+
 // One entry per person in Finished. A profile normally produces up to three
 // jobs (main, then a reels pass, then tagged), so listing jobs showed the same
 // name two or three times. They are folded into one entry that says which of
@@ -2558,6 +2615,7 @@ function groupFinished(jobs){
                  tiktok_count: j.tiktok_count || 0,
                  tiktok_total: j.tiktok_total || 0,
                  files: j.files || 0,
+                 total_files: j.total_files || 0,
                  passes: {}, jobs: [], posts: 0, total_bytes: 0,
                  last_run_seconds: 0, message: "", error: ""};
              byUser.set(key, g); }
@@ -2566,6 +2624,9 @@ function groupFinished(jobs){
     if(j.tiktok_count) g.tiktok_count = j.tiktok_count;
     if(j.tiktok_total) g.tiktok_total = j.tiktok_total;
     if(j.files) g.files = j.files;
+    // Each pass counts the folder at its own finish, so the largest is the
+    // closest thing to the archive's size. Kept for the file-count sort.
+    if(j.total_files) g.total_files = Math.max(g.total_files, j.total_files);
     g.jobs.push(j);
     g.passes[j.kind || "main"] = j.status;
     g.posts += j.posts || 0;
@@ -3165,6 +3226,7 @@ $("clearBtn").onclick = async () => {
   toast(`Cleared ${r.removed} entries`); tick();
 };
 $("ttAllPlus").onclick = ttRaiseAll;
+$("doneSortBtn").onclick = cycleDoneSort;
 
 $("clearFinishedBtn").onclick = async () => {
   const r = await post("/api/clear-finished",{});
@@ -3303,6 +3365,10 @@ let gType = "any";        // "any" | "photos" | "videos"
 let gSort = "random";     // "random" | "newest" | "oldest"
 let gSeed = 1;            // makes the random order stable for one view
 let gReq = 0;             // guards against out-of-order responses
+// Lowercased handle -> platform, for everything archived here. A caption's
+// @mention links to the local profile when it names one of these and to the
+// site when it does not.
+const knownHandles = new Map();
 
 // Which elements the current tab switch hid, so returning restores exactly
 // those. Blanket-setting display:"" on return would also un-hide panels the
@@ -4705,6 +4771,8 @@ async function renderGallery(){
   }
   if(mine !== gReq) return;
   const profiles = sortProfiles(data.profiles || []);
+  // Remember who is archived, so a caption's @mention can link back here.
+  rememberHandles(data.profiles || []);
   fillUploadProfiles(profiles);
   buildAllBar(profiles.length);
   const live = profiles.filter(p => p.downloading).length;
@@ -4729,7 +4797,7 @@ async function renderGallery(){
         ? `<span class="livebadge" title="${esc(p.status)}${p.total_count?` — ${p.done_count}/${p.total_count} posts`:""}">● downloading</span>`
         : ""}
       <div class="nm">${esc(p.username)}</div>
-      <div class="ct">${p.count} ${p.count===1?"item":"items"}</div>
+      <div class="ct">${p.count.toLocaleString()} ${p.count===1?"file":"files"}</div>
       ${p.merged ? `<div class="mg" title="${esc((p.merged_platforms||[]).join(" + ") || "same site")}">+ @${p.merged.map(esc).join(" @ ")}${
         (p.merged_platforms||[]).length
           ? ` · ${(p.merged_platforms||[]).map(s => s === "tiktok" ? "TikTok" : "Instagram").join(" + ")}`
@@ -4833,6 +4901,11 @@ function tileFor(username, post, section){
   // after a favourite instead of redrawing the whole grid behind the overlay.
   tile.dataset.post = first.file;
   tile.dataset.section = srcSection;
+  // How much this one tile stands for. Trashing a post takes it out of the grid
+  // in place, and the counts on the bar have to come down by exactly this much
+  // rather than by a guess or a full redraw.
+  tile.dataset.items = String(post.items.length);
+  tile.dataset.vids = String(post.items.filter(i => i.kind === "video").length);
   // Carried on the tile so an action taken from here (favourite, move, trash)
   // acts on the folder the file is really in.
   tile.dataset.platform = plat;
@@ -4988,10 +5061,15 @@ function tileFor(username, post, section){
     acts.appendChild(btn);
   }
   if(srcSection === "trash"){
-    actsRight.appendChild(mkBtn("↩","Restore to main folder",
-      // Restoring brings a post back into the grid, which no in-place update
-      // can express, so this one rebuilds on purpose.
-      () => { every("main"); toast("Restored"); refreshAfterMove(username, null); }));
+    actsRight.appendChild(mkBtn("↩","Restore to main folder", async () => {
+      // Restoring takes the post out of the trash grid, so the tile goes with
+      // it rather than sitting there claiming a file that moved.
+      const res = await every("main");
+      const done = names.filter((_, i) => res[i]);
+      if(!done.length){ toast("Could not restore"); return; }
+      toast("Restored");
+      dropTiles(username, done, "main");
+    }));
   } else {
     actsRight.appendChild(mkBtn("🗑","Move to trash", () => confirmTrash(username, names)));
   }
@@ -5245,8 +5323,9 @@ function drawPhotos(username, sec){
 
   const tot = document.createElement("span");
   tot.className = "hint";
-  tot.textContent = `${allPosts.length} posts · ${items} items`
-    + (vids ? ` · ${vids} videos` : "");
+  tot.dataset.counts = "1";
+  tot.textContent = `${allPosts.length} posts · ${items.toLocaleString()} files`
+    + (vids ? ` · ${vids.toLocaleString()} videos` : "");
   bar.appendChild(tot);
 
   // sort toggle
@@ -5676,6 +5755,52 @@ function openViewer(username, post, section, idx){
   paintViewer();
 }
 
+// Turn a caption into safe HTML with its @mentions as links.
+//
+// The text is escaped FIRST and only anchors built here are ever added, so a
+// caption full of angle brackets cannot inject anything. Known handles open
+// the profile inside the app; the rest go to the site the post came from.
+function captionHTML(text, post){
+  const plat = (post && post.platform) || gPlatform || "instagram";
+  const site = plat === "tiktok" ? "https://www.tiktok.com/" : "https://www.instagram.com/";
+  return esc(String(text)).replace(/@([A-Za-z0-9._]{2,30})/g, (whole, handle) => {
+    const local = knownHandles.get(handle.toLowerCase());
+    if(local){
+      return `<a href="#" class="capwho" data-open="${esc(handle)}"`
+           + ` data-platform="${esc(local)}">@${esc(handle)}</a>`;
+    }
+    return `<a href="${site}${encodeURIComponent(handle)}/" target="_blank"`
+         + ` rel="noopener noreferrer">@${esc(handle)}</a>`;
+  });
+}
+
+function rememberHandles(profiles){
+  knownHandles.clear();
+  for(const p of (profiles || [])){
+    knownHandles.set(String(p.username).toLowerCase(), p.platform || "instagram");
+  }
+}
+
+// A profile opened straight from a URL never passes through the profile list,
+// so the map is filled once at boot as well.
+async function loadKnownHandles(){
+  try{
+    const d = await (await fetch("/api/gallery")).json();
+    rememberHandles(d.profiles || []);
+  }catch(e){ /* captions fall back to site links */ }
+}
+
+// A mention inside a caption is a way through, not decoration.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest(".vcap a[data-open]");
+  if(!a) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const handle = a.dataset.open, plat = a.dataset.platform || "instagram";
+  closeViewer();
+  openGalleryProfile(handle, plat);
+});
+
 function paintViewer(){
   if(!vState) return;
   const host = document.getElementById("vwrap");
@@ -5709,7 +5834,11 @@ function paintViewer(){
   // photo between two others. The engine reports which numbers are absent.
   const miss = (post.missing_parts || []);
   const capEl = host.querySelector(".vcap");
-  capEl.textContent = post.caption || post.title || "";
+  const capText = post.caption || post.title || "";
+  // A caption is text until it names somebody. @handles become links: to the
+  // profile here when that account is archived, to the site when it is not, so
+  // a mention is never a dead string you have to retype by hand.
+  capEl.innerHTML = capText ? captionHTML(capText, post) : "";
   if(miss.length){
     const note = document.createElement("div");
     note.className = "vgap";
@@ -5840,12 +5969,16 @@ async function viewerTrash(){
   const file = viewerCurrentFile();
   if(!file) return;
   if(srcSection === "trash"){
-    // Restore the whole post, same as the tile's ↩.
-    await Promise.all(vState.post.items.map(i => movePhoto(vState.username, i.file, "main", true)));
-    toast("Restored");
+    // Restore the whole post, same as the tile's ↩. It leaves the trash grid
+    // in place rather than waiting for a reload to show the result.
+    const names = vState.post.items.map(i => i.file);
+    const st = vState;
     closeViewer();
-    const firstFile = vState.post.items[0] ? vState.post.items[0].file : null;
-    refreshAfterMove(vState.username, firstFile, "main");
+    const done = [];
+    for(const n of names){ if(await movePhoto(st.username, n, "main", true)) done.push(n); }
+    if(!done.length){ toast("Could not restore"); return; }
+    dropTiles(st.username, done, "main");
+    toast("Restored");
     return;
   }
   const names = vState.post.items.map(i => i.file);
@@ -6010,7 +6143,63 @@ document.addEventListener("keydown", (e) => {
   }, {passive: true});
 })();
 
-function confirmTrash(username, names, onDone){
+// Take posts out of the grid in place after they move folders.
+//
+// Trashing used to end with refreshAfterMove(username, null), which returns
+// immediately because it has no file to find: the grid kept showing the post
+// that had just left, the count stayed up, and the only way to see the truth
+// was a reload -- which dropped you out of the gallery entirely. Removing the
+// tiles is both the honest and the cheap answer, and it keeps the scroll
+// position a redraw would throw away.
+//
+// Only tiles actually on screen can be removed, so the count comes down by what
+// was rendered, not by the size of the request. Anything below the fold is still
+// the server's truth on the next request.
+function dropTiles(username, names, toSection){
+  const host = $("profileGrid");
+  if(!host) return 0;
+  const set = new Set(names);
+  let posts = 0, files = 0, vids = 0;
+  const bySection = {main: 0, favorites: 0, trash: 0};
+  for(const t of [...host.querySelectorAll(".ptile")]){
+    if(!set.has(t.dataset.post)) continue;
+    posts += 1;
+    files += (+t.dataset.items || 1);
+    vids += (+t.dataset.vids || 0);
+    if(t.dataset.section in bySection) bySection[t.dataset.section] += 1;
+    t.remove();
+  }
+  if(!posts) return 0;          // nothing of this post was on screen
+
+  const tot = host.querySelector("[data-counts]");
+  if(tot){
+    const m = tot.textContent.match(/([\d,]+) posts · ([\d,]+) files(?: · ([\d,]+) videos)?/);
+    if(m){
+      const num = (s) => parseInt(String(s).replace(/,/g, ""), 10) || 0;
+      const p = Math.max(0, num(m[1]) - posts);
+      const f = Math.max(0, num(m[2]) - files);
+      const v = m[3] ? Math.max(0, num(m[3]) - vids) : 0;
+      tot.textContent = `${p} posts · ${f.toLocaleString()} files`
+        + (m[3] ? ` · ${v.toLocaleString()} videos` : "");
+    }
+  }
+  // Chips count posts per folder, and "All" is main + favourites. Each tile
+  // leaves the folder it was in and joins the one it moved to; a post moving
+  // between main and favourites stays in "All" and only the two chips move.
+  const bump = (key, delta) => {
+    const n = host.querySelector(`.fchip[data-chip="${key}"] .n`);
+    if(n && delta) n.textContent = String(Math.max(0, (+n.textContent || 0) + delta));
+  };
+  for(const [sec, n] of Object.entries(bySection)){
+    if(!n) continue;
+    bump("all", (sec === "trash" ? n : 0) + (toSection === "trash" ? -n : 0));
+    bump(sec, -n);
+    bump(toSection, n);
+  }
+  return posts;
+}
+
+async function confirmTrash(username, names, onDone){
   const list = Array.isArray(names) ? names : [names];
   const many = list.length > 1;
   const wrap = document.createElement("div");
@@ -6031,13 +6220,17 @@ function confirmTrash(username, names, onDone){
   go.textContent = "Move to trash";
   go.onclick = async () => {
     wrap.remove();
-    for(const n of list) await movePhoto(username, n, "trash", true);
-    toast(many ? `Moved ${list.length} to trash` : "Moved to trash");
-    // Trashed posts leave the current view, so the tile count genuinely changes.
-    refreshAfterMove(username, null);
+    const done = [];
+    for(const n of list){ if(await movePhoto(username, n, "trash", true)) done.push(n); }
+    if(!done.length){ toast("Nothing moved"); return; }
+    // The tiles leave the grid now, not on the next reload. That reload was the
+    // whole complaint: trashing looked like nothing had happened, and reloading
+    // to check threw you out of the gallery and back to the queue.
+    dropTiles(username, done, "trash");
+    toast(many ? `Moved ${done.length} to trash` : "Moved to trash");
     // The viewer passes a callback so it can close itself once the post it is
     // showing has moved out from under it.
-    if(typeof onDone === "function") onDone();
+    if(typeof onDone === "function") onDone(done.length);
   };
   row.appendChild(cancel); row.appendChild(go);
   box.appendChild(row);
@@ -6279,6 +6472,8 @@ document.addEventListener("keydown", (e) => {
   // sends when it is not running inside this page.
   const direct = (qs.get("profile") || "").trim();
   if(direct) openGalleryProfile(direct, qs.get("platform") || "instagram");
+  // Captions link @mentions back here, which needs the list of who is archived.
+  loadKnownHandles();
 })();
 
 // Tapping a profile picture in the viewer.
