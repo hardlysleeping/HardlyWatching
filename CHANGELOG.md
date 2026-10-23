@@ -43,6 +43,24 @@ versioning is [SemVer](https://semver.org/).
   twin on the other site is skipped rather than counted twice.
 
 ### Changed
+- **One heart, one word: everything is "Liked".** There were two names for the
+  thing the ♥ does — *Favourites* for the posts it files away and *Starred* for the
+  bookmark it put on a clip, the second one under a ★ of its own — so the same idea
+  had a chip, a heading, a filter and a bulk button under each name. It is liked
+  everywhere now: `♥ Liked` in the gallery bar, `♥ Liked (n)` over the group,
+  *Add to liked* / *Remove from liked* in the viewer, *Liked* / *Unliked* in the
+  toasts, *♥ Liked only* in Shorts, and the archive-wide list is one chip instead
+  of two. The star is gone: its button in Shorts' rail, the `★ Star` bulk button
+  and the `★ Starred` chip are all removed.
+- **Starred clips were folded into Liked, not thrown away.** A star was a flag on
+  the clip rather than a folder, so it had its own list; the gallery's Liked view
+  is now the favourites folder **plus** every clip liked in the viewer or in
+  Shorts, with one entry per file (a clip can be both). On first start the old
+  column is copied into `liked` — keeping the star's own timestamp for ordering —
+  and then cleared, so anything that was starred is liked now and nothing has to be
+  re-marked. The column is left in the database rather than dropped, and the old
+  `star` action names still answer as likes, so a page cached from before this
+  change keeps working.
 - **The header is the name and the drive space, and nothing else.** The line under
   the title ("paste profiles → queue runs one at a time…") restated what the paste
   box says, cost a row on every tab and was the thing sitting over the menu, so it

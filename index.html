@@ -553,7 +553,7 @@
   /* On touch devices there is no hover, so keep the actions visible. */
   @media (hover:none){.ptile .acts{opacity:1}}
   /* Destructive action (trash / restore) sits alone in the bottom-right corner,
-     far from the favourite button in the top-left, so a fat-finger on a phone
+     far from the heart button in the top-left, so a fat-finger on a phone
      cannot land on it by mistake. */
   .ptile .acts-right{position:absolute;bottom:7px;right:7px;display:flex;gap:4px;
     opacity:0;transition:.15s;z-index:3}
@@ -614,7 +614,7 @@
   /* ---------- carousel badge + post viewer ---------- */
   .ptile .stack{position:absolute;top:7px;right:7px;background:rgba(0,0,0,.7);
     color:#fff;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:600}
-  /* A favourited tile stays visible in All, marked so it reads as favourited. */
+  /* A liked tile stays visible in All, marked so it reads as liked. */
   /* Cross-profile views label each tile with whose post it is. */
   .ptile-user{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.72);
     color:#fff;border-radius:5px;padding:2px 7px;font-size:10.5px;
@@ -2214,9 +2214,9 @@ function render(st){
   //
   // The refresh must only repaint the profiles LIST. Anything else on screen
   // belongs to the user -- a profile they opened, or the cross-profile
-  // Favourites/Trash view -- and repainting over it would throw away where
+  // Liked/Trash view -- and repainting over it would throw away where
   // they were. That was a real bug: the timer called renderGallery()
-  // unconditionally and snapped the All Favourites view back to the profiles
+  // unconditionally and snapped the All Liked view back to the profiles
   // list every 4 seconds. So the timer is only armed while that plain list is
   // the thing on screen, and it is disarmed on any other view.
   const anyLive = !!(st.current)
@@ -3694,12 +3694,11 @@ function buildAllBar(profileCount){
     // inside a profile -- it looked dead instead of going back to the list. The
     // other three chips below all clear it.
     () => { gAll = null; gProfile = null; gPlatform = "instagram"; renderGallery(); }));
-  bar.appendChild(mk("♥ All Favourites", gAll === "favorites",
+  // Everything liked, in one list: the favourites folder (a like that moved the
+  // file) plus every clip liked in the viewer or in Shorts. There used to be a
+  // second chip here for the latter, called Starred; one heart, one view.
+  bar.appendChild(mk("♥ Liked", gAll === "favorites",
     () => { gAll = "favorites"; gProfile = null; gPlatform = "instagram"; renderAllSection("favorites"); }));
-  // The higher-level favourite: a star is a bookmark, and it lives on the clip
-  // rather than in a folder, so this view is the only place to see them together.
-  bar.appendChild(mk("★ Starred", gAll === "starred",
-    () => { gAll = "starred"; gProfile = null; gPlatform = "instagram"; renderAllSection("starred"); }));
   bar.appendChild(mk("🗑 All Trash", gAll === "trash",
     () => { gAll = "trash"; gProfile = null; gPlatform = "instagram"; renderAllSection("trash"); }));
   bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
@@ -3801,8 +3800,7 @@ async function renderAllSection(section){
     const play = document.createElement("button");
     play.className = "small";
     play.style.marginLeft = "9px";
-    play.textContent = section === "favorites" ? "▶ Swipe favourites"
-      : section === "starred" ? "▶ Swipe starred" : "▶ Swipe all";
+    play.textContent = section === "favorites" ? "▶ Swipe liked" : "▶ Swipe all";
     play.title = "Open full screen and swipe through every item";
     play.onclick = () => {
       allViewList = sortPosts(posts);
@@ -3820,8 +3818,7 @@ async function renderAllSection(section){
   grid.style.gridColumn = "1/-1";
   if(!posts.length){
     grid.innerHTML = `<div class="gempty">${
-      section === "favorites" ? "No favourites across any profile yet."
-      : section === "starred" ? "Nothing starred yet. Star a clip in Shorts and it will appear here."
+      section === "favorites" ? "Nothing liked yet — tap ♡ on a photo, or like a clip in Shorts."
       : "Trash is empty everywhere."}</div>`;
   } else {
     for(const post of sortPosts(posts)){
@@ -4186,7 +4183,7 @@ async function uploadFiles(fileList){
 // Month index from the server, and the state of the month currently shown.
 // The index is ~2.8KB (176 months, one count each) rather than the 7.6MB of
 // every post: the slider needs the months, and only one month is ever fetched.
-let tlOnlyFavs = false;   // favourites-only timeline
+let tlOnlyFavs = false;   // liked-only timeline
 // One profile's timeline instead of every profile's. Set when the timeline is
 // opened from inside a profile's grid, cleared by the chip in the timeline bar.
 // Same idea as Shorts' ?profile=, which limits the feed to the profile you came
@@ -4301,11 +4298,11 @@ function tlTile(post, monthKey){
     return b;
   };
 
-  // Favourite, in place, exactly like the profile grid: flip immediately, and
+  // Like, in place, exactly like the profile grid: flip immediately, and
   // only move the file back if the server refuses.
   let faved = !!post.favorite;
   const heart = mk(faved ? "♥" : "♡",
-    faved ? "Remove from favourites" : "Add to favourites",
+    faved ? "Remove from liked" : "Add to liked",
     async (btn) => {
       const was = faved;
       faved = !faved;
@@ -4319,8 +4316,8 @@ function tlTile(post, monthKey){
       }
       post.favorite = faved;
       post.section = section;
-      toast(faved ? "Favourited" : "Removed from favourites");
-      // In the favourites-only timeline a post that is no longer a favourite
+      toast(faved ? "Liked" : "Unliked");
+      // In the liked-only timeline a post that is no longer liked
       // does not belong here, so it leaves the grid rather than lingering.
       if(tlOnlyFavs && !faved){
         tile.remove();
@@ -4356,8 +4353,8 @@ function tlTile(post, monthKey){
   return tile;
 }
 
-// Called when a post leaves the timeline (trashed, or un-favourited while the
-// favourites filter is on). Recounts what is on screen so the label does not
+// Called when a post leaves the timeline (trashed, or unliked while the
+// liked filter is on). Recounts what is on screen so the label does not
 // keep claiming a post that is gone.
 function noteTimelineChanged(){
   const grid = $("profileGrid") ? $("profileGrid").querySelector(".pgrid") : null;
@@ -4382,13 +4379,13 @@ function popHeart(btn){
 function paintHeart(btn, tile, on, pop){
   btn.dataset.heart = "1";
   btn.textContent = on ? "♥" : "♡";
-  btn.title = on ? "Remove from favourites" : "Add to favourites";
+  btn.title = on ? "Remove from liked" : "Add to liked";
   tile.classList.toggle("faved", on);
   if(pop) popHeart(btn);
 }
 
 // Open a timeline post in the existing viewer: real size, carousel, keyboard,
-// and the same favourite/trash controls as everywhere else.
+// and the same heart/trash controls as everywhere else.
 async function tlOpenBig(post){
   const { sec, hit } = await fetchOnePost(post.username, post.post);
   if(!hit){ toast("That post is no longer there"); return; }
@@ -4426,9 +4423,9 @@ async function renderTimeline(){
     msg.className = "gempty";
     msg.style.gridColumn = "1/-1";
     // Say which emptiness this is. "No posts archived" would be a lie about a
-    // profile that has plenty of posts and none of them favourited.
+    // profile that has plenty of posts and none of them liked.
     msg.textContent = tlOnlyFavs
-      ? `No favourite posts from @${tlProfile}.`
+      ? `No liked posts from @${tlProfile}.`
       : `No posts archived for @${tlProfile} yet.`;
     host.append(back, msg);
     return;
@@ -4468,15 +4465,15 @@ async function renderTimeline(){
   const count = document.createElement("span");
   count.className = "hint";
 
-  // Favourites-only filter. Rebuilds the whole timeline against a different
+  // Liked-only filter. Rebuilds the whole timeline against a different
   // list, so it reloads the index rather than filtering what is on screen --
   // the month counts and the slider length both change.
   const favChip = document.createElement("button");
   favChip.className = "fchip" + (tlOnlyFavs ? " on" : "");
-  favChip.textContent = "♥ Favourites only";
+  favChip.textContent = "♥ Liked only";
   favChip.title = tlProfile
-    ? `Only what you have favourited from @${tlProfile}`
-    : "Show only posts you have favourited, across every profile";
+    ? `Only what you have liked from @${tlProfile}`
+    : "Show only posts you have liked, across every profile";
   favChip.onclick = () => {
     tlOnlyFavs = !tlOnlyFavs;
     tlMonths = [];
@@ -4890,7 +4887,7 @@ async function renderPhotos(username, platform){
   // None of the cross-profile views is the one you are in once a profile is
   // open, so the bar above must stop claiming otherwise. It is only rebuilt
   // when the profile list is drawn, so it has to be cleared here -- left alone
-  // it keeps saying "Profiles (n)" or "All Favourites" while you browse one
+  // it keeps saying "Profiles (n)" or "All Liked" while you browse one
   // person, which reads as if you were still on that view.
   const abar = $("allBar");
   if(abar) abar.querySelectorAll(".fchip.on").forEach(c => c.classList.remove("on"));
@@ -4929,13 +4926,17 @@ function tileFor(username, post, section){
   // `section` is where the post is listed; `post.section` is where the file
   // physically lives (they differ when favorites are merged into All).
   const srcSection = post.section || section;
-  const faved = (srcSection === "favorites");
+  // Liked either way: the favourites folder (a like that moved the file) or the
+  // flag a clip carries from Shorts or the viewer. Both are one heart now, so a
+  // clip liked in Shorts must not sit in the Liked view with an empty one -- and
+  // in that view every tile is liked by definition.
+  const faved = (srcSection === "favorites") || !!post.liked || gAll === "favorites";
   const plat = postPlatform(post);
   const first = post.items[0];
   const tile = document.createElement("div");
   tile.className = "ptile" + (faved ? " faved" : "");
   // Identify the tile by its first file so the viewer can update THIS tile
-  // after a favourite instead of redrawing the whole grid behind the overlay.
+  // after a like instead of redrawing the whole grid behind the overlay.
   tile.dataset.post = first.file;
   tile.dataset.section = srcSection;
   // How much this one tile stands for. Trashing a post takes it out of the grid
@@ -4943,7 +4944,7 @@ function tileFor(username, post, section){
   // rather than by a guess or a full redraw.
   tile.dataset.items = String(post.items.length);
   tile.dataset.vids = String(post.items.filter(i => i.kind === "video").length);
-  // Carried on the tile so an action taken from here (favourite, move, trash)
+  // Carried on the tile so an action taken from here (like, move, trash)
   // acts on the folder the file is really in.
   tile.dataset.platform = plat;
   const mkSrc = (item) => `/media?profile=${encodeURIComponent(username)}`
@@ -4960,9 +4961,9 @@ function tileFor(username, post, section){
 
   const img = document.createElement("img");
   img.loading = "lazy"; img.alt = ""; img.src = mkThumb(first);
-  // Read the section off the tile at click time: an in-place favourite has
+  // Read the section off the tile at click time: an in-place like has
   // already moved the files, and a captured section would open the viewer on
-  // the folder they used to be in (heart showing empty on a favourited post).
+  // the folder they used to be in (heart showing empty on a liked post).
   img.onclick = () => openViewer(username, post, tile.dataset.section || srcSection, 0);
   tile.appendChild(img);
 
@@ -5057,34 +5058,41 @@ function tileFor(username, post, section){
 
   // Favouriting toggles IN PLACE: the heart flips instantly and the post stays
   // exactly where it is, so the grid never reshuffles under you. Un-favouriting
-  // additionally drops the post out of a favourites-only view (it no longer
+  // additionally drops the post out of a liked-only view (it no longer
   // belongs there), but leaves it in All, where it is still shown from main/.
   if(srcSection !== "trash"){
+    // A clip liked in Shorts is a flag on the clip, not a file in favourites/.
+    // Its heart has to clear that flag, not try to move a file back.
+    const byFlag = !!(post.liked || gAll === "favorites")
+                   && srcSection !== "favorites";
     let on = faved;
     let busy = false;
     const paint = (pop) => {
       paintHeart(btn, tile, on, pop);
       // Keep the tile honest about where its files live, so opening the viewer
-      // from it starts from the right section.
-      tile.dataset.section = on ? "favorites" : "main";
+      // from it starts from the right section. A flag like moves nothing.
+      if(!byFlag) tile.dataset.section = on ? "favorites" : "main";
     };
     const btn = mkBtn(on ? "♥" : "♡",
-      on ? "Remove from favourites" : "Add to favourites", async () => {
+      on ? "Remove from liked" : "Add to liked", async () => {
         // Ignore a tap while the previous move is still running: two moves at
         // once put the carousel's parts in different folders.
         if(busy) return;
         const was = on;
         busy = true;
         on = !on; paint(true);                    // instant feedback
-        const res = await every(on ? "favorites" : "main");
+        const res = byFlag
+          ? await setFlagLike(username, first.file, plat, srcSection, on)
+          : (await every(on ? "favorites" : "main")).every(Boolean);
         busy = false;
-        if(!res.every(Boolean)){                  // any file failed -> revert
+        if(!res){                                 // any file failed -> revert
           on = was; paint();
-          toast("Could not update favourites");
+          toast("Could not update likes");
           return;
         }
-        toast(on ? "Favourited" : "Removed from favourites");
-        if(was && inFavouritesView()){            // left a favourites-only feed
+        if(byFlag) post.liked = on ? 1 : 0; else post.favorite = on;
+        toast(on ? "Liked" : "Unliked");
+        if(was && inFavouritesView()){            // left a liked-only feed
           tile.remove();
           adjustFavCount(-1);
           refreshAllFavHint();
@@ -5161,9 +5169,9 @@ function drawPhotos(username, sec){
   bar.appendChild(selButton());
 
   const counts = {main: sec.main.length, favorites: sec.favorites.length, trash: sec.trash.length};
-  // "All" is main + favourites, since a favourited post stays visible in All.
+  // "All" is main + liked, since a liked post stays visible in All.
   const allCount = counts.main + counts.favorites;
-  const opts = [["all","All",allCount],["favorites","♥ Favorites",counts.favorites]];
+  const opts = [["all","All",allCount],["favorites","♥ Liked",counts.favorites]];
   if(counts.trash) opts.push(["trash","🗑 Trash",counts.trash]);
   if(!opts.some(([k]) => k === gFilter)) gFilter = "all";
   for(const [key,label,n] of opts){
@@ -5390,7 +5398,7 @@ function drawPhotos(username, sec){
   grid.className = "pgrid";
   grid.style.gridColumn = "1/-1";
 
-  // "All" lists the main folder plus favourites (which live in favorites/ but
+  // "All" lists the main folder plus likes (which live in favorites/ but
   // stay visible here, marked ♥). Trash stays out of All -- it is hidden on
   // purpose and reachable only via its own chip.
   const show = {
@@ -5415,10 +5423,10 @@ function drawPhotos(username, sec){
     const kept = list.filter(passesType);
     if(!kept.length) continue;
     if(gFilter === "all"){
-      // Mark where the favourites group starts rather than hiding it at the
+      // Mark where the liked group starts rather than hiding it at the
       // bottom, kept as a pseudo-entry so it stays correct while paging.
       jobs.push({heading: section === "favorites"
-        ? `♥ Favourites (${kept.length})`
+        ? `♥ Liked (${kept.length})`
         : `All media (${kept.length})`});
     }
     for(const post of sortPosts(kept)) jobs.push({section, post});
@@ -5428,7 +5436,7 @@ function drawPhotos(username, sec){
     grid.innerHTML = `<div class="gempty">${
       gType === "videos" ? "No videos in this view."
       : gType === "photos" ? "No photo-only posts in this view."
-      : gFilter === "favorites" ? "No favorites yet — tap ♡ on a photo to add one."
+      : gFilter === "favorites" ? "Nothing liked yet — tap ♡ on a photo to add one."
       : gFilter === "trash" ? "Trash is empty."
       : "No displayable media in this archive."}</div>`;
     // Still say whose profile this is, even with nothing to show.
@@ -5632,6 +5640,23 @@ function pageGrid(grid, username, jobs){
 }
 
 
+// Like a clip without moving it. Shorts and the viewer record a like as a flag
+// on the clip rather than filing the file, so the gallery's heart has to speak
+// to that too -- through the same bulk endpoint a selection uses, one item.
+async function setFlagLike(username, file, plat, section, on){
+  try{
+    const r = await fetch("/api/gallery/bulk", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: on ? "like" : "unlike",
+        items: [{profile: username, platform: plat || "instagram",
+                 section: section || "main", file}]}),
+    });
+    const j = await r.json();
+    return !!j.ok && (j.done || 0) > 0;
+  }catch(e){ return false; }
+}
+
 async function movePhoto(username, name, section, quiet, platform){
   // Default to the platform whose profile is open: every caller works on the
   // profile currently on screen, and dropping this is what made the heart and
@@ -5643,10 +5668,27 @@ async function movePhoto(username, name, section, quiet, platform){
     return false;
   }
   if(!quiet){
-    toast(section === "favorites" ? "Favourited"
+    toast(section === "favorites" ? "Liked"
         : section === "trash" ? "Moved to trash" : "Moved");
   }
   return true;
+}
+
+// A flag like moved no file, so the tile behind the viewer only needs its heart
+// repainted -- and, in the Liked view, to leave once it is no longer liked.
+function refreshFlagLike(username, file, on){
+  for(const tile of document.querySelectorAll("#profileGrid .pgrid .ptile")){
+    if(tile.dataset.post !== file) continue;
+    const who = tile.querySelector(".ptile-user");
+    if(username && who && who.textContent !== username) continue;
+    const heart = tile.querySelector("[data-heart]");
+    if(heart) paintHeart(heart, tile, on);
+    if(!on && gAll === "favorites"){
+      tile.remove();
+      adjustFavCount(-1);
+      refreshAllFavHint();
+    }
+  }
 }
 
 // Update the one tile under the overlay instead of redrawing the grid.
@@ -5658,10 +5700,10 @@ async function movePhoto(username, name, section, quiet, platform){
 // thing for the viewer's actions.
 //
 // The tile cannot always stay where it is, because favouriting moves a post
-// between the All and Favorites lists. Only the cases that genuinely change the
+// between the All and Liked lists. Only the cases that genuinely change the
 // grid's membership fall back to a rebuild; everything else is one tile.
 async function refreshAfterMove(username, file, section){
-  // Archive-wide views (All Favourites, All Trash, Starred) have no single open
+  // Archive-wide views (All Liked, All Trash) have no single open
   // profile, and this used to return early for them -- so after un-favouriting
   // in the viewer the tile behind it kept its heart and the count kept its
   // number, while the viewer said otherwise. That disagreement, until a reload,
@@ -5674,13 +5716,12 @@ async function refreshAfterMove(username, file, section){
     .find(t => t.dataset.post === file);
   const faved = section === "favorites";
 
-  // Favourites are shown inside All as well, so favouriting while on All leaves
-  // the tile exactly where it is. Only the Favorites chip can gain or lose a
+  // Likes are shown inside All as well, so liking while on All leaves
+  // the tile exactly where it is. Only the Liked chip can gain or lose a
   // member, and only trash can be affected when a file leaves the grid.
   const changesMembership = archive
     ? (archive === "trash" ? section !== "trash"
        : archive === "favorites" ? !faved
-       : archive === "starred" ? section === "trash"
        : false)
     : (gFilter === "favorites" && !faved) || section === "trash";
 
@@ -5713,7 +5754,7 @@ async function refreshAfterMove(username, file, section){
   const heart = tile.querySelector("[data-heart]");
   if(heart){
     heart.textContent = faved ? "♥" : "♡";
-    heart.title = faved ? "Remove from favourites" : "Add to favourites";
+    heart.title = faved ? "Remove from liked" : "Add to liked";
   }
   // The chip counts on the bar above the grid are now one out of date.
   const chip = host.querySelector('.fchip[data-chip="favorites"] .n');
@@ -5723,22 +5764,22 @@ async function refreshAfterMove(username, file, section){
   }
 }
 
-// True when the grid on screen lists favourites ONLY — the per-profile
-// "♥ Favorites" chip, or the cross-profile "♥ All Favourites" view. In those
-// views an un-favourited post must disappear; in "All" it stays (still in main).
+// True when the grid on screen lists likes ONLY — the per-profile "♥ Liked"
+// chip, or the cross-profile "♥ Liked" view. In those views an unliked post must
+// disappear; in "All" it stays (it is still in main).
 function inFavouritesView(){
   if(gAll) return gAll === "favorites";
   return gProfile != null && gFilter === "favorites";
 }
 
-// Keep the ♥ Favorites chip honest without redrawing the whole grid.
+// Keep the ♥ Liked chip honest without redrawing the whole grid.
 function adjustFavCount(delta){
   const n = document.querySelector('.gbar .fchip[data-chip="favorites"] .n');
   if(n) n.textContent = Math.max(0, (+n.textContent || 0) + delta);
 }
 
 // Re-count the cross-profile "N posts across M profiles" header after a tile
-// leaves the All Favourites view, so the count stays truthful in place.
+// leaves the All Liked view, so the count stays truthful in place.
 function refreshAllFavHint(){
   const hint = document.querySelector("#profileGrid .gbar .hint");
   if(!hint || !gAll) return;
@@ -5751,7 +5792,7 @@ function refreshAllFavHint(){
 /* ---------- post viewer (single/carousel, with arrows) ---------- */
 
 let vState = null;   // {username, post, section, idx, srcs}
-// True while a favourite move from the viewer is still in flight.
+// True while a like move from the viewer is still in flight.
 let vFavBusy = false;
 
 function mediaSrc(item, username, section){
@@ -5766,7 +5807,7 @@ function mediaSrc(item, username, section){
 }
 
 function openViewer(username, post, section, idx){
-  // The caller knows where the files are right now -- an in-place favourite has
+  // The caller knows where the files are right now -- an in-place like has
   // already moved them -- whereas post.section is only what the API said when
   // the grid or viewer list was built. Trust the caller, fall back to the
   // payload, and then keep them in step.
@@ -5790,7 +5831,7 @@ function openViewer(username, post, section, idx){
         <span class="vcount"></span>
         <span class="vdate"></span>
         <span style="flex:1"></span>
-        <button class="vact" data-vfav title="Add to favourites">♡</button>
+        <button class="vact" data-vfav title="Add to liked">♡</button>
         <button class="vact" data-vdl title="Download this file" hidden>⤓</button>
         <button class="vact" data-vtrash title="Move to trash">🗑</button>
         <button class="small" data-vclose>Close ✕</button>
@@ -5949,7 +5990,7 @@ document.addEventListener("wheel", (e) => {
 }, {passive: false});
 
 // Drag to look around once the picture is bigger than the frame. Mouse only:
-// on touch this would fight the double-tap that toggles favourites.
+// on touch this would fight the double-tap that toggles liking.
 let vDrag = null;
 document.addEventListener("pointerdown", (e) => {
   if(!vState || e.pointerType === "touch") return;
@@ -6052,7 +6093,7 @@ function paintViewer(){
 
 // The viewer's like / trash / download state, for the item on screen.
 // A carousel can mix images and videos, so the download button appears only
-// for a video part and the favourite state is re-read per part.
+// for a video part and the liked state is re-read per part.
 const VIEWER_BTN = {fav:null, dl:null, trash:null};
 
 function viewerCurrentFile(){
@@ -6073,10 +6114,12 @@ function paintViewerActions(pop){
   VIEWER_BTN.trash.title = trashView ? "Restore to main folder" : "Move to trash";
 
   if(!trashView){
-    // post.section is where the files physically live; favourites are marked.
-    const faved = srcSection === "favorites";
+    // post.section is where the files physically live; likes are marked --
+    // including the flag clips carry from Shorts, which moved nothing.
+    const faved = srcSection === "favorites" || !!vState.post.liked
+                  || gAll === "favorites";
     VIEWER_BTN.fav.textContent = faved ? "♥" : "♡";
-    VIEWER_BTN.fav.title = faved ? "Remove from favourites" : "Add to favourites";
+    VIEWER_BTN.fav.title = faved ? "Remove from liked" : "Add to liked";
     VIEWER_BTN.fav.dataset.heart = "1";
     VIEWER_BTN.fav.classList.toggle("on", faved);
     if(pop) popHeart(VIEWER_BTN.fav);
@@ -6112,11 +6155,29 @@ async function viewerToggleFav(){
   // One move at a time. A second tap while the first is still in flight would
   // send the files two places at once and the last answer would win.
   if(vFavBusy) return;
-  const target = srcSection === "favorites" ? "main" : "favorites";
   const st = vState;
   const post = st.post;
   const names = post.items.map(i => i.file);
   const firstFile = names[0] || null;
+  // Liked as a flag rather than filed: nothing to move, so clear the flag.
+  if((post.liked || gAll === "favorites") && srcSection !== "favorites"){
+    vFavBusy = true;
+    post.liked = 0;
+    paintViewerActions(true);
+    const ok = await setFlagLike(st.username, firstFile, postPlatform(post),
+                                 srcSection, false);
+    vFavBusy = false;
+    if(!ok){
+      post.liked = 1;
+      if(vState === st) paintViewerActions();
+      toast("Could not update likes");
+      return;
+    }
+    toast("Unliked");
+    refreshFlagLike(st.username, firstFile, false);
+    return;
+  }
+  const target = srcSection === "favorites" ? "main" : "favorites";
 
   // Flip now -- a tap has to land -- then put it back if the server refused.
   // This used to fire the requests without waiting for them and toast success
@@ -6138,10 +6199,10 @@ async function viewerToggleFav(){
     st.section = srcSection;
     post.section = srcSection;
     paintViewerActions();
-    toast("Could not update favourites");
+    toast("Could not update likes");
     return;
   }
-  toast(target === "favorites" ? "Favourited" : "Removed from favourites");
+  toast(target === "favorites" ? "Liked" : "Unliked");
   // The grid is still behind the overlay and holds its own copy of the state.
   // Pass the post and its new home so the matching tile is updated in place --
   // redrawing the grid here is what made it flash and lose its scroll.
@@ -6172,7 +6233,7 @@ async function viewerTrash(){
 
 /* ---------- viewer: flat swipe list across profiles ---------- */
 
-// Set while the viewer was opened from the All Favourites / All Trash views.
+// Set while the viewer was opened from the All Liked / All Trash views.
 // null in every other case, so the normal per-profile stepping is unaffected.
 // Declared before stepViewer, which reads them.
 let allViewList = null;
@@ -6189,7 +6250,7 @@ function stepViewer(delta){
   const atEnd = vState.idx >= n - 1;
   const atStart = vState.idx <= 0;
   // A post can be a carousel, so stepping moves within the post first and only
-  // then crosses into the next one. In the All Favourites / All Trash swipe
+  // then crosses into the next one. In the All Liked / All Trash swipe
   // mode the "next post" is the next entry of that flat list, which may belong
   // to a different profile, so the whole set can be flipped through without
   // ever returning to the grid.
@@ -6206,7 +6267,7 @@ function stepViewer(delta){
     }
   }
   // NOTE: the early "nothing to step to" return must come *after* the flat-list
-  // handling. A single-image favourite has n === 1, so returning early on
+  // handling. A single-image like has n === 1, so returning early on
   // n < 2 made the swipe mode unable to advance past any ordinary photo --
   // only carousels moved. Per-profile stepping still needs the guard, since
   // with one item there is genuinely nowhere to go inside the post.
@@ -6311,7 +6372,7 @@ document.addEventListener("keydown", (e) => {
   }, {passive: true});
 })();
 
-// Double-tap the media to favourite, and to remove it again. This is the
+// Double-tap the media to like it, and to remove it again. This is the
 // gesture people already have from every photo app, so it needs no label.
 (function viewerDoubleTap(){
   let last = 0;
@@ -6368,9 +6429,9 @@ function dropTiles(username, names, toSection){
         + (m[3] ? ` · ${v.toLocaleString()} videos` : "");
     }
   }
-  // Chips count posts per folder, and "All" is main + favourites. Each tile
+  // Chips count posts per folder, and "All" is main + likes. Each tile
   // leaves the folder it was in and joins the one it moved to; a post moving
-  // between main and favourites stays in "All" and only the two chips move.
+  // between main and likes stays in "All" and only the two chips move.
   const bump = (key, delta) => {
     const n = host.querySelector(`.fchip[data-chip="${key}"] .n`);
     if(n && delta) n.textContent = String(Math.max(0, (+n.textContent || 0) + delta));
@@ -6491,7 +6552,7 @@ async function runBulk(action){
   toast(`${r.done} done${r.skipped ? `, ${r.skipped} skipped` : ""}`);
   selPicked.clear();
   // Redraw whatever view this is, so the grid shows what is left.
-  if(gAll === "starred" || gAll === "favorites" || gAll === "trash") renderAllSection(gAll);
+  if(gAll === "favorites" || gAll === "trash") renderAllSection(gAll);
   else if(gAll === "timeline") renderTimeline();
   else if(gProfile) renderPhotos(gProfile, gPlatform);
   else renderGallery();
@@ -6530,17 +6591,14 @@ function paintSelBar(){
     bar.appendChild(mk("↩ Restore", "Move these back to the main folder",
                         () => runBulk("main")));
   } else {
-    bar.appendChild(mk("★ Star", "Bookmark these (videos only)",
-                       () => runBulk("star")));
-    bar.appendChild(mk("♥ Like", "Like these (videos only)",
-                       () => runBulk("like")));
-    // In the favourites view the useful direction is the other one, or there is
-    // no way back out of a batch favouriting.
+    bar.appendChild(mk("♥ Like", "Heart these clips", () => runBulk("like")));
+    // In the liked view the useful direction is the other one, or there is no
+    // way back out of a batch like.
     if(inFav){
-      bar.appendChild(mk("↩ Un-favourite", "Move these back to the main folder",
+      bar.appendChild(mk("↩ Unlike", "Move these back to the main folder",
                          () => runBulk("main")));
     } else {
-      bar.appendChild(mk("♥ Favourite", "Move these into the favourites folder",
+      bar.appendChild(mk("♥ File as liked", "Move these into the favourites folder",
                          () => runBulk("favorites")));
     }
     bar.appendChild(mk("🗑 Trash", "Move these to the trash", () => runBulk("trash")));

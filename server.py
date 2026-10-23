@@ -998,16 +998,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(get_engine().timeline_month(
                 month, offset, limit, only_favorites=favs, profile=one))
         if p == "/api/gallery/all":
-            # Overarching Favourites / Trash across every profile.
+            # Overarching Liked / Trash across every profile.
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
             section = (q.get("section") or [""])[0]
-            if section not in ("favorites", "trash", "starred"):
+            if section not in ("favorites", "trash"):
                 return self.send_error(400)
-            # Favourites and trash are folders; a star is a flag on the clip, so it
-            # is the one section that does not come from walking the archive.
-            posts = (get_engine().starred_posts() if section == "starred"
-                     else get_engine().gallery_all(section))
+            # Liked is the favourites folder plus every clip liked in the viewer
+            # (gallery_all joins the two); trash is a folder like any other.
+            posts = get_engine().gallery_all(section)
             return self._json({"section": section,
                                "profiles": get_engine().gallery_profiles(),
                                "posts": posts})
@@ -1403,9 +1402,10 @@ class Handler(BaseHTTPRequestHandler):
             # itself is cached for a few seconds so a swipe does not re-walk
             # the whole archive.
             limit = int(body.get("limit") or 20)
-            # "favourites" is the old key for this and meant likes; either one
-            # means starred now.
-            fav = bool(body.get("starred") or body.get("favourites"))
+            # One filter, three spellings left over from when a like and a star
+            # were separate things.
+            fav = bool(body.get("liked") or body.get("starred")
+                       or body.get("favourites"))
             seen = body.get("exclude") or []
             # Opened from one person's gallery: show only them.
             import engine as _eng
@@ -1418,7 +1418,7 @@ class Handler(BaseHTTPRequestHandler):
             db.sync_clips(found)
             alive = [f["path"] for f in found]
             by_path = {f["path"]: f for f in found}
-            rows = db.feed(limit, starred_only=fav, exclude=seen, known_paths=alive,
+            rows = db.feed(limit, liked_only=fav, exclude=seen, known_paths=alive,
                            profile=prof or None, platform=plat or None)
             out = []
             for r in rows:
@@ -1495,14 +1495,11 @@ class Handler(BaseHTTPRequestHandler):
             db = _profile_db()
             path = str(body.get("path") or "")
             action = str(body.get("action") or "")
-            if action == "like":
+            if action in ("like", "star"):
+                # "star" is the old name for this, kept so a page cached from
+                # before the two flags were merged still works. It is a like now.
                 db.set_liked(path, bool(body.get("value", True)))
                 return self._json({"ok": True, "liked": db.clip(path)["liked"]})
-            if action == "star":
-                # The bookmark, kept apart from the like. Either can be set
-                # without the other.
-                db.set_starred(path, bool(body.get("value", True)))
-                return self._json({"ok": True, "starred": db.clip(path)["starred"]})
             if action == "trash":
                 # Take it out of the feed AND out of the profile's main folder.
                 # The clip moves to trash/, which is what the gallery's All
@@ -1682,7 +1679,7 @@ class Handler(BaseHTTPRequestHandler):
                 # A tile stands for a whole post, so a carousel's parts have to
                 # travel together -- acting on the first file alone would move one
                 # photo and leave the rest behind. Only the move actions need this:
-                # a like or a star is recorded against the one clip.
+                # a like is recorded against the one clip.
                 by_first: dict = {}
                 if action not in flags:
                     try:
@@ -1700,14 +1697,12 @@ class Handler(BaseHTTPRequestHandler):
                         if action in flags:
                             path = db.clip_path(name, f, plat)
                             if not path:
-                                # A photo: likes and stars are about clips.
+                                # A photo: a like is recorded on a clip, and a
+                                # photo is not one.
                                 skipped += 1
                                 continue
-                            on = action in ("like", "star")
-                            if action in ("like", "unlike"):
-                                db.set_liked(path, on)
-                            else:
-                                db.set_starred(path, on)
+                            # "star"/"unstar" are the old names for the same flag.
+                            db.set_liked(path, action in ("like", "star"))
                             done += 1
                             continue
                         for target_file in (by_first.get(f) or [f]):

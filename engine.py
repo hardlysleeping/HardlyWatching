@@ -2175,19 +2175,23 @@ def post_files(self, username: str, platform: str, section: str,
     return [first_file]
 
 
-def starred_posts(self) -> list[dict]:
-    """Every starred clip, shaped like a gallery post so it can be shown as tiles.
+def liked_posts(self) -> list[dict]:
+    """Every liked clip, shaped like a gallery post so it can be shown as tiles.
 
-    Starring happens in the viewer, so these are clips rather than profile posts:
-    one item each, carrying the profile and platform it came from because those
-    are what the media and thumbnail URLs are built from. The path is not used for
-    that -- the two platforms store it differently (TikTok's carries a leading
-    `tiktok/`, Instagram's does not) -- so only the file name is taken from it.
+    Liking happens in the viewer and in Shorts, so these are clips rather than
+    profile posts: one item each, carrying the profile and platform it came from
+    because those are what the media and thumbnail URLs are built from. The path
+    is not used for that -- the two platforms store it differently (TikTok's
+    carries a leading `tiktok/`, Instagram's does not) -- so only the file name is
+    taken from it.
+
+    This is half of the gallery's Liked view. The other half is the favourites
+    folder, which is a like that moved the file; gallery_all() joins the two.
     """
     import profile_db as _pdb
     video_exts = {".mp4", ".mov", ".webm", ".m4v", ".mkv"}
     out = []
-    for row in _pdb._shared_db().starred_clips():
+    for row in _pdb._shared_db().liked_clips():
         rel = str(row.get("path") or "")
         name = rel.rsplit("/", 1)[-1]
         who = str(row.get("profile") or "")
@@ -2198,10 +2202,14 @@ def starred_posts(self) -> list[dict]:
             "post": os.path.splitext(name)[0],
             "username": who,
             "platform": str(row.get("platform") or "instagram"),
-            # Starred order, falling back to when the clip was seen: anything
-            # starred before the column existed has no moment of its own.
-            "ts": float(row.get("starred_at") or row.get("first_seen") or 0),
-            # Where the FILE lives. A star does not move anything, so this is
+            # Like order, falling back to when the clip was seen: a like made
+            # before the column existed has no moment of its own.
+            "ts": float(row.get("liked_at") or row.get("first_seen") or 0),
+            # Marked so the gallery shows these with a full heart even though
+            # the file never moved: the like is a flag on the clip, so unliking
+            # one clears the flag instead of moving files.
+            "liked": 1,
+            # Where the FILE lives. A like does not move anything, so this is
             # always the profile's main folder.
             "section": "main",
             "items": [{"file": name, "part": 1,
@@ -2213,8 +2221,13 @@ def starred_posts(self) -> list[dict]:
 def gallery_all(self, section: str) -> list[dict]:
     """Every profile's posts for one section, across the whole archive.
 
-    Backs the overarching Favourites and Trash views. Each post gains a
-    `username` so the UI can label and link it back to its profile.
+    Backs the overarching Liked and Trash views. Each post gains a `username` so
+    the UI can label and link it back to its profile.
+
+    The Liked view is the favourites folder PLUS every clip liked in the viewer:
+    liking a clip there records a flag instead of moving the file, so walking the
+    folders alone would leave most of the user's likes out. One heart means one
+    list, and it should not matter where the heart was tapped.
     """
     if section not in SUBDIRS:
         return []
@@ -2225,6 +2238,20 @@ def gallery_all(self, section: str) -> list[dict]:
         for p in self.gallery_posts(username, section):
             p["section"] = section
             p["username"] = username
+            out.append(p)
+    if section == FAVORITES_DIR:
+        # A clip can be in both halves -- liked as a flag and later moved into
+        # favourites/ -- so the file name decides, and the folder copy (which
+        # knows about carousel parts) is the one that stays.
+        have = {(p["username"].lower(),
+                 (p["items"][0]["file"] if p.get("items") else "").lower())
+                for p in out}
+        for p in self.liked_posts():
+            key = (p["username"].lower(),
+                   (p["items"][0]["file"] if p.get("items") else "").lower())
+            if key in have:
+                continue
+            have.add(key)
             out.append(p)
     out.sort(key=lambda p: p["ts"])
     return out
@@ -3106,7 +3133,7 @@ class Engine:
 
     gallery_profiles = gallery_profiles
     gallery_sections = gallery_sections
-    starred_posts = starred_posts
+    liked_posts = liked_posts
     post_files = post_files
     tiktok_avatar = tiktok_avatar
     gallery_posts = gallery_posts

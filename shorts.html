@@ -101,9 +101,6 @@
   }
   .act:active{transform:scale(.9)}
   .act.liked{color:#ff5c8a}
-  /* Gold, not the heart's pink: the two are different things and should not read
-     as one control in two states. */
-  .act.starred{color:#f5c451}
   .act.trashed{color:#ff5c5c}
   .act small{font-size:.55rem;display:block;margin-top:-.15rem}
   .lbl{font-size:.58rem;color:var(--muted);text-align:center;margin-top:.15rem;
@@ -156,7 +153,6 @@
   .act .ic{width:1.25rem;height:1.25rem}
   .filt .ic{width:1.05rem;height:1.05rem}
   .liked .ic{fill:currentColor}
-  .starred .ic{fill:currentColor}
   .filt.on .ic{fill:currentColor}
   /* Sound on shows the waves; muted shows the slash. Both are in the markup so
      a state change is a class, not a rebuilt button. */
@@ -319,10 +315,10 @@
 
 <div class="topbar" id="topbar" style="display:none">
   <span class="title">Shorts</span>
-  <button class="filt" id="favBtn" aria-label="Starred only"
-          title="Starred only — the clips you have starred">
+  <button class="filt" id="favBtn" aria-label="Liked only"
+          title="Liked only — the clips you have liked">
     <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6L3.2 9.6l6.1-.9z"/>
+      <path d="M12 20.3l-1.2-1.1C6 15 3 12.3 3 9a4.6 4.6 0 0 1 4.7-4.6A5 5 0 0 1 12 6.3a5 5 0 0 1 4.3-1.9A4.6 4.6 0 0 1 21 9c0 3.3-3 6-7.8 10.2z"/>
     </svg>
   </button>
   <button class="filt" id="tuneBtn" aria-label="Feed tuning"
@@ -364,13 +360,6 @@
   <button class="act" id="likeBtn" aria-label="Like" title="Like (l)">
     <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 20.3l-1.2-1.1C6 15 3 12.3 3 9a4.6 4.6 0 0 1 4.7-4.6A5 5 0 0 1 12 6.3a5 5 0 0 1 4.3-1.9A4.6 4.6 0 0 1 21 9c0 3.3-3 6-7.8 10.2z"/>
-    </svg>
-  </button>
-  <!-- A star is a bookmark, not a reaction: the thing you want to find again.
-       It sits apart from the heart on purpose -- neither implies the other. -->
-  <button class="act" id="starBtn" aria-label="Star" title="Star — save this one">
-    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6L3.2 9.6l6.1-.9z"/>
     </svg>
   </button>
   <button class="act" id="dlBtn" aria-label="Download" title="Save the file to this device">
@@ -504,7 +493,7 @@ function saveSession(extra){
   try{
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({
       seen: seen.slice(-MAX_EXCLUDE),
-      starred: !!starredOnly,
+      liked: !!likedOnly,
       at: Date.now(),
       ...(extra || {}),
     }));
@@ -515,9 +504,9 @@ let session = 0;
 // spliced in ahead of the tail, so a new batch is not simply bolted onto the
 // bottom in the order the server happened to return it.
 let queue = [];
-// The topbar filter is "starred only". A star is a bookmark; a like is a
-// reaction. They are separate and one never implies the other.
-let starredOnly = false;
+// The topbar filter is "liked only". There is one heart in this app: the old
+// star was folded into it, so anything that was starred is liked.
+let likedOnly = false;
 let loading = false;
 
 const $ = id => document.getElementById(id);
@@ -709,8 +698,8 @@ document.addEventListener("touchmove", onSwipeMove, {passive: true});
 document.addEventListener("touchend", () => { swipeFrom = null; }, {passive: true});
 
 function renderEmpty(message, sub){
-  // The Favourites button lives in the topbar. Hiding the bar here would also
-  // hide the only way back out of starred-only mode, so with nothing starred yet
+  // The "Liked only" filter lives in the topbar. Hiding the bar here would also
+  // hide the only way back out of liked-only mode, so with nothing liked yet
   // you would be stuck in an empty screen with no control to leave it. Keep
   // the bar; hide only what has nothing to show (the rail and bottombar).
   $("topbar").style.display = "";
@@ -733,7 +722,7 @@ async function fetchMore(){
   try{
     const r = await post("/api/shorts/feed", {
       limit: TOP,
-      starred: starredOnly,
+      liked: likedOnly,
       profile: ONLY_USER,
       platform: ONLY_PLATFORM,
       exclude: seen.slice(-MAX_EXCLUDE),
@@ -746,13 +735,13 @@ async function fetchMore(){
     if(!got.length && !clips.length){
       renderEmpty(
         ONLY_USER ? `Nothing from @${ONLY_USER}`
-          : (starredOnly ? "Nothing starred yet" : "Nothing to show"),
+          : (likedOnly ? "Nothing liked yet" : "Nothing to show"),
         ONLY_USER
           ? (ONLY_PLATFORM === "instagram"
               ? "This profile has no reels or short videos archived."
               : "This profile has no videos archived yet.")
-          : (starredOnly
-              ? "Star a few clips and they will appear here."
+          : (likedOnly
+              ? "Like a few clips and they will appear here."
               : "Download some TikToks first, then come back.")
       );
       return;
@@ -924,9 +913,6 @@ function fillRail(){
     .filter(Boolean).join(" · ");
   $("likeBtn").classList.toggle("liked", !!c.liked);
   $("likeBtn").setAttribute("aria-pressed", c.liked ? "true" : "false");
-  // The star is its own thing: a clip can be liked, starred, both or neither.
-  $("starBtn").classList.toggle("starred", !!c.starred);
-  $("starBtn").setAttribute("aria-pressed", c.starred ? "true" : "false");
   $("count").textContent = (idx + 1) + " / " + clips.length
     + (ONLY_USER ? " · only @" + ONLY_USER : "");
 }
@@ -988,8 +974,8 @@ let wantSound = (() => {
   try { return sessionStorage.getItem("shorts.sound") === "1"; } catch(e){ return false; }
 })();
 
-// The topbar filter shows the star's own state: filled while you are looking at
-// starred clips only.
+// The topbar filter shows the heart's own state: filled while you are looking at
+// liked clips only.
 // The picture and the handle, as one tap target into that person's gallery.
 //
 // Repainted only when the person changes: the feed plays clips from the same
@@ -1036,11 +1022,11 @@ function openProfile(username, platform){
 function paintFavBtn(){
   const b = $("favBtn");
   if(!b) return;
-  b.classList.toggle("on", starredOnly);
-  b.setAttribute("aria-pressed", starredOnly ? "true" : "false");
-  b.title = starredOnly
-    ? "Showing starred only — tap for everything"
-    : "Starred only — the clips you have starred";
+  b.classList.toggle("on", likedOnly);
+  b.setAttribute("aria-pressed", likedOnly ? "true" : "false");
+  b.title = likedOnly
+    ? "Showing liked only — tap for everything"
+    : "Liked only — the clips you have liked";
 }
 
 function paintMute(){
@@ -1310,14 +1296,6 @@ $("who").onclick = () => {
   openProfile(b.dataset.profile, b.dataset.platform);
 };
 
-$("starBtn").onclick = async () => {
-  const c = currentData();
-  if(!c) return;
-  c.starred = c.starred ? 0 : 1;
-  fillRail();
-  await act("star", {value: !!c.starred});
-};
-
 $("trashBtn").onclick = async () => {
   const c = currentData();
   if(!c) return;
@@ -1391,7 +1369,7 @@ $("dlBtn").onclick = () => {
 };
 
 $("favBtn").onclick = () => {
-  starredOnly = !starredOnly;
+  likedOnly = !likedOnly;
   paintFavBtn();
   // Rebuild from scratch: the pool has changed, so old clips are not valid.
   clips = []; idx = 0; seen = [];
@@ -1416,7 +1394,6 @@ function paintWeights(r){
   const bits = [];
   if(st.total) bits.push(st.total.toLocaleString() + " clips in rotation");
   if(st.liked) bits.push(st.liked + " liked");
-  if(st.starred) bits.push(st.starred + " starred");
   $("sheetSub").textContent = (bits.length ? bits.join(" · ") + ". " : "")
     + "Kept on the server, so a reload, a restart or another device picks up "
     + "exactly this. Weight 1 means no opinion.";
@@ -1568,9 +1545,9 @@ document.addEventListener("keydown", e => {
 const restored = loadSession();
 if(restored){
   seen = Array.isArray(restored.seen) ? restored.seen : [];
-  // saveSession() writes `starred`; this used to read `starredOnly`, so the
-  // starred filter was remembered nowhere and came back off on every resuming.
-  starredOnly = !!restored.starred;
+  // `starred` is the key this was saved under before the two flags were merged,
+  // and a sitting that started then is still resumable.
+  likedOnly = !!(restored.liked ?? restored.starred);
   paintFavBtn();
 }
 paintMute();

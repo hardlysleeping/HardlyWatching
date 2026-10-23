@@ -96,15 +96,15 @@ class ProfileDB:
         # 1 = a reel, 0 = an Instagram video that is not a reel, -1 = not known
         # (no sidecar). Stored rather than re-read on every feed request.
         ("clips", "is_reel", "INTEGER NOT NULL DEFAULT -1"),
-        # A favourite, kept apart from `liked` on purpose. A like is a reaction --
-        # it should stay a light, throwaway tap. A star is a bookmark: the thing
-        # you actually want to find again -- so they are separate columns and one
-        # never implies the other.
-        ("clips", "starred", "INTEGER NOT NULL DEFAULT 0"),
-        # When it was starred. `first_seen` is a sync stamp, so every row in one
-        # pass carries the same value and ordering a bookmarks view by it means
-        # nothing. Zero for anything starred before this column existed.
-        ("clips", "starred_at", "REAL NOT NULL DEFAULT 0"),
+        # When it was liked. `first_seen` is a sync stamp, so every row in one
+        # pass carries the same value and ordering a list of likes by it means
+        # nothing. Zero means "liked before this column existed"; the liked view
+        # falls back to `first_seen` for those rows.
+        #
+        # There used to be a second, higher-level flag here (`starred`, with its
+        # own `starred_at`). There is one heart now -- see _migrate(), which
+        # copies the old flag into this one and clears it.
+        ("clips", "liked_at", "REAL NOT NULL DEFAULT 0"),
         # Which site the parent lives on. Blank means "the same one as the alias",
         # which is what every within-platform merge means.
         ("profile_links", "parent_platform", "TEXT NOT NULL DEFAULT ''"),
@@ -153,6 +153,29 @@ class ProfileDB:
             if column not in cols:
                 self._conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        # One heart, not two. `starred` was a second flag on the same clip --
+        # "the one you want to find again" -- and having two controls that both
+        # meant "keep this" is what made the two words (favourites, starred) for
+        # one idea in the first place. Everything starred is a like now.
+        #
+        # The column is left in place rather than dropped: an older daemon or a
+        # tab left open mid-reload may still read it, and nothing writes to it
+        # after this. It is cleared as it is copied, so a clip the user unlikes
+        # later is not dragged back to liked on the next start.
+        clip_cols = {r["name"] for r in
+                     self._conn.execute("PRAGMA table_info(clips)")}
+        if "starred" in clip_cols:
+            self._conn.execute("UPDATE clips SET liked=1 WHERE starred=1")
+            if "starred_at" in clip_cols:
+                # Keep the moment it was starred: it is the better date for a
+                # clip that was starred before it was ever liked.
+                self._conn.execute(
+                    "UPDATE clips SET liked_at=starred_at "
+                    "WHERE starred=1 AND starred_at>0 AND liked_at=0")
+            self._conn.execute("UPDATE clips SET starred=0 WHERE starred=1")
+        # Likes made before liked_at existed: order them by when they were seen.
+        self._conn.execute(
+            "UPDATE clips SET liked_at=first_seen WHERE liked=1 AND liked_at=0")
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_profiles_state ON profiles(platform, state)")
         # Measured video dimensions, so a portrait upload can be recognised as a
@@ -369,10 +392,10 @@ class ProfileDB:
             self._conn.commit()
         return new
 
-    def feed(self, limit: int = 20, favourites_only: bool = False,
+    def feed(self, limit: int = 20, liked_only: bool = False,
              exclude: list[str] | None = None, known_paths: list[str] | None = None,
              profile: str | None = None, platform: str | None = None,
-             starred_only: bool = False) -> list[dict]:
+             favourites_only: bool = False) -> list[dict]:
         """Pick the next clips, weighted, newest-ignored-first.
 
         Weighted choice is done here rather than in SQL: the set is small enough
@@ -400,10 +423,9 @@ class ProfileDB:
             if platform:
                 sql += " AND platform=?"
                 params.append(platform.strip().lower())
-            # `favourites_only` was the old name for this filter and meant likes.
-            # Either one now means starred: the star is the bookmark, the heart is
-            # only a reaction.
-            sql += " AND starred=1" if (starred_only or favourites_only) else ""
+            # One heart. `favourites_only` and `starred_only` are the old names
+            # callers still send; all three mean the same filter now.
+            sql += " AND liked=1" if (liked_only or favourites_only) else ""
             cur = self._conn.execute(sql, params)
             rows = [dict(r) for r in cur]
         if known_paths:
@@ -557,17 +579,60 @@ class ProfileDB:
             self._conn.commit()
             return round(w, 3)
 
-    def set_liked(self, path: str, liked: bool):
-        with self._lock:
-            self._conn.execute("UPDATE clips SET liked=? WHERE path=?",
-                               (1 if liked else 0, path))
-            self._conn.commit()
+    def profile_weights_list(self, limit: int = 400) -> list[dict]:
+        """Every profile the sampler has been told to favour or damp.
 
-    def set_starred(self, path: str, starred: bool = True):
+        The weights live in this table, not in the browser, so the tuning sheet
+        can show exactly what the feed is working from -- and so a reload, a new
+        phone or a restart does not quietly start again from nothing.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT w.platform, w.profile, w.weight,"
+                " (SELECT COUNT(*) FROM clips c WHERE c.platform=w.platform"
+                "    AND lower(c.profile)=w.profile AND c.trashed=0) AS clips"
+                " FROM profile_weights w"
+                " ORDER BY w.weight DESC, w.profile ASC LIMIT ?", (int(limit),))
+            return [{"platform": r["platform"], "profile": r["profile"],
+                     "weight": round(float(r["weight"]), 3),
+                     "clips": int(r["clips"] or 0)} for r in cur]
+
+    def set_profile_weight_value(self, platform: str, profile: str,
+                                 weight: float) -> float:
+        """Set a profile's weight outright. 1.0 means 'no opinion' and drops the row."""
+        key = (profile or "").strip().lower()
+        if not key:
+            return 1.0
+        w = max(self.WEIGHT_MIN, min(self.WEIGHT_MAX, float(weight)))
+        with self._lock:
+            if abs(w - 1.0) < 1e-9:
+                self._conn.execute(
+                    "DELETE FROM profile_weights WHERE platform=? AND profile=?",
+                    (platform, key))
+            else:
+                self._conn.execute(
+                    "INSERT INTO profile_weights (platform, profile, weight) VALUES (?,?,?) "
+                    "ON CONFLICT(platform, profile) DO UPDATE SET weight=excluded.weight",
+                    (platform, key, w))
+            self._conn.commit()
+        return round(w, 3)
+
+    def reset_profile_weights(self) -> int:
+        """Forget every favour/damp. Returns how many rows went."""
+        with self._lock:
+            cur = self._conn.execute("SELECT COUNT(*) n FROM profile_weights")
+            n = int((cur.fetchone() or {"n": 0})["n"] or 0)
+            self._conn.execute("DELETE FROM profile_weights")
+            self._conn.commit()
+        return n
+
+    def set_liked(self, path: str, liked: bool):
+        # The timestamp is what the liked view sorts by; first_seen is a sync
+        # stamp and is the same for a whole pass, so it cannot order anything.
         with self._lock:
             self._conn.execute(
-                "UPDATE clips SET starred=?, starred_at=? WHERE path=?",
-                (1 if starred else 0, time.time() if starred else 0.0, path))
+                "UPDATE clips SET liked=?, liked_at=? WHERE path=?",
+                (1 if liked else 0, time.time() if liked else 0.0, path))
             self._conn.commit()
 
     def set_trashed(self, path: str, trashed: bool = True):
@@ -637,7 +702,7 @@ class ProfileDB:
     def clip_path(self, profile: str, file: str, platform: str = "instagram") -> str | None:
         """The clips row that stands for a gallery file, or None.
 
-        A like or a star is stored against the clip, and the gallery works in
+        A like is stored against the clip, and the gallery works in
         profile+file terms, so this is the join between them. The two platforms
         store the path differently -- TikTok's carries a leading `tiktok/` -- so
         the file name is matched on the end of the path rather than the whole of
@@ -655,18 +720,18 @@ class ProfileDB:
             row = cur.fetchone()
             return row["path"] if row else None
 
-    def starred_clips(self) -> list[dict]:
-        """Every starred clip, newest first. Backs the gallery's Starred view.
+    def liked_clips(self) -> list[dict]:
+        """Every liked clip, newest like first. Backs the gallery's Liked view.
 
-        A star is the bookmark -- the higher-level favourite -- and it lives on the
-        clip, not in a folder, so this is the only list of it there is. Trashed
-        clips are left out: they are still starred, but they are in the bin.
+        A like lives on the clip, not in a folder, so this is the only list of
+        the ones made in Shorts: a clip is not moved anywhere when it is liked.
+        Trashed clips are left out -- they are still liked, but they are in the bin.
         """
         with self._lock:
             cur = self._conn.execute(
-                "SELECT path, profile, platform, first_seen, starred_at FROM clips "
-                "WHERE starred=1 AND trashed=0 "
-                "ORDER BY starred_at DESC, first_seen DESC")
+                "SELECT path, profile, platform, first_seen, liked_at FROM clips "
+                "WHERE liked=1 AND trashed=0 "
+                "ORDER BY liked_at DESC, first_seen DESC")
             return [dict(r) for r in cur]
 
     def split_profile(self, username: str) -> dict:
@@ -753,11 +818,11 @@ class ProfileDB:
     def clip_stats(self) -> dict:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT COUNT(*) total, SUM(liked) liked, SUM(trashed) trashed, "
-                "SUM(starred) starred FROM clips")
+                "SELECT COUNT(*) total, SUM(liked) liked, SUM(trashed) trashed "
+                "FROM clips")
             r = cur.fetchone()
             return {"total": r["total"] or 0, "liked": r["liked"] or 0,
-                    "trashed": r["trashed"] or 0, "starred": r["starred"] or 0}
+                    "trashed": r["trashed"] or 0}
 
 
 _shared = None
