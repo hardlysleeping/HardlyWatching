@@ -29,19 +29,16 @@ code, they are not on the MVP path because neither can be built or verified on t
 
 | Card | Row | Item | Worktree |
 |---|---|---|---|
-| M0-TESTS | 1–3 | Sandbox harness, API smoke suite, UI baseline capture | `hwa/m0-tests` |
-| M1-LOCK | 6, 7, 8, 23 | Instance lock, `--attach`, `--no-browser`, `/api/version` | `hwa/m1-lock` |
-| M2-SCAFFOLD | 9, 10 | Rust toolchain + Tauri 2 shell loading the real UI | `hwa/m2-scaffold` |
-| M2-SIDECAR | 11 | PyInstaller onedir sidecar (no system Python) | `hwa/m2-sidecar` |
+| M2-WIRE | 12–13 | Sidecar wired into the shell as `externalBin` (spawn-or-attach), Linux DEB + AppImage bundle | `hwa/m2-wire` |
+| CI | 4 | GitHub Actions: run the 46-test suite on push | `hwa/ci` |
+| UI-BASELINE | 3 | DOM landmarks + screenshots captured from a DEMO archive (never the real one) | `hwa/ui-baseline` |
+| DOCS-FLAGS | 24 (partial) | README: `--attach`, `--no-browser`, the lock, `/api/version` | `hwa/docs-flags` |
 
 ## In Progress
 
 | Card | Row | Item | Owner | Branch | Worktree |
 |---|---|---|---|---|---|
-| M0-TESTS | 1–2 | Sandbox harness + API smoke suite | agent sa-0 | `task/m0-tests` | `~/.hermes/worktrees/hwa/m0-tests` |
-| M1-LOCK | 6–8, 23 | Instance lock, `--attach`, `--no-browser`, `/api/version` | agent sa-1 | `task/m1-lock` | `~/.hermes/worktrees/hwa/m1-lock` |
-| M2-SCAFFOLD | 9–10 | Rust + Tauri 2 shell loading the real UI | agent sa-2 | `task/m2-scaffold` | `~/.hermes/worktrees/hwa/m2-scaffold` |
-| M2-SIDECAR | 11 | PyInstaller onedir sidecar | agent sa-3 | `task/m2-sidecar` | `~/.hermes/worktrees/hwa/m2-sidecar` |
+| M2-SCAFFOLD | 9–10 | Tauri shell committed + merged; container `cargo build` running to prove it compiles | parent | `task/m2-scaffold` | `~/.hermes/worktrees/hwa/m2-scaffold` |
 
 ## Review
 
@@ -56,22 +53,34 @@ code, they are not on the MVP path because neither can be built or verified on t
 | FORK | — | New private repo + local copy with full history and the uncommitted checkpoint | `hardlysleeping/HardlyWatchingApp`, commit `7419341` |
 | PLAN | — | Plan v1 + backlog | plan path above, `BACKLOG.md` `7c69c7b` |
 | RULES | — | Guardrails for work in this repo (protected paths, sandbox env, done criteria) | `docs/agent-rules.md` |
+| M0-TESTS | 1–2 | Sandbox harness + 29-case API smoke suite | merged `ab57e33`; re-run by parent on merged master: **46 tests OK**; sandbox proves isolation (temp HOME, stub downloaders, port ≥8899) |
+| M1-LOCK | 6, 7, 8, 23 | Instance lock, `--attach`, `--no-browser`, `/api/version` | merged; 17 lock tests OK; manual on master: second start exits 0 with "already running at http://127.0.0.1:8899", `--attach` 0, `/api/version` 0.1.0, one listener, clean stop |
+| M2-SIDECAR | 11 | PyInstaller onedir bundle, no system Python | merged; 113 MB; `env -i` run with no venv: `/api/health`, `/`, `/shorts`, `/api/version` all 200/0.1.0; SIGINT clean. Caveats: ffmpeg is dynamically linked (needs FFmpeg 8.x sonames), instaloader not bundled, glibc ≥ 2.38 required |
+
 
 ## Blocked
 
 | Card | Row | Blocked on |
 |---|---|---|
 | AUTH | 20–21 | Owner: is a one-time token/pairing step on the phone PWA acceptable? |
-| M2-SIDECAR-SIZE | 11 | Owner: is ~200 MB per desktop install acceptable for "no Python needed"? (Work proceeds; the answer decides whether it ships.) |
+| M2-SIDECAR-SIZE | 11 | Owner: is ~113 MB per desktop install acceptable for "no Python needed"? (Built and verified; the answer only decides whether it ships.) |
 | IOS | 36–37 | No macOS/Xcode on this machine; signing path needed |
+
+## Follow-ups discovered by the sidecar/first pass (not new scope, but must not be lost)
+
+| Card | Item |
+|---|---|
+| FFMPEG-STATIC | The bundled ffmpeg is dynamically linked and needs FFmpeg 8.x sonames (`libavcodec.so.62`, …). On a machine without FFmpeg 8 it dies and video thumbnails/previews go with it. Fix in CI with a static/trimmed ffmpeg, not by copying this box's libs. |
+| INSTALOADER-BUNDLE | `instaloader` is not in the bundle: the UI serves and the archive browses, but nothing Instagram-side downloads until it is installed. Decide bundle-vs-document. |
+| GLIBC | The bundle needs glibc ≥ 2.38 (built here, FC44). Ubuntu 22.04 will not start it. CI on an older base image fixes that. |
 
 ---
 
 ## Merge order (parent does this, children do not push)
 
-1. `hwa/m0-tests` — foundation; every later card's verification leans on it.
-2. `hwa/m1-lock` — `server.py` alone, so it merges without touching UI code.
-3. `hwa/m2-scaffold` — new `src-tauri/` tree only, no Python files.
-4. `hwa/m2-sidecar` — new `packaging/sidecar/` tree only.
+Merged so far, each re-verified by the parent on merged `master` (46 tests green): `task/m0-tests`,
+`task/m1-lock`, `task/m2-sidecar`, `task/m2-scaffold`.
+
+Next: `hwa/m2-wire` (needs the container build), then `hwa/ci`, `hwa/docs-flags`, `hwa/ui-baseline`.
 
 Conflicts are avoided by file ownership, not by merge skill: two cards never touch the same file.

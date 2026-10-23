@@ -34,8 +34,8 @@ AppImage/control-panel/bookmarks work from the live checkout. The live checkout
 
 | # | Item | Status | Evidence / notes |
 |---|---|---|---|
-| 1 | Sandbox harness: throwaway server on temp HOME + `INSTA_STATE`/`INSTA_CACHE_DB`/`INSTA_OUTPUT`, port 8899, stub instaloader | next | Plan task 0.1. Writes must never reach `~/.config/hardlywatching` or the real archive |
-| 2 | API smoke suite over the 12 UI-critical routes | todo | Plan task 0.2. Green here is the gate for every later row |
+| 1 | Sandbox harness: throwaway server on temp HOME + `INSTA_STATE`/`INSTA_CACHE_DB`/`INSTA_OUTPUT`, port 8899, stub instaloader | done | `tests/sandbox.py`; verifies it latched onto *its own* server by comparing `/api/state.output_root`, not just `/api/health` |
+| 2 | API smoke suite over the 12 UI-critical routes | done | 29 cases; `/api/shorts/feed` turned out to be POST (weighted pick records what it showed), `/api/peek` 400s without `?profile=`. Parent re-ran on merged master: **46 tests OK** |
 | 3 | UI baseline: screenshots + DOM landmarks, 1440px and 390px, every tab | todo | Plan task 0.3. This is the "no degraded UI" guard |
 | 4 | CI: Linux job running 1–2 on push | todo | Plan task 0.4. Repo has no `.github/` at all today |
 | 5 | Backlog + plan living in the repo | done | `BACKLOG.md` (this file), plan path above |
@@ -44,22 +44,22 @@ AppImage/control-panel/bookmarks work from the live checkout. The live checkout
 
 | # | Item | Status | Evidence / notes |
 |---|---|---|---|
-| 6 | Instance lock (`run/hardlywatching.lock` + health probe); second launch exits 0 with the URL | todo | Plan 1.1. Verified today: no lock exists, `find_free_port` silently moves to 8766 |
-| 7 | `--attach` mode for the shell and `control-panel.py` | todo | Plan 1.2 |
-| 8 | `--no-browser` flag | todo | Plan 1.7. `main()` calls `webbrowser.open` unconditionally (`server.py:2382-2385`) |
+| 6 | Instance lock (`run/hardlywatching.lock` + health probe); second launch exits 0 with the URL | done | Live on master: second start prints `already running at http://127.0.0.1:8899` and exits 0; one listener; stale/unreadable lock taken over; `--force` keeps the canonical lock |
+| 7 | `--attach` mode for the shell and `control-panel.py` | done | `--attach` exits 0 with the URL, 1 with nothing running; runs before Engine/bind/browser |
+| 8 | `--no-browser` flag | done | Positive control in the tests: the patched `webbrowser.open` does fire without the flag |
 | 20 | Token auth: `api_token` in state, loopback bypass, Bearer for non-loopback, 401 JSON | blocked | Plan 1.3. Blocked on open question 1 (phone PWA pairing) |
 | 21 | Per-device tokens: pair / list / revoke | blocked | Plan 1.4. Same blocker |
 | 22 | CORS/OPTIONS with an origin allowlist | todo | Plan 1.5. No `OPTIONS` handling exists; needed for the mobile fallback path only |
-| 23 | `/api/version` (version, commit, pid, started) | todo | Plan 1.6. The shell needs it to refuse a mismatched sidecar |
+| 23 | `/api/version` (version, pid, port, started, api) | done | Reads `VERSION` (0.1.0), falls back to `dev`; frozen bundle reports 0.1.0 too |
 | 24 | README "Reach it from your phone" updated with the token step | blocked | Plan 1.8. Same blocker as row 20 |
 
 ## M2 — Desktop shell (Linux first)
 
 | # | Item | Status | Evidence / notes |
 |---|---|---|---|
-| 9 | Rust toolchain installed (rustup stable) | todo | Plan 2.1. Verified absent: no `cargo`/`rustc` on PATH, no `~/.cargo/bin` |
-| 10 | `src-tauri/` scaffold, Tauri 2, `frontendDist` = the repo's static files, no bundler | todo | Plan 2.2. No `package.json` exists — the frontend stays buildless |
-| 11 | Sidecar: PyInstaller onedir `hardlywatching-server` + `yt-dlp` + `ffmpeg` | todo | Plan 2.3. Today's AppImage is a launcher only: `make-appimage.sh` runs the checkout's code and `.venv` |
+| 9 | Rust toolchain installed (rustup stable) | done | cargo 1.99.1 / rustc 1.99.1 in `~/.cargo/bin` |
+| 10 | `src-tauri/` scaffold: a window onto the server URL, no bundled UI copy, no bundler | done | `src/main.rs` resolves URL before Tauri starts (env → `app-config.json` → `:8765`), probes the port, retries until up. Design changed from the plan's `frontendDist`: see `docs/desktop-shell.md` |
+| 11 | Sidecar: PyInstaller onedir `hardlywatching-server` + `yt-dlp` + `ffmpeg` | done | 113 MB; `env -i`, no venv: `/`, `/shorts`, `/api/health`, `/api/version` all serve; SIGINT clean. Caveats: rows 43–45 |
 | 12 | Spawn-or-attach logic + `externalBin` wiring | todo | Plan 2.4. Depends on rows 6 and 11 |
 | 13 | Linux bundles: shell AppImage + DEB | todo | Plan 2.5 |
 | 14 | Offline browsing/playback check against the local archive | todo | Plan 2.6 |
@@ -115,6 +115,14 @@ AppImage/control-panel/bookmarks work from the live checkout. The live checkout
 |---|---|---|---|
 | 41 | On-device Android downloading (embedded Python or native) | todo | Plan M8. Needs a written answer on foreground services + storage before code |
 | 42 | On-device iOS downloading | todo | Treated as experimental; background transfer APIs are not a general queue |
+
+## Follow-ups found while building the first pass
+
+| # | Item | Status | Evidence / notes |
+|---|---|---|---|
+| 43 | Static/trimmed `ffmpeg` in the sidecar | todo | Bundled ffmpeg is dynamically linked and needs FFmpeg 8.x sonames (`libavcodec.so.62`, `libavformat.so.62`, …). Without them only video thumbnails/previews/transcoding die — the UI and images are fine. Fix in CI with a static build, not by copying this box's libs |
+| 44 | Decide `instaloader`: bundle it or document the install | todo | Not in the bundle today: the UI serves, but nothing Instagram-side downloads. The model already offers to install it at first run (`run.py`) — the frozen binary needs the same answer |
+| 45 | glibc floor: 2.38 (FC44 build) | todo | Ubuntu 22.04 will not start the bundle. Fix by building in CI on an older base image |
 
 ---
 
