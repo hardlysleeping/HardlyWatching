@@ -149,6 +149,24 @@ Then:
 Downloads land in `~/instagram/<username>/` in instaloader's normal layout, so
 instaloader itself can still read the folder.
 
+**Starting it twice does not give you two copies.** The first instance writes a
+lock beside its state file, and a second start finds it, prints
+`HardlyWatching is already running at <url>` and exits 0 with nothing started.
+Two servers over one state file meant two workers pulling the same queue and two
+windows writing the same archive; the lock is there so that cannot happen, and so
+the second start tells you where the app really is instead of leaving you to guess
+a port. A lock left behind by a killed process does not block the next start — the
+recorded process is checked for being alive and answering `/api/health`, and a
+stale lock is taken over. A copy with its own state file (`INSTA_STATE`) or its
+own `INSTA_LOCK` is a separate instance, and takes the next free port.
+
+To ask a running instance what it is, `GET /api/version` answers with the app
+version, its process id, the port it holds, when it started and the API number:
+
+```json
+{"version": "0.1.0", "pid": 124968, "port": 8899, "started": "2026-10-23T16:09:57-07:00", "api": 1}
+```
+
 ### Other ways to start it
 
 ```bash
@@ -158,7 +176,21 @@ python3 run.py --no-install  # don't install instaloader, just run
 python3 run.py --port 9000   # different port
 ./start.sh                   # if you already have instaloader on PATH
 python3 server.py            # plain, standard library only
+python3 server.py --attach      # print the URL of the instance already running
+python3 server.py --no-browser  # start without opening a tab
+python3 server.py --force       # start anyway, beside the instance holding the lock
 ```
+
+Those three are `server.py` flags.
+
+`--attach` starts nothing: it prints the running instance's address and exits 0,
+or prints `HardlyWatching is not running.` and exits 1, which makes it the quick
+answer to "is it up, and where" for a script as much as for you. `--no-browser`
+serves as usual and leaves the browser alone — the banner says where to go rather
+than claiming a tab opened. `--force` starts a second copy on purpose: it comes up
+beside the first, takes the next free port, and leaves the lock with the instance
+that already had it, so `--attach` still names that one; it says which instance it
+is running beside.
 
 **Platforms:** the app is standard-library Python and runs on Linux, macOS and
 Windows. Linux gets the extras (autostart service, desktop icon, GTK control
@@ -216,6 +248,20 @@ journalctl --user -u hardlywatching -f
 **Start on login** can also be turned on or off from the app itself, under
 *Download settings → App*. It sets the same systemd unit the commands above do,
 so there is only ever one answer to whether it is enabled.
+
+**A service start has no browser to open.** Under systemd, or in any script that
+starts it for you, there is nobody to look at a tab, so pass `--no-browser`: the
+app serves and prints its address and never calls the browser. To make the
+installed service start that way, add the flag to the unit's `ExecStart` line:
+
+```ini
+ExecStart=/path/to/.venv/bin/python3 /path/to/server.py --no-browser
+```
+
+Nothing else about the start changes, and the address it prints is in
+`journalctl --user -u hardlywatching`. Because the unit holds the state file,
+starting the app by hand while the service is up just says where the service
+already is and stops, so the same queue cannot end up with two owners.
 
 ---
 
@@ -846,12 +892,14 @@ again. The panel shows it as incomplete instead of silently burning requests.
 | `~/tiktok/<handle>/.yt-dlp-archive.txt` | Which TikTok videos are already downloaded, so raising the count only fetches new ones |
 | `~/instagram/<username>/.insta-index.json` | Hidden record of what was there, used to spot file-manager deletions |
 | `~/.config/hardlywatching/state.json` | Queue, order, settings, cooldowns, deleted-post markers |
+| `~/.config/hardlywatching/run/hardlywatching.lock` | The instance owning that state file: its pid, port, version and start time. A second start reads it instead of starting |
 | `~/.config/instaloader/session-<user>` | Instagram session, created by instaloader |
 | `~/.config/instaloader/latest-stamps.ini` | What has already been archived |
 | `.venv/` (next to `run.py`) | The private environment `run.py` creates |
 
 Override paths with `INSTA_OUTPUT` and `INSTA_STATE`; also honours `INSTA_PORT`
 and `INSTA_HOST`.
+`INSTA_LOCK` sets where the lock file itself lives.
 
 ### Choosing the downloads folder
 
