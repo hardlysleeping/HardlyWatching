@@ -26,3 +26,8 @@ thumbs/
 
 # Built AppImage
 /dist/
+
+# Sidecar build (packaging/sidecar/build.sh): build-only venv and the frozen
+# bundle. Both are regenerable and neither belongs in git.
+.venv-build/
+dist/sidecar/
