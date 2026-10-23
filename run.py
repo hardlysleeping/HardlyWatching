@@ -136,6 +136,13 @@ def main() -> int:
                                 *[a for a in args if a != "--service"]],
                                cwd=str(HERE))
 
+    if "--attach" in args:
+        # A URL lookup, not a start: no venv, no instaloader, no browser. Reads
+        # the lock file the running instance wrote and exits (0 with a URL, 1
+        # without), which is what a desktop shell or a script wants.
+        return subprocess.call([sys.executable, str(HERE / "server.py"), "--attach"],
+                               cwd=str(HERE), env=dict(os.environ))
+
     py = ensure_venv()
     if not ensure_instaloader(py, auto=auto_install):
         say("")
@@ -153,6 +160,9 @@ def main() -> int:
         if args[i] in ("--port", "--host") and i + 1 < len(args):
             passthrough += [args[i], args[i + 1]]
             i += 2
+        elif args[i] in ("--no-browser", "--force"):
+            passthrough.append(args[i])
+            i += 1
         else:
             i += 1
     return subprocess.call([str(py), str(HERE / "server.py"), *passthrough],

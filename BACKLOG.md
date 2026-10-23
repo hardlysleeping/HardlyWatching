@@ -36,8 +36,8 @@ AppImage/control-panel/bookmarks work from the live checkout. The live checkout
 |---|---|---|---|
 | 1 | Sandbox harness: throwaway server on temp HOME + `INSTA_STATE`/`INSTA_CACHE_DB`/`INSTA_OUTPUT`, port 8899, stub instaloader | done | `tests/sandbox.py`; verifies it latched onto *its own* server by comparing `/api/state.output_root`, not just `/api/health` |
 | 2 | API smoke suite over the 12 UI-critical routes | done | 29 cases; `/api/shorts/feed` turned out to be POST (weighted pick records what it showed), `/api/peek` 400s without `?profile=`. Parent re-ran on merged master: **46 tests OK** |
-| 3 | UI baseline: screenshots + DOM landmarks, 1440px and 390px, every tab | todo | Plan task 0.3. This is the "no degraded UI" guard |
-| 4 | CI: Linux job running 1–2 on push | todo | Plan task 0.4. Repo has no `.github/` at all today |
+| 3 | UI baseline: screenshots + DOM landmarks, 1440px and 390px, every tab | done | `tests/baseline/`: 547-line `dom.txt` (542 rows, 112 landmarks, 10 scopes), 4 PNGs (1440x900 ×3, 390x844 ×1), `capture.sh` refuses 8765. Captured from a demo archive; leak scan of 739 real names = 0 hits. Limits: no pixels asserted, no hover/hidden views, 3 profiles only |
+| 4 | CI: Linux job running 1–2 on push | done | `.github/workflows/ci.yml` + `scripts/ci-local.sh` (same steps duplicated, not one calling the other). Parent ran it on merged master: `PASS: Ran 46 tests in 5.365s`. Suite needs no third-party package; 3.12 pinned for wheels, verified green on 3.11/3.12/3.14. Workflow unrun until first push |
 | 5 | Backlog + plan living in the repo | done | `BACKLOG.md` (this file), plan path above |
 
 ## M1 — Backend hardening
@@ -51,7 +51,7 @@ AppImage/control-panel/bookmarks work from the live checkout. The live checkout
 | 21 | Per-device tokens: pair / list / revoke | blocked | Plan 1.4. Same blocker |
 | 22 | CORS/OPTIONS with an origin allowlist | todo | Plan 1.5. No `OPTIONS` handling exists; needed for the mobile fallback path only |
 | 23 | `/api/version` (version, pid, port, started, api) | done | Reads `VERSION` (0.1.0), falls back to `dev`; frozen bundle reports 0.1.0 too |
-| 24 | README "Reach it from your phone" updated with the token step | blocked | Plan 1.8. Same blocker as row 20 |
+| 24 | README "Reach it from your phone" updated with the token step | blocked | Plan 1.8. Same blocker as row 20. Part done: lock/`--attach`/`--no-browser`/`--force`/`INSTA_LOCK`/`/api/version` are documented; the token half waits on row 20 |
 
 ## M2 — Desktop shell (Linux first)
 
