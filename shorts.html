@@ -8,7 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Shorts</title>
 <link rel="manifest" href="/shorts.webmanifest" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>▶</text></svg>" />
+<link rel="icon" href="/favicon.ico" sizes="any" />
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 <style>
   :root{
     --bg:#08080c;
@@ -51,6 +53,21 @@
     background:linear-gradient(to bottom,rgba(0,0,0,.65),transparent);
   }
   .topbar .title{font-size:.82rem;font-weight:600;letter-spacing:.02em}
+  /* Opened as its own page, the player has no tab strip above it and a
+     standalone window has no back button, so give it one. Inside the app's
+     Shorts tab the tabs are the way out, so this stays hidden there. */
+  .goback{
+    position:fixed;z-index:30;left:.7rem;
+    top:calc(env(safe-area-inset-top) + .55rem);
+    display:none;padding:.42rem .7rem;border-radius:999px;
+    font:600 .74rem/1 system-ui,-apple-system,sans-serif;
+    color:rgba(255,255,255,.92);text-decoration:none;
+    background:rgba(12,12,18,.62);border:1px solid rgba(255,255,255,.16);
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+  }
+  .goback:hover{background:rgba(12,12,18,.85)}
+  /* Only when this is its own page: the embed has tabs right above it. */
+  html:not(.embed) .goback{display:inline-block}
   /* Embedded in the main app's Shorts tab: the surrounding page already has a
      tab strip and a heading, so ours would just be a duplicate. */
   .embed .topbar{background:linear-gradient(to bottom,rgba(0,0,0,.45),transparent)}
@@ -120,15 +137,39 @@
   .bottombar .who{font-size:.9rem;font-weight:600}
   .bottombar .meta{font-size:.7rem;color:var(--muted);margin-top:.15rem}
 
-  /* ---- scrub bar ----
-     Desktop-only: a touch device already has the video's own controls, and a
-     thin slider under a thumb is worse than useless there. On a mouse it is
-     the only way to rewind, so it is always there. */
+  /* ---- icons ----
+     One stroke weight and one size for every control. The emoji glyphs this
+     replaces rendered at whatever the OS and font felt like -- different
+     weights, different baselines, and a colour emoji next to a monochrome one
+     is what made the rail look assembled from spare parts. */
+  .ic{
+    width:1.15rem;height:1.15rem;display:block;flex:none;
+    fill:none;stroke:currentColor;stroke-width:1.9;
+    stroke-linecap:round;stroke-linejoin:round;
+  }
+  .act .ic{width:1.25rem;height:1.25rem}
+  .filt .ic{width:1.05rem;height:1.05rem}
+  .liked .ic{fill:currentColor}
+  .starred .ic{fill:currentColor}
+  .filt.on .ic{fill:currentColor}
+  /* Sound on shows the waves; muted shows the slash. Both are in the markup so
+     a state change is a class, not a rebuilt button. */
+  #muteBtn .waves,#muteBtn .slash{transition:opacity .12s ease}
+  #muteBtn .waves{opacity:0}
+  #muteBtn .slash{opacity:1}
+  #muteBtn.on .waves{opacity:1}
+  #muteBtn.on .slash{opacity:0}
+
+  /* ---- progress ----
+     One job, two shapes. A mouse gets the row: times, a thumb, and skip
+     buttons, because a mouse can aim. A finger gets a strip along the bottom
+     edge with a 34px band to catch it, because a thumb cannot. Neither pauses
+     the clip -- a scrub is a position, not a play/pause. */
   .scrub{
     position:fixed;left:0;right:0;z-index:22;
     bottom:calc(env(safe-area-inset-bottom) + 4.5rem);
     display:flex;align-items:center;gap:.55rem;
-    padding:0 1.05rem;pointer-events:none;
+    padding:0 1.05rem;pointer-events:auto;
   }
   .scrub .t{font-size:.62rem;color:var(--muted);font-variant-numeric:tabular-nums;
     min-width:2.7rem;text-align:center}
@@ -145,8 +186,9 @@
   .skipbtn:hover{border-color:rgba(255,255,255,.4)}
   .skipbtn:active{transform:scale(.94)}
   .scrub input{
-    pointer-events:auto;flex:1;min-width:0;height:18px;margin:0;padding:0;
+    pointer-events:auto;flex:1;min-width:0;height:26px;margin:0;padding:0;
     -webkit-appearance:none;appearance:none;background:transparent;cursor:pointer;
+    touch-action:none;
   }
   .scrub input::-webkit-slider-runnable-track{height:4px;border-radius:999px;
     background:rgba(255,255,255,.3)}
@@ -159,6 +201,73 @@
   /* Hide the mouse-only control on a touch screen. !important so an inline
      display:"" (used to show it again when the feed loads) cannot override it. */
   @media (pointer:coarse){ .scrub{display:none !important} }
+
+  /* The touch strip. An unaimed thumb anywhere along the bottom seeks, which is
+     the one gesture a phone was missing: before this, the only way to move was
+     a double tap or a 5s skip button, so a 90s clip could not be moved through
+     at all. */
+  .tbar{
+    position:fixed;left:0;right:0;bottom:0;z-index:23;display:none;
+    height:calc(34px + env(safe-area-inset-bottom));
+    touch-action:none;cursor:pointer;
+  }
+  .tbar::before,.tbar i{
+    content:"";position:absolute;left:0;bottom:calc(env(safe-area-inset-bottom) + 3px);
+    height:3px;border-radius:0 2px 2px 0;
+  }
+  .tbar::before{right:0;background:rgba(255,255,255,.22)}
+  .tbar i{width:0;background:var(--fg);transition:width .1s linear}
+  @media (pointer:coarse){ .tbar{display:block} }
+
+  /* ---- feed tuning sheet ----
+     What the sampler has learned, read from the server rather than held in the
+     page. It was invisible before: pressing "more" showed a toast and left
+     nothing behind that could be checked, so the setting looked like it reset
+     every session even though it had been saved. */
+  .sheet{
+    position:fixed;inset:0;z-index:60;display:none;
+    background:rgba(0,0,0,.55);
+    -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);
+  }
+  .sheet.open{display:block}
+  .sheet .card{
+    position:absolute;left:0;right:0;bottom:0;max-height:84dvh;
+    overflow-y:auto;overscroll-behavior:contain;
+    background:#111117;border:1px solid rgba(255,255,255,.08);border-bottom:0;
+    border-radius:18px 18px 0 0;
+    padding:.4rem 1rem calc(env(safe-area-inset-bottom) + 1.1rem);
+  }
+  .sheet .grab{width:38px;height:4px;border-radius:2px;background:rgba(255,255,255,.22);
+    margin:.4rem auto .9rem}
+  .sheet h2{font-size:.95rem;margin:0 0 .2rem;font-weight:650}
+  .sheet .sub{font-size:.72rem;color:var(--muted);line-height:1.5;margin:0 0 .8rem}
+  .wrow{display:flex;align-items:center;gap:.5rem;padding:.45rem 0;
+    border-top:1px solid rgba(255,255,255,.06)}
+  .wrow .w{min-width:0;flex:1}
+  .wrow .nm{font-size:.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .wrow .mt{font-size:.66rem;color:var(--muted);margin-top:.1rem}
+  .wrow .val{font-size:.74rem;font-variant-numeric:tabular-nums;min-width:2.4rem;
+    text-align:right;color:var(--accent)}
+  .wrow button{
+    width:2rem;height:2rem;flex:none;border-radius:50%;
+    border:1px solid rgba(255,255,255,.18);background:transparent;color:var(--fg);
+    font:inherit;font-size:.9rem;line-height:1;display:flex;align-items:center;
+    justify-content:center;cursor:pointer;
+  }
+  .wrow button:active{transform:scale(.92)}
+  .wrow button.zero{width:auto;padding:0 .55rem;border-radius:999px;font-size:.62rem;
+    color:var(--muted)}
+  .sheet .foot{display:flex;gap:.6rem;margin-top:1rem;padding-top:.9rem;
+    border-top:1px solid rgba(255,255,255,.06)}
+  .sheet .foot button{
+    flex:1;padding:.62rem;border-radius:12px;font:inherit;font-size:.78rem;
+    border:1px solid rgba(255,255,255,.16);background:transparent;color:var(--fg);
+    cursor:pointer;
+  }
+  .sheet .foot button.primary{background:var(--accent);border-color:var(--accent);
+    color:#1a0f08;font-weight:650}
+  .sheet .empty{font-size:.78rem;color:var(--muted);padding:.5rem 0 1rem;line-height:1.6}
 
   /* Briefly shown over the clip: play/pause on a tap, the seconds skipped on a
      double tap. There is no visible control to move, so without this a tap
@@ -200,12 +309,35 @@
 
 <div id="feed"></div>
 
+<a class="goback" id="goback" href="/?tab=gallery">&larr; Gallery</a>
+
 <div class="topbar" id="topbar" style="display:none">
   <span class="title">Shorts</span>
   <button class="filt" id="favBtn" aria-label="Starred only"
-          title="Starred only — the clips you have starred">&#9734;</button>
+          title="Starred only — the clips you have starred">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6L3.2 9.6l6.1-.9z"/>
+    </svg>
+  </button>
+  <button class="filt" id="tuneBtn" aria-label="Feed tuning"
+          title="Feed tuning — what this feed has learned">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 8h7M15 8h5M4 16h5M13 16h7"/>
+      <circle cx="13" cy="8" r="2"/><circle cx="11" cy="16" r="2"/>
+    </svg>
+  </button>
+  <button class="filt" id="fsBtn" aria-label="Fullscreen" title="Fullscreen">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 9V4h5M20 15v5h-5M15 4h5v5M9 20H4v-5"/>
+    </svg>
+  </button>
   <button class="filt" id="uiToggle" aria-label="Show or hide the controls"
-          title="Hide the controls">&#128065;</button>
+          title="Hide the controls">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/>
+      <circle cx="12" cy="12" r="2.6"/>
+    </svg>
+  </button>
   <span class="count" id="count"></span>
 </div>
 
@@ -216,31 +348,43 @@
 <div class="edgeshelf" id="edgeshelf" aria-hidden="true"></div>
 
 <div class="rail" id="rail" style="display:none">
-  <div>
-    <button class="act" id="muteBtn" aria-label="Unmute" title="Sound (m)">&#128263;</button>
-  </div>
-  <div>
-    <button class="act" id="likeBtn" aria-label="Like" title="Like">&#9825;</button>
-  </div>
-  <div>
-    <!-- A star is a bookmark, not a reaction: the thing you want to find again.
-         It sits apart from the heart on purpose -- neither implies the other. -->
-    <button class="act" id="starBtn" aria-label="Star" title="Star — save this one">&#9734;</button>
-  </div>
-  <div>
-    <button class="act" id="dlBtn" aria-label="Download" title="Save the file to this device">&#8595;</button>
-  </div>
-  <div>
-    <button class="act" id="trashBtn" aria-label="Trash" title="Trash — take it out of the feed">&#128465;</button>
-  </div>
-  <div>
-    <button class="act" id="moreBtn" aria-label="Show more often from this profile"
-            title="See more from this profile">&#8679;</button>
-  </div>
-  <div>
-    <button class="act" id="lessBtn" aria-label="Show less often from this profile"
-            title="See less from this profile">&#8681;</button>
-  </div>
+  <button class="act" id="muteBtn" aria-label="Unmute" title="Sound (m)">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M11 5.5L6.5 9H3.5v6h3L11 18.5z"/>
+      <g class="waves"><path d="M15 9.2a4 4 0 0 1 0 5.6"/><path d="M17.8 6.6a8 8 0 0 1 0 10.8"/></g>
+      <g class="slash"><path d="M15.5 9.5l5 5M20.5 9.5l-5 5"/></g>
+    </svg>
+  </button>
+  <button class="act" id="likeBtn" aria-label="Like" title="Like (l)">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 20.3l-1.2-1.1C6 15 3 12.3 3 9a4.6 4.6 0 0 1 4.7-4.6A5 5 0 0 1 12 6.3a5 5 0 0 1 4.3-1.9A4.6 4.6 0 0 1 21 9c0 3.3-3 6-7.8 10.2z"/>
+    </svg>
+  </button>
+  <!-- A star is a bookmark, not a reaction: the thing you want to find again.
+       It sits apart from the heart on purpose -- neither implies the other. -->
+  <button class="act" id="starBtn" aria-label="Star" title="Star — save this one">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6L3.2 9.6l6.1-.9z"/>
+    </svg>
+  </button>
+  <button class="act" id="dlBtn" aria-label="Download" title="Save the file to this device">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5v11m0 0l-4-4m4 4l4-4M4.5 19.5h15"/>
+    </svg>
+  </button>
+  <button class="act" id="trashBtn" aria-label="Trash" title="Trash — take it out of the feed">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.5 7h15M9.5 7V4.8h5V7M6.5 7l1 12h9l1-12M10.2 10.8v4.8M13.8 10.8v4.8"/>
+    </svg>
+  </button>
+  <button class="act" id="moreBtn" aria-label="Show more often from this profile"
+          title="See more from this profile">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+  </button>
+  <button class="act" id="lessBtn" aria-label="Show less often from this profile"
+          title="See less from this profile">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+  </button>
 </div>
 
 <div class="tapicon" id="tapIcon" aria-hidden="true"></div>
@@ -264,6 +408,24 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- The touch progress strip. A finger anywhere along the bottom edge seeks,
+     including the last few millimetres a thumb can actually reach. -->
+<div class="tbar" id="tbar" aria-hidden="true"><i id="tbarFill"></i></div>
+
+<!-- What the feed has learned, straight from the server database. -->
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="card">
+    <div class="grab"></div>
+    <h2 id="sheetTitle">Feed tuning</h2>
+    <p class="sub" id="sheetSub"></p>
+    <div id="wlist"></div>
+    <div class="foot">
+      <button type="button" id="wclose">Done</button>
+      <button type="button" id="wreset" class="primary">Reset all</button>
+    </div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -382,7 +544,12 @@ function clipEl(c){
   const v = document.createElement("video");
   v.src = c.url;
   v.playsInline = true;
-  v.preload = "none";
+  v.setAttribute("playsinline", "");
+  v.setAttribute("webkit-playsinline", "");
+  // Metadata rather than nothing: a clip whose duration is unknown cannot be
+  // scrubbed, and setting currentTime on it just queues a seek that stalls the
+  // player until the header arrives. The header is a few KB.
+  v.preload = "metadata";
   v.loop = true;
   // Muted is required for autoplay: every browser blocks a video with sound
   // from starting on its own, which left every clip sitting paused at 0.00.
@@ -405,7 +572,10 @@ function clipEl(c){
   // held until the double-tap window closes, so a skip never also toggles.
   let tapTimer = null;
   wrap.addEventListener("click", e => {
-    if(e.target.closest(".rail") || e.target.closest(".topbar")) return;
+    // A control owns its own clicks. The row, the rail and the strip sit over
+    // the clip, and a miss by a few pixels used to land on the video and pause
+    // it -- which is exactly what "I tried to scrub and it stopped" was.
+    if(e.target.closest(".rail, .topbar, .scrub, .tbar, .bottombar, .sheet")) return;
     if(Date.now() < swipeUntil) return;   // the tail of a swipe, not a tap
     const r = wrap.getBoundingClientRect();
     const dir = (e.clientX - r.left) < r.width / 2 ? -1 : 1;
@@ -418,7 +588,7 @@ function clipEl(c){
     tapTimer = setTimeout(() => {
       tapTimer = null;
       if(v.paused){ v.play().catch(()=>{}); tapIcon("&#9654;"); }
-      else { v.pause(); tapIcon("&#10074;&#10074;"); }
+      else { userPaused = Date.now(); v.pause(); tapIcon("&#10074;&#10074;"); }
     }, DOUBLE_TAP_MS);
   });
   wrap.querySelector("video").addEventListener("error", () => {
@@ -542,6 +712,7 @@ function renderEmpty(message, sub){
   $("rail").style.display = "none";
   $("bottombar").style.display = "none";
   $("scrubWrap").style.display = "none";
+  $("tbar").style.display = "none";
   $("count").textContent = "";
   feed.innerHTML = '<div class="msg"><h2>' + message + "</h2><p>" + sub + "</p></div>";
 }
@@ -586,6 +757,7 @@ async function fetchMore(){
     queue.push(...shuffle(got.slice()));
     placeQueue();
     $("topbar").style.display = "";
+    $("tbar").style.display = "";
     // Respect the gesture: a refill must not pop the controls back on screen
     // after they have been swiped away, or close them while the cursor is at the
     // edge asking for them.
@@ -624,6 +796,10 @@ function shuffle(arr){
 // the unseen tail rather than dumped at the end in batch order.
 function placeQueue(){
   if(!queue.length) return;
+  // "Loading…" and the empty states are placeholders for the list, not items in
+  // it. Leaving one in place put a full screen of message above the first clip,
+  // so the feed opened one screen down and could be scrolled back up to it.
+  for(const m of feed.querySelectorAll(":scope > .msg")) m.remove();
   const tailStart = clips.length;
   const pending = queue;
   queue = [];
@@ -741,10 +917,10 @@ function fillRail(){
     "shown " + (c.shown || 0) + "×", "weight " + (c.weight ?? 1)]
     .filter(Boolean).join(" · ");
   $("likeBtn").classList.toggle("liked", !!c.liked);
-  $("likeBtn").innerHTML = c.liked ? "&#9829;" : "&#9825;";
+  $("likeBtn").setAttribute("aria-pressed", c.liked ? "true" : "false");
   // The star is its own thing: a clip can be liked, starred, both or neither.
   $("starBtn").classList.toggle("starred", !!c.starred);
-  $("starBtn").innerHTML = c.starred ? "&#9733;" : "&#9734;";
+  $("starBtn").setAttribute("aria-pressed", c.starred ? "true" : "false");
   $("count").textContent = (idx + 1) + " / " + clips.length
     + (ONLY_USER ? " · only @" + ONLY_USER : "");
 }
@@ -754,6 +930,10 @@ function fillRail(){
 // the only way back on a desktop where the native controls are hidden.
 
 let scrubbing = false;
+// When the play state was last changed by a deliberate tap or key press. A seek
+// that lands on an unbuffered range can drop a playing clip into `paused`, and
+// resuming it is right -- unless the pause was the user's idea a moment ago.
+let userPaused = 0;
 
 function fmtTime(s){
   if(!isFinite(s) || s < 0) s = 0;
@@ -761,10 +941,20 @@ function fmtTime(s){
   return m + ":" + String(ss).padStart(2, "0");
 }
 
+function paintTbar(v){
+  const d = v.duration;
+  const fill = $("tbarFill");
+  if(!fill) return;
+  fill.style.width = (isFinite(d) && d > 0)
+    ? (Math.max(0, Math.min(1, v.currentTime / d)) * 100).toFixed(2) + "%"
+    : "0%";
+}
+
 function paintScrub(v){
   const d = v.duration;
   const known = isFinite(d) && d > 0;
   $("tDur").textContent = known ? fmtTime(d) : "0:00";
+  paintTbar(v);
   if(scrubbing) return;                 // the user is holding the thumb
   $("tCur").textContent = fmtTime(v.currentTime);
   if(known) $("scrub").value = String(Math.round(v.currentTime / d * 1000));
@@ -840,8 +1030,8 @@ function openProfile(username, platform){
 function paintFavBtn(){
   const b = $("favBtn");
   if(!b) return;
-  b.innerHTML = starredOnly ? "&#9733;" : "&#9734;";
   b.classList.toggle("on", starredOnly);
+  b.setAttribute("aria-pressed", starredOnly ? "true" : "false");
   b.title = starredOnly
     ? "Showing starred only — tap for everything"
     : "Starred only — the clips you have starred";
@@ -850,12 +1040,9 @@ function paintFavBtn(){
 function paintMute(){
   const b = $("muteBtn");
   if(!b) return;
-  b.innerHTML = wantSound ? "&#128266;" : "&#128263;";
+  b.classList.toggle("on", wantSound);
   b.setAttribute("aria-label", wantSound ? "Mute" : "Unmute");
   b.title = wantSound ? "Mute (m)" : "Unmute (m)";
-  b.classList.toggle("on", wantSound);
-  // The icon carries this on its own now: the word under it was one of the labels
-  // the buttons do not have any more.
 }
 
 function setSound(on){
@@ -914,27 +1101,141 @@ function skipButtonTap(dir){
   }, 420);
 }
 
-function seekTo(seconds){
-  const v = current() && current().querySelector("video");
+function seekTo(seconds, opts){
+  const v = (opts && opts.video) || (current() && current().querySelector("video"));
   if(!v) return;
   const d = v.duration;
   const t = isFinite(d) && d > 0 ? Math.max(0, Math.min(d - 0.05, seconds)) : Math.max(0, seconds);
+  const wasPlaying = !v.paused && !v.ended;
+  const resume = () => {
+    if(!wasPlaying || Date.now() - userPaused < 800) return;
+    if(v.paused && !v.ended) v.play().catch(()=>{});
+  };
   try{ v.currentTime = t; }catch(e){}
-  paintScrub(v);
+  resume();                       // a clean seek leaves the play state alone
+  if(wasPlaying && v.paused){
+    // Landed on an unbuffered range: the browser stops until it has the new
+    // position. Put the state back once it does, rather than leaving the clip
+    // sitting still with no explanation.
+    v.addEventListener("seeked", resume, {once:true});
+    setTimeout(resume, 260);
+  }
+  if(!(opts && opts.quiet)) paintScrub(v);
 }
 
-$("scrub").addEventListener("pointerdown", () => { scrubbing = true; });
+// ---- the row (mouse) ----------------------------------------------------
+// Dragging is a position, not a play/pause: the state is remembered on
+// pointerdown and restored on release, so playback carries on through the drag.
+
+let scrubWasPlaying = false;
+
+function scrubVideo(){
+  return current() && current().querySelector("video");
+}
+
+function beginScrub(){
+  const v = scrubVideo();
+  scrubbing = true;
+  scrubWasPlaying = !!(v && !v.paused && !v.ended);
+}
+
+function endScrub(){
+  scrubbing = false;
+  const v = scrubVideo();
+  if(v && scrubWasPlaying && v.paused && !v.ended){
+    if(!userPaused || Date.now() - userPaused > 800) v.play().catch(()=>{});
+  }
+  scrubWasPlaying = false;
+}
+
+$("scrub").addEventListener("pointerdown", beginScrub);
 $("scrub").addEventListener("input", () => {
-  const v = current() && current().querySelector("video");
+  const v = scrubVideo();
   if(!v) return;
   const d = v.duration;
   if(!(isFinite(d) && d > 0)) return;
   v.currentTime = (Number($("scrub").value) / 1000) * d;
   $("tCur").textContent = fmtTime(v.currentTime);
+  paintTbar(v);
+  if(scrubWasPlaying && v.paused && !v.ended) v.play().catch(()=>{});
 });
-const endScrub = () => { scrubbing = false; };
 $("scrub").addEventListener("change", endScrub);
+$("scrub").addEventListener("pointerup", endScrub);
 window.addEventListener("pointerup", endScrub);
+// The row is a control strip, not part of the video: nothing that starts in it
+// should reach the clip and toggle playback.
+for(const ev of ["pointerdown", "click"]){
+  $("scrubWrap").addEventListener(ev, e => e.stopPropagation());
+}
+
+// ---- the strip (thumb) --------------------------------------------------
+// An unaimed drag along the bottom edge. Absolute position from the strip's own
+// width, so a drag that wanders off the edge keeps tracking instead of jumping.
+
+let tbarDown = false, tbarWasPlaying = false;
+
+function tbarSeek(clientX){
+  const v = scrubVideo();
+  if(!v) return;
+  const d = v.duration;
+  if(!(isFinite(d) && d > 0)) return;
+  const r = $("tbar").getBoundingClientRect();
+  const f = Math.max(0, Math.min(1, (clientX - r.left) / Math.max(1, r.width)));
+  v.currentTime = Math.min(Math.max(0, d - 0.05), f * d);
+  paintTbar(v);
+  if(tbarWasPlaying && v.paused && !v.ended && Date.now() - userPaused > 800)
+    v.play().catch(()=>{});
+}
+
+$("tbar").addEventListener("pointerdown", e => {
+  const v = scrubVideo();
+  if(!v) return;
+  tbarDown = true;
+  tbarWasPlaying = !v.paused && !v.ended;
+  try{ $("tbar").setPointerCapture(e.pointerId); }catch(_){}
+  tbarSeek(e.clientX);
+  e.preventDefault();
+});
+$("tbar").addEventListener("pointermove", e => {
+  if(tbarDown) tbarSeek(e.clientX);
+});
+const endTbar = () => {
+  if(!tbarDown) return;
+  tbarDown = false;
+  const v = scrubVideo();
+  if(v && tbarWasPlaying && v.paused && !v.ended && Date.now() - userPaused > 800)
+    v.play().catch(()=>{});
+  tbarWasPlaying = false;
+};
+$("tbar").addEventListener("pointerup", endTbar);
+$("tbar").addEventListener("pointercancel", endTbar);
+
+// ---- fullscreen ---------------------------------------------------------
+// The phone's own full-screen player comes with a draggable timeline, a volume
+// slider and the system's picture-in-picture, all of which are better than
+// anything this page can draw in a 390px strip. Hand over to it on request.
+
+function toggleFullscreen(){
+  const v = scrubVideo();
+  if(!v) return;
+  const doc = document;
+  const inFs = doc.fullscreenElement || doc.webkitFullscreenElement;
+  if(inFs){
+    const exit = doc.exitFullscreen || doc.webkitExitFullscreen;
+    if(exit){ try{ exit.call(doc); }catch(e){} }
+    return;
+  }
+  if(typeof v.webkitEnterFullscreen === "function"){
+    try{ v.webkitEnterFullscreen(); return; }catch(e){ /* fall through */ }
+  }
+  const ask = v.requestFullscreen || doc.documentElement.requestFullscreen;
+  if(ask){
+    const target = v.requestFullscreen ? v : doc.documentElement;
+    Promise.resolve(ask.call(target)).catch(() => toast("Fullscreen is not available here"));
+    return;
+  }
+  toast("Fullscreen is not available here");
+}
 
 // ---- scrolling -----------------------------------------------------------
 
@@ -1015,8 +1316,11 @@ $("trashBtn").onclick = async () => {
   const c = currentData();
   if(!c) return;
   const el = current();
-  await act("trash");
-  // Drop it from this feed immediately; the file stays on disk.
+  const r = await act("trash");
+  // The clip is MOVED to the profile's trash folder, so the gallery's All Trash
+  // lists it and Restore there brings it back. If the move failed, keep it in
+  // the feed rather than pretending it went somewhere.
+  if(r && r.ok === false){ toast(r.error || "Could not trash that"); return; }
   el.style.transition = "opacity .18s ease";
   el.style.opacity = "0";
   setTimeout(() => {
@@ -1025,7 +1329,7 @@ $("trashBtn").onclick = async () => {
     if(!clips.length) fetchMore();
     else playCurrent();
   }, 190);
-  toast("Trashed");
+  toast(r && r.moved ? "Trashed — it is in Gallery › 🗑 All Trash" : "Trashed");
 };
 
 // "More / less often" is about the PERSON, not the one clip. One video landing
@@ -1090,6 +1394,134 @@ $("favBtn").onclick = () => {
   fetchMore();
 };
 
+// ---- feed tuning ---------------------------------------------------------
+// The weights are rows in profiles.db, not values in this page. Reading them
+// back is what makes that checkable: before this sheet, "more from this person"
+// only ever produced a toast, so a saved setting was indistinguishable from one
+// that had been forgotten.
+
+function weightLabel(w){
+  return "×" + Number(w).toFixed(2).replace(/\.?0+$/, "");
+}
+
+function paintWeights(r){
+  const rows = (r && r.profiles) || [];
+  const st = (r && r.stats) || {};
+  const bits = [];
+  if(st.total) bits.push(st.total.toLocaleString() + " clips in rotation");
+  if(st.liked) bits.push(st.liked + " liked");
+  if(st.starred) bits.push(st.starred + " starred");
+  $("sheetSub").textContent = (bits.length ? bits.join(" · ") + ". " : "")
+    + "Kept on the server, so a reload, a restart or another device picks up "
+    + "exactly this. Weight 1 means no opinion.";
+
+  const list = $("wlist");
+  list.innerHTML = "";
+  if(!rows.length){
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "Nothing tuned yet. On a clip, the up arrow asks for more of "
+      + "that person and the down arrow for less; whatever you press shows up here.";
+    list.appendChild(p);
+    return;
+  }
+  const step = Number(r.step) || 1.6, lo = Number(r.min) || 0.1, hi = Number(r.max) || 5;
+  for(const it of rows){
+    const row = document.createElement("div");
+    row.className = "wrow";
+
+    const box = document.createElement("div");
+    box.className = "w";
+    const nm = document.createElement("div");
+    nm.className = "nm";
+    nm.textContent = "@" + it.profile;
+    const mt = document.createElement("div");
+    mt.className = "mt";
+    const n = Number(it.clips) || 0;
+    mt.textContent = (it.platform === "tiktok" ? "TikTok" : "Instagram")
+      + " · " + n + (n === 1 ? " clip" : " clips");
+    box.append(nm, mt);
+
+    const val = document.createElement("span");
+    val.className = "val";
+    val.textContent = weightLabel(it.weight);
+
+    const less = document.createElement("button");
+    less.type = "button";
+    less.textContent = "−";
+    less.title = "Show less often";
+    less.setAttribute("aria-label", "Show less of @" + it.profile);
+    less.onclick = () => saveWeight(it, Math.max(lo, it.weight / step));
+
+    const zero = document.createElement("button");
+    zero.type = "button";
+    zero.className = "zero";
+    zero.textContent = "reset";
+    zero.title = "Back to normal";
+    zero.onclick = () => resetWeight(it);
+
+    const more = document.createElement("button");
+    more.type = "button";
+    more.textContent = "+";
+    more.title = "Show more often";
+    more.setAttribute("aria-label", "Show more of @" + it.profile);
+    more.onclick = () => saveWeight(it, Math.min(hi, it.weight * step));
+
+    row.append(box, val, less, zero, more);
+    list.appendChild(row);
+  }
+}
+
+async function openTune(){
+  const sheet = $("sheet");
+  sheet.classList.add("open");
+  $("wlist").innerHTML = '<p class="empty">Reading…</p>';
+  try{
+    paintWeights(await post("/api/shorts/weights", {op: "list"}));
+  }catch(e){
+    $("wlist").innerHTML = '<p class="empty">Could not read the feed settings.</p>';
+  }
+}
+
+function closeTune(){
+  $("sheet").classList.remove("open");
+}
+
+async function saveWeight(it, w){
+  try{
+    const r = await post("/api/shorts/weights",
+      {op: "set", platform: it.platform, profile: it.profile, weight: w});
+    if(r && r.ok) paintWeights(r); else toast("Could not save that");
+  }catch(e){ toast("Could not save that"); }
+}
+
+async function resetWeight(it){
+  try{
+    const r = await post("/api/shorts/weights",
+      {op: "reset", platform: it.platform, profile: it.profile});
+    if(r && r.ok) paintWeights(r); else toast("Could not save that");
+  }catch(e){ toast("Could not save that"); }
+}
+
+$("tuneBtn").onclick = openTune;
+$("fsBtn").onclick = toggleFullscreen;
+$("wclose").onclick = closeTune;
+$("sheet").addEventListener("click", e => {
+  // The backdrop closes; the card does not.
+  if(e.target === $("sheet")) closeTune();
+});
+$("wreset").onclick = async () => {
+  if(!confirm("Forget every favour and damp? The clips stay; only the weighting goes."))
+    return;
+  try{
+    const r = await post("/api/shorts/weights", {op: "reset"});
+    if(r && r.ok){
+      paintWeights(r);
+      toast((r.cleared ? r.cleared + " cleared" : "Nothing to reset"));
+    }else toast("Could not reset that");
+  }catch(e){ toast("Could not reset that"); }
+};
+
 // ---- keyboard ------------------------------------------------------------
 
 document.addEventListener("keydown", e => {
@@ -1112,7 +1544,9 @@ document.addEventListener("keydown", e => {
   }else if(e.key === " "){
     e.preventDefault();
     const v = current()?.querySelector("video");
-    if(v){ v.paused ? v.play().catch(()=>{}) : v.pause(); }
+    if(v){ if(v.paused) v.play().catch(()=>{}); else { userPaused = Date.now(); v.pause(); } }
+  }else if(e.key === "Escape"){
+    if($("sheet").classList.contains("open")){ e.preventDefault(); closeTune(); }
   }else if(e.key === "m"){
     // Same as the rail's mute button, which is the phone's only way in.
     e.preventDefault();
@@ -1128,7 +1562,9 @@ document.addEventListener("keydown", e => {
 const restored = loadSession();
 if(restored){
   seen = Array.isArray(restored.seen) ? restored.seen : [];
-  starredOnly = !!restored.starredOnly;
+  // saveSession() writes `starred`; this used to read `starredOnly`, so the
+  // starred filter was remembered nowhere and came back off on every resuming.
+  starredOnly = !!restored.starred;
   paintFavBtn();
 }
 paintMute();

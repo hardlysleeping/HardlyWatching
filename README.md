@@ -539,7 +539,16 @@ than assumed to be a reel.
 Videos start **muted**, because browsers block autoplay with sound. Tap a clip to
 play or pause it.
 
-Add it to your home screen and it runs as an app.
+Add it to your home screen and it runs as an app. The app ships its own icon set
+— `icon-192.png`, `icon-512.png`, a maskable 512 for Android's adaptive
+launcher, `apple-touch-icon.png` for iOS (which ignores manifest icons) and a
+`favicon.ico` for the tab — all drawn from one mark by `make_icons.py`. Change
+the colours there and re-run it; do not hand-edit five files.
+
+There is no service worker, so the installed copy still needs the server
+running, and nothing is cached. That is deliberate: a queue that showed a stale
+job state, or a gallery answering from a cache while files moved underneath it,
+would be worse than a spinner.
 
 ---
 

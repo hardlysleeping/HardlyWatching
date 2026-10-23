@@ -45,6 +45,17 @@ versioning is [SemVer](https://semver.org/).
   you back on Download. Pasting that link elsewhere opens the same page.
 
 ### Fixed
+- **The installed app has a real icon.** Both manifests declared a single
+  `data:` URL SVG at 192px, `index.html` declared no icon at all and
+  `/favicon.ico` was a 404 — so Android's install UI and splash screen had
+  nothing at 512, iOS fell back to a screenshot of the page, and the browser tab
+  showed a blank. `make_icons.py` now draws the same mark into a 192, a 512, a
+  maskable 512 (background to the edges, artwork inside the safe zone) and an
+  opaque 180 for the home screen, plus a proper multi-size `.ico`; the server
+  serves all of them and both manifests and both pages point at the files.
+  Chrome reports the manifest and the install criteria as error-free with the
+  new set. There is still no service worker, so nothing is cached and the
+  installed copy needs the server — see the README for why that is deliberate.
 - **A throttled session is no longer reported as a crash.** When instaloader
   cannot verify the saved session it falls back to asking for a password; in the
   queue there is no terminal to ask, so `getpass` died with `EOFError` and the
