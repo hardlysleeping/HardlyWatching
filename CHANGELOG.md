@@ -5,6 +5,10 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] — 2026-10-23
+
 ### Added
 - **Bookmarks, with categories you name.** A bookmark is a second, higher
   intention than the heart: the heart says *I like this*, the bookmark says *find
@@ -236,10 +240,6 @@ versioning is [SemVer](https://semver.org/).
   profile's folder, and that warning on its own can never set a run's error,
   its retry, or a fatal verdict. A profile with no picture yet still asks for
   it, so the gallery keeps getting one.
-
-## [0.2.0] — 2026-10-21
-
-### Added
 - **Selection mode in the gallery.** *☑ Select* (or holding a tile) turns tapping
   into picking: choose as many tiles as you like and then Star, Like, Favourite,
   Trash them — or Restore from the trash view, or Un-favourite from the favourites
@@ -345,8 +345,6 @@ versioning is [SemVer](https://semver.org/).
 - **Start on login** is a toggle in settings rather than something you have to
   remember. It reads and sets the systemd unit, so the terminal and the app
   never disagree.
-
-### Changed
 - **The Sessions panel follows the platform tab, and TikTok can hold more than one
   login.** TikTok had a single session slot, so saving a second account silently
   destroyed the first, and the panel opened the Instagram account list whichever tab
@@ -433,8 +431,6 @@ versioning is [SemVer](https://semver.org/).
   afterwards. The strip is gated on the pointer that arrives, not on a guess about
   the device, and is removed from the layout entirely where nothing can hover — a
   phone keeps the swipe and never gets a dead band down its edge.
-
-### Fixed
 - **TikTok profile pictures now reach the queue cards.** They were being withheld
   by a rule written when TikTok had no pictures at all, so the cache, the endpoint
   and the gallery could all have them while the queue showed none. The one-time
