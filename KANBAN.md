@@ -36,9 +36,12 @@ code, they are not on the MVP path because neither can be built or verified on t
 
 ## In Progress
 
-| Card | Row | Item | Owner | Branch |
-|---|---|---|---|---|
-| — | — | wave 1 dispatching | — | — |
+| Card | Row | Item | Owner | Branch | Worktree |
+|---|---|---|---|---|---|
+| M0-TESTS | 1–2 | Sandbox harness + API smoke suite | agent sa-0 | `task/m0-tests` | `~/.hermes/worktrees/hwa/m0-tests` |
+| M1-LOCK | 6–8, 23 | Instance lock, `--attach`, `--no-browser`, `/api/version` | agent sa-1 | `task/m1-lock` | `~/.hermes/worktrees/hwa/m1-lock` |
+| M2-SCAFFOLD | 9–10 | Rust + Tauri 2 shell loading the real UI | agent sa-2 | `task/m2-scaffold` | `~/.hermes/worktrees/hwa/m2-scaffold` |
+| M2-SIDECAR | 11 | PyInstaller onedir sidecar | agent sa-3 | `task/m2-sidecar` | `~/.hermes/worktrees/hwa/m2-sidecar` |
 
 ## Review
 
