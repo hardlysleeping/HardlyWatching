@@ -42,6 +42,9 @@
   h1 span{background:linear-gradient(90deg,var(--accent),var(--accent-2));
     -webkit-background-clip:text;background-clip:text;color:transparent}
   .sub{color:var(--muted);font-size:13px}
+  /* The header is one line now that the description is gone, so it needs its own
+     breathing room above the tabs -- the chip used to sit right on top of them. */
+  header{margin-bottom:18px}
   /* Platform badge beside the app name: the title is the product, and which
      platform you are looking at is a detail, not the heading. */
   .hdrplat{font-size:12px;font-weight:600;letter-spacing:.02em;vertical-align:middle;
@@ -51,6 +54,10 @@
   .chip{font-size:12px;padding:4px 10px;border-radius:999px;background:var(--panel-2);
     border:1px solid var(--line);color:var(--muted);display:inline-flex;align-items:center;gap:6px}
   .chip b{color:var(--text);font-weight:600}
+  /* Drive space is the one status worth seeing on every tab, so on a wide window
+     it holds the right of the header. On a phone it is centred instead -- see the
+     640px block: right-aligned it sat alone on its own ragged line above the tabs. */
+  header #diskChip{margin-left:auto;align-self:center}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
   .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
   .dot.off{background:var(--err);box-shadow:0 0 8px var(--err)}
@@ -72,6 +79,25 @@
      a warning, so a misclick is visible before it happens rather than after. */
   button.small.safe{border-color:var(--line)}
   button.small.danger{border-color:#b4534b;color:#e8a49c}
+  /* Two controls in the Download bar are symbols: start/pause for the queue and a
+     folder door. Written out they were the longest words in the row, they changed
+     length with the queue's state, and they pushed their neighbours about.
+     (.iconbtn is already the card links' class -- this one is its own.) */
+  .barbtn{display:inline-flex;align-items:center;justify-content:center;
+    width:34px;height:34px;padding:0;border-radius:9px;flex:none}
+  .barbtn svg{width:17px;height:17px;display:block;fill:currentColor}
+  .barbtn.primary{background:linear-gradient(90deg,var(--accent),var(--accent-2));
+    border-color:transparent;color:#fff}
+  #runBtn .ico-pause{display:none}
+  #runBtn[data-act="pause"] .ico-play{display:none}
+  #runBtn[data-act="pause"] .ico-pause{display:block}
+  /* A cooling-down resume keeps its warning: the words are gone, so the state is
+     carried by a ring around the symbol instead. */
+  #runBtn[data-cool="1"]{box-shadow:0 0 0 2px #5a4a1e}
+  /* The two queue controls travel together, pushed clear of the status chips, so
+     the pause symbol is never read as another chip and the folder door is the
+     last thing on the line however many counters are showing. */
+  .baractions{display:flex;align-items:center;gap:14px;margin-left:auto}
   /* A settings control that is switched on: an accent border reads as "on" in a
      row of otherwise identical small buttons. */
   button.small.on{border-color:var(--accent)}
@@ -113,8 +139,8 @@
   .settings>summary::before{content:"▸";color:var(--muted);transition:transform .15s}
   .settings[open]>summary::before{transform:rotate(90deg)}
   /* scrollIntoView lines an element up with the very top of the viewport, which
-     in the installed app is behind the status bar -- the Settings button landed
-     its own summary under the clock. Keep the inset clear when scrolling to one. */
+     in the installed app is behind the status bar. Keep the inset clear for any
+     future jump to one of these sections. */
   .settings{scroll-margin-top:calc(env(safe-area-inset-top) + 10px)}
   .sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));
     gap:4px 22px;padding:4px 0 15px}
@@ -305,6 +331,26 @@
     font-family:inherit;transition:.15s;display:inline-block;text-decoration:none}
   .tab:hover{border-color:var(--line-2);color:var(--text)}
   .tab.active{background:var(--panel-3);border-color:var(--accent);color:var(--text);font-weight:600}
+  /* A phone stacks the header instead of wrapping it raggedly: the name, the line
+     under it and the drive chip each get their own centred row, and the three tabs
+     share the width in equal columns so the gaps match on both sides of the middle
+     one. Before this the chip hung off the right edge of the line above the tabs
+     and the tabs sat in a left-hand cluster with dead space beside Shorts. */
+  @media (max-width:640px){
+    header{flex-direction:column;align-items:center;text-align:center;gap:9px;
+      margin-bottom:20px}
+    header #diskChip{margin-left:0}
+    .tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+    .tab{text-align:center;padding:8px 6px}
+    /* The gallery head is a title, a count and two sort buttons on one line, which
+       on a phone wrapped into three thin columns of text. Title and count take a
+       row each; the buttons keep a row of their own, right-aligned, on one line. */
+    .gallery-head{flex-wrap:wrap;gap:7px 9px}
+    .gallery-head > b{flex:1 1 100%}
+    #galleryHint{flex:1 1 100%;margin-left:0 !important}
+    #sortNameBtn{margin-left:auto !important}
+    #sortNameBtn,#sortCountBtn{white-space:nowrap}
+  }
 
   /* ---- shorts tab -------------------------------------------------------
      The feed is a phone-shaped column, like TikTok on the web. It lives in an
@@ -632,14 +678,13 @@
 <div class="wrap">
   <header>
     <h1>HardlyWatching <span id="hdrPlatform" class="hdrplat">Instagram</span></h1>
-    <div class="sub" id="hdrSub">Instagram and TikTok → one queue, one gallery</div>
-    <!-- Drive space sits in the header, not the Download bar, so it stays on
-         screen on every tab. A drive filling up is the one status worth seeing
-         wherever you are, and the Gallery is where you go to delete things. -->
-    <button class="small" id="hdrSettings" style="margin-left:auto;align-self:center"
-            title="Open the download settings">Settings</button>
-    <span class="chip" id="diskChip"
-         title="Free space in the download folder">—</span>
+    <!-- Two things only: the name (with the platform badge, Download tab only)
+         and the drive space. The "paste profiles -> …" line under the name said
+         what the paste box below already says, and it cost a row on every tab.
+         Drive space stays here, not in the Download bar, so it is on screen
+         wherever you are. No Settings button: the Download settings section
+         leads with its own summary line in the tab it belongs to. -->
+    <span class="chip" id="diskChip" title="Free space in the download folder">—</span>
   </header>
 
   <div class="tabs">
@@ -707,10 +752,21 @@
     <span class="chip" id="sessChipWrap"><span id="sessDot" class="dot"></span><span id="sessTxt">checking session…</span></span>
     <button class="small" id="sessBtn">Sessions</button>
     <span class="chip" id="statChip">—</span>
-    <button class="small primary" id="runBtn">Start</button>
-    <button class="small" id="openRoot">Open folder</button>
     <button class="small" id="retryAllBtn" style="display:none">Retry all failed</button>
-    <button class="small" id="clearBtn" style="display:none">Clear finished</button>
+    <!-- Start/pause and the folder door, kept together on the right of the row.
+         No "Clear finished" here: a finished profile is still the handle you grab
+         more videos from, so the list is not rubbish to be swept up. -->
+    <span class="baractions">
+      <button class="barbtn primary" id="runBtn" data-act="play"
+              title="Start downloading the queue" aria-label="Start">
+        <svg class="ico-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.6 5.3v13.4L19.2 12z"/></svg>
+        <svg class="ico-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="5" width="3.7" height="14" rx="1.2"/><rect x="13.3" y="5" width="3.7" height="14" rx="1.2"/></svg>
+      </button>
+      <button class="barbtn" id="openRoot" title="Open this platform's folder"
+              aria-label="Open this platform's folder">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.2A1.7 1.7 0 0 1 4.7 5.5h4.1l2 2.4h8.5A1.7 1.7 0 0 1 21 9.6v8.2a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 17.8z"/></svg>
+      </button>
+    </span>
   </div>
 
   <div class="err-box" id="errBox"></div>
@@ -1892,28 +1948,34 @@ function paintRunButton(st){
   const w = platWait(st, activePlatform) || {};
   const pacing = w.kind === "pacing";
   const cd = tt ? 0 : (st.cooldown_remaining || 0);
+  // The control is a symbol now, so the state lives in data-act (which glyph),
+  // data-cool (the amber ring) and the accessible name. Nothing here changes the
+  // button's width, so the row no longer moves when the queue does.
+  const setRun = (act, label, title, cool) => {
+    run.dataset.act = act;
+    run.dataset.cool = cool ? "1" : "0";
+    run.classList.toggle("primary", act === "play");
+    run.setAttribute("aria-label", label);
+    run.title = title || label;
+  };
   if(paused){
-    run.textContent = cd > 0 ? "Resume (cooling down)" : "Resume";
-    run.className = "small primary";
-    run.title = cd > 0
-      ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
-      : "Resume this queue";
+    setRun("play", cd > 0 ? "Resume (cooling down)" : "Resume this queue",
+      cd > 0 ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
+             : "Resume this queue", cd > 0);
   } else if(cur || pacing){
-    run.textContent = "Pause";
-    run.className = "small";
-    run.title = cur
-      ? "Pause — stops the profile downloading now"
-      : "Pause — stops between profiles; the rest of the gap is dropped";
+    setRun("pause", "Pause",
+      cur ? "Pause — stops the profile downloading now"
+          : "Pause — stops between profiles; the rest of the gap is dropped");
   } else if((c.queued || 0) > 0){
-    run.textContent = tt ? "Start TikTok" : "Start";
-    run.className = "small primary";
-    run.title = tt
-      ? "Start the TikTok queue, which runs alongside Instagram"
-      : "Start downloading the queue";
+    setRun("play", tt ? "Start TikTok" : "Start",
+      tt ? "Start the TikTok queue, which runs alongside Instagram"
+         : "Start downloading the queue");
   } else {
-    run.textContent = tt ? "Start TikTok" : "Start";
-    run.className = "small primary";
-    run.disabled = true; run.title = "Nothing queued yet";
+    run.dataset.act = "play";
+    run.classList.add("primary");
+    run.setAttribute("aria-label", tt ? "Start TikTok" : "Start");
+    run.title = "Nothing queued yet";
+    run.disabled = true;
   }
   run.disabled = !((c.queued || 0) > 0 || cur || paused || pacing);
 }
@@ -2169,7 +2231,6 @@ function render(st){
 
   // Only show cleanup actions when there is something to clean up.
   $("retryAllBtn").style.display = (c.failed>0) ? "" : "none";
-  $("clearBtn").style.display = ((c.done||0)+(c.failed||0)+(c.cancelled||0)) ? "" : "none";
   const ep = $("emptyPath"); if(ep) ep.textContent = st.output_root;
   renderRoots(st.roots || []);
   // The removed list belongs to the Instagram queue. Showing it on the TikTok
@@ -3210,10 +3271,6 @@ $("retryAllBtn").onclick = async () => {
   const r = await post("/api/retry-all",{});
   toast(`Re-queued ${r.requeued}`); tick();
 };
-$("clearBtn").onclick = async () => {
-  const r = await post("/api/clear-finished",{});
-  toast(`Cleared ${r.removed} entries`); tick();
-};
 $("ttAllPlus").onclick = ttRaiseAll;
 $("doneSortBtn").onclick = cycleDoneSort;
 
@@ -3279,15 +3336,6 @@ buildSettings();
 applySettingsPlatform("ig");
 setShowAllSettings(showAllSettings);   // paint the toggle from the saved value
 
-// A quiet way into the settings from any tab: switch to Download and open the
-// section, instead of having to find the tab and then the disclosure triangle.
-$("hdrSettings").onclick = () => {
-  showTab("queue");
-  const box = $("settingsBox");
-  if(!box) return;
-  box.open = true;
-  requestAnimationFrame(() => box.scrollIntoView({behavior:"smooth", block:"start"}));
-};
 $("showAllSettingsBtn").onclick = () => setShowAllSettings(!showAllSettings);
 loadAutostart();
 // One header painter for the whole page. Leaving the Download tab's line to the
@@ -3366,25 +3414,15 @@ const knownHandles = new Map();
 let hiddenByTab = [];
 let inOtherTab = false;
 
-// The platform badge and the "paste profiles" line only describe the Download
-// tab. Painting them while Gallery or Shorts is open says the wrong thing.
+// The platform badge only describes the Download tab, so it is hidden on the
+// other two. It is the whole header now: the description line that used to sit
+// under it repeated what the paste box says and cost a row on every tab.
 function paintHeader(tab){
-  const hp = $("hdrPlatform"), hs = $("hdrSub");
-  if(!hp || !hs) return;
-  if(tab === "gallery"){
-    hp.style.display = "none";
-    hs.textContent = "everything downloaded, grouped by profile";
-  } else if(tab === "shorts"){
-    hp.style.display = "none";
-    hs.textContent = "Instagram reels and TikTok videos, one after another";
-  } else {
-    hp.style.display = "";
-    const ig = activePlatform === "instagram";
-    hp.textContent = ig ? "Instagram" : "TikTok";
-    hs.textContent = ig
-      ? "paste profiles → queue runs one at a time, auto-resumes on rate limits"
-      : "paste a profile or your following list → videos download one profile at a time";
-  }
+  const hp = $("hdrPlatform");
+  if(!hp) return;
+  if(tab === "gallery" || tab === "shorts"){ hp.style.display = "none"; return; }
+  hp.style.display = "";
+  hp.textContent = activePlatform === "instagram" ? "Instagram" : "TikTok";
 }
 
 // Remember where you were, in the URL.
@@ -3909,60 +3947,92 @@ function changeFolderDialog(current){
   inp.focus();
 }
 
-// One button cycling A-Z -> Z-A -> most items -> fewest items. The choice
-// lives in localStorage so it survives a reload, and the button label always
-// says what the CURRENT order is (not what clicking will do), because that is
-// the question you actually ask when you look at the grid.
-const PROFILE_SORTS = [
-  {key:"az",    label:"A→Z",   title:"Sorted A to Z"},
-  {key:"za",    label:"Z→A",   title:"Sorted Z to A"},
-  {key:"most",  label:"most",  title:"Most items first"},
-  {key:"few",   label:"fewest",title:"Fewest items first"},
-];
-// Interval that repaints the grid while downloads are live; null when idle.
-let gTickLive = null;
-// Note: gSort above is the *photo* grid's shuffle order (random/newest/oldest).
-// This is the profiles list order, so it gets its own name.
-let gProfileSort = localStorage.getItem("gProfileSort") || "az";
-if(!PROFILE_SORTS.some(s => s.key === gProfileSort)) gProfileSort = "az";
+// Two buttons, one per axis: the name order and the item count. A single button
+// cycling A-Z -> Z-A -> most -> fewest took up to three taps to get back to where
+// you started, and its label could only ever name one of the two things it was
+// sorting by.
+//
+// Each button shows the direction IT sorts in, and is outlined when that axis is
+// the one in use -- so the pair reads as "sorted by this, this way". The axis you
+// are not using keeps its own direction, and all three choices survive a reload.
+const SORT_K_AXIS = "gSortAxis", SORT_K_NAME = "gSortNameDir", SORT_K_COUNT = "gSortCountDir";
+let gSortAxis = localStorage.getItem(SORT_K_AXIS) === "count" ? "count" : "name";
+let gSortNameDir = localStorage.getItem(SORT_K_NAME) === "za" ? "za" : "az";
+let gSortCountDir = localStorage.getItem(SORT_K_COUNT) === "few" ? "few" : "most";
 
-function profileSortIndex(){ return PROFILE_SORTS.findIndex(s => s.key === gProfileSort); }
-
-function cycleProfileSort(){
-  gProfileSort = PROFILE_SORTS[(profileSortIndex() + 1) % PROFILE_SORTS.length].key;
-  localStorage.setItem("gProfileSort", gProfileSort);
-  renderGallery();
+function saveSort(){
+  localStorage.setItem(SORT_K_AXIS, gSortAxis);
+  localStorage.setItem(SORT_K_NAME, gSortNameDir);
+  localStorage.setItem(SORT_K_COUNT, gSortCountDir);
 }
+
+// Fold the old single "gProfileSort" value (az|za|most|few) into the new shape
+// once, so the grid does not jump order on the first load after the change.
+(function adoptOldSort(){
+  const old = localStorage.getItem("gProfileSort");
+  if(!old) return;
+  if(!localStorage.getItem(SORT_K_AXIS)){
+    if(old === "za") gSortNameDir = "za";
+    if(old === "most" || old === "few"){ gSortAxis = "count"; gSortCountDir = old; }
+    saveSort();
+  }
+  localStorage.removeItem("gProfileSort");
+})();
 
 function sortProfiles(list){
   const byName = (a,b) => a.username.toLowerCase().localeCompare(b.username.toLowerCase());
   const out = [...list];
-  if(gProfileSort === "za")   out.sort((a,b) => byName(b,a));
-  else if(gProfileSort === "most") out.sort((a,b) => (b.count - a.count) || byName(a,b));
-  else if(gProfileSort === "few")  out.sort((a,b) => (a.count - b.count) || byName(a,b));
-  else out.sort(byName);
+  if(gSortAxis === "count"){
+    // Ties fall back to the name, so equal counts do not shuffle about.
+    out.sort((a,b) => (gSortCountDir === "most" ? b.count - a.count : a.count - b.count)
+      || byName(a,b));
+  } else {
+    out.sort(gSortNameDir === "az" ? byName : (a,b) => byName(b,a));
+  }
   return out;
 }
 
-// The sort button lives next to the gallery hint, so it is created once and
-// only its label changes.
-function buildSortBtn(){
+// The two buttons live next to the gallery hint, so they are created once and
+// only their labels change.
+function buildSortBtns(){
   const hint = $("galleryHint");
-  if(!hint || $("sortBtn")) return;
-  const b = document.createElement("button");
-  b.id = "sortBtn";
-  b.className = "small";
-  b.style.marginLeft = "9px";
-  b.onclick = cycleProfileSort;
-  hint.parentNode.insertBefore(b, hint.nextSibling);
+  if(!hint || $("sortNameBtn")) return;
+  const name = document.createElement("button");
+  name.id = "sortNameBtn";
+  name.className = "small";
+  name.style.marginLeft = "9px";
+  // Pressing the axis already in use reverses it; pressing the other one switches
+  // to it, keeping the direction it was left in.
+  name.onclick = () => {
+    if(gSortAxis === "name") gSortNameDir = (gSortNameDir === "az" ? "za" : "az");
+    else gSortAxis = "name";
+    saveSort(); paintSortBtns(); renderGallery();
+  };
+  const count = document.createElement("button");
+  count.id = "sortCountBtn";
+  count.className = "small";
+  count.style.marginLeft = "6px";
+  count.onclick = () => {
+    if(gSortAxis === "count") gSortCountDir = (gSortCountDir === "most" ? "few" : "most");
+    else gSortAxis = "count";
+    saveSort(); paintSortBtns(); renderGallery();
+  };
+  hint.parentNode.insertBefore(name, hint.nextSibling);
+  hint.parentNode.insertBefore(count, name.nextSibling);
 }
 
-function paintSortBtn(){
-  const b = $("sortBtn");
-  if(!b) return;
-  const s = PROFILE_SORTS[profileSortIndex()];
-  b.textContent = "sort: " + s.label;
-  b.title = s.title + " — click to change";
+function paintSortBtns(){
+  const name = $("sortNameBtn"), count = $("sortCountBtn");
+  if(!name || !count) return;
+  const byNameNow = gSortAxis === "name";
+  name.textContent = gSortNameDir === "az" ? "A→Z" : "Z→A";
+  name.title = (gSortNameDir === "az" ? "Names A to Z" : "Names Z to A")
+    + (byNameNow ? " — in use. Click to reverse." : " — click to sort by name.");
+  name.classList.toggle("on", byNameNow);
+  count.textContent = gSortCountDir === "most" ? "count ↓" : "count ↑";
+  count.title = (gSortCountDir === "most" ? "Most items first" : "Fewest items first")
+    + (!byNameNow ? " — in use. Click to reverse." : " — click to sort by count.");
+  count.classList.toggle("on", !byNameNow);
 }
 
 /* ---------- upload your own photos ---------- */
@@ -4723,8 +4793,8 @@ async function renderGallery(){
   const host = $("profileGrid");
   if(gProfile) return renderPhotos(gProfile, gPlatform);
   const mine = ++gReq;
-  buildSortBtn();
-  paintSortBtn();
+  buildSortBtns();
+  paintSortBtns();
   // A repaint while profiles are downloading must not flash the grid away,
   // so only show the loader when there is nothing on screen yet.
   if(!host.querySelector(".pcard")) host.innerHTML = `<div class="gempty">Loading…</div>`;

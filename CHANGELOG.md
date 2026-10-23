@@ -43,6 +43,32 @@ versioning is [SemVer](https://semver.org/).
   twin on the other site is skipped rather than counted twice.
 
 ### Changed
+- **The header is the name and the drive space, and nothing else.** The line under
+  the title ("paste profiles → queue runs one at a time…") restated what the paste
+  box says, cost a row on every tab and was the thing sitting over the menu, so it
+  is gone. So is the header **Settings** button: its whole job was to open the
+  Download settings section and scroll the page down to it, and that section
+  already leads with its own summary line in the tab it belongs to. On a phone the
+  name, the drive chip and the three tabs are centred, the tabs share the row in
+  three equal columns (the gaps either side of the middle one are identical), and
+  the chip has a real gap above the tabs instead of perching on them.
+- **The Download bar's two most-used controls are symbols.** Start/pause is one
+  button carrying ▶ and ❙❙, and the folder is an icon hard against the right edge;
+  the two travel together, held clear of the session and counter chips, and neither
+  changes width — the words used to move the whole row every time the queue's state
+  changed. A resume waiting out an Instagram limit keeps its warning as an amber
+  ring, since there is no text left to say it.
+- **"Clear finished" is gone from the bar.** A finished profile is still the handle
+  you grab more from, so a button that empties the list sat among the queue's
+  controls inviting the one irreversible click in the row. The Finished section
+  keeps its own Clear, where the list it clears is on screen.
+- **The gallery sort is two buttons, not one cycling four ways.** `A→Z` / `Z→A`
+  and `count ↓` / `count ↑` each name their own axis, the one in use is outlined,
+  and pressing the axis already in use reverses it. Getting from "most" to "Z→A"
+  used to take three taps, and the single label could only describe half of what it
+  sorted by. The unused axis keeps its own direction, and both survive a reload;
+  the old one-key value is read once so the grid does not jump on the first load
+  after this change.
 - **Adding photos defaults to the profile you are in.** The upload box's picker
   started on "(new name…)" no matter where you were, so putting a photo into the
   profile you had open meant finding that name again in a list of hundreds.
@@ -67,14 +93,19 @@ versioning is [SemVer](https://semver.org/).
   saved login, marks the one downloads use, and renames or deletes each.
 
 ### Fixed
+- **The gallery head no longer wraps into thin columns on a phone.** The title, the
+  profile count and the two sort buttons shared one line, so the title broke over
+  three lines, the count split its number away from its word, and the count button
+  stacked its arrow under its label. On a phone the title and the count take a line
+  each, and the two buttons share a row of their own, right-aligned, one line each.
 - **The installed app no longer opens under the phone's status bar.** The page asks
   for a translucent status bar, so on a phone home-screen install the web view
   draws full-screen and the heading, subtitle and tabs sat behind the clock and
   the notch. It now asks for `viewport-fit=cover` and pads the top (and the sides
   and bottom) by the device's safe-area insets, so the layout starts below the
   status bar and the home indicator; on a desktop browser the insets are zero and
-  nothing moves. Anything scrolled to — the Download settings section the header
-  button opens, the Excluded list — also keeps the inset clear instead of landing
+  nothing moves. Anything scrolled to — the Download settings
+  section, the Excluded list — also keeps the inset clear instead of landing
   its own heading under the clock.
 - **The heart agrees with itself in All Favourites and All Trash.** Un-favouriting
   from the enlarged view in an archive-wide list flipped the heart in the viewer
