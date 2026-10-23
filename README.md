@@ -369,8 +369,10 @@ profile and platform so actions land on the right folder. A merged card offers a
 split; a split is remembered, so the same-name rule will not quietly re-merge it.
 
 **Getting between the viewer and the gallery.** The viewer shows the account's
-picture next to the handle; tapping it opens that person's gallery with the clip
-still playing behind it, and going back to Shorts resumes where you were.
+picture and handle as one button at the bottom left; tapping either opens that
+person's gallery with the clip still playing behind it, and going back to Shorts
+resumes where you were. The gallery it opens is that profile on that platform, so
+a TikTok clip does not land you on the same handle's Instagram tab.
 
 **Shorts for one profile.** Open someone in the Gallery and then tap Shorts, and
 the feed is that person alone; go back to the profile list and it is everyone

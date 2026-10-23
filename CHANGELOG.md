@@ -45,6 +45,16 @@ versioning is [SemVer](https://semver.org/).
   you back on Download. Pasting that link elsewhere opens the same page.
 
 ### Fixed
+- **The profile chip in Shorts takes a tap.** The bottom bar is
+  `pointer-events:none` so its gradient never eats a swipe, and the chip inside
+  it never re-enabled pointer events — it painted perfectly and every tap went to
+  the video underneath, so the picture and handle did nothing. The chip now takes
+  pointers with a slightly larger touch target (padding, cancelled by an equal
+  negative margin, so nothing moves), and a real click at its centre opens
+  `?tab=gallery&profile=…&platform=…` with the right tab already chosen. Worth
+  saying plainly: this was tested before with `element.click()` in a script,
+  which dispatches straight to the node and never consults hit-testing, so it
+  passed while a finger could not reach it.
 - **The installed app has a real icon.** Both manifests declared a single
   `data:` URL SVG at 192px, `index.html` declared no icon at all and
   `/favicon.ico` was a 404 — so Android's install UI and splash screen had

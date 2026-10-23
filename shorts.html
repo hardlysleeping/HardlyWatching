@@ -135,6 +135,12 @@
     pointer-events:none;
   }
   .bottombar .who{font-size:.9rem;font-weight:600}
+  /* The bar is pointer-events:none so the gradient never eats a swipe, but that
+     also left the profile chip unclickable: it painted, and every tap went to
+     the video underneath. Give the chip its pointer back, and a slightly
+     bigger target than its 36px picture without moving it. */
+  .bottombar .who{pointer-events:auto;padding:4px 6px;margin:-4px -6px;
+    border-radius:12px;touch-action:manipulation}
   .bottombar .meta{font-size:.7rem;color:var(--muted);margin-top:.15rem}
 
   /* ---- icons ----
