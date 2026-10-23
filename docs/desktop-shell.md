@@ -158,5 +158,32 @@ see "State of desktop bundling on this machine" below for what actually ran.
 
 ## State of desktop bundling on this machine
 
-_Filled in from a real run — see the end of this file._
+### What actually ran (2026-10-23, this workstation)
+
+| Step | Result |
+|---|---|
+| `cargo build` on the host | **fails**: `libdbus-sys` panics, no `dbus-1.pc` — the -devel packages do not exist on Bazzite and must not be layered |
+| `src-tauri/build-in-container.sh build` | **succeeds**, `Finished dev profile in 1m 48s`, binary at `src-tauri/target/debug/hardlywatching` (199 MB debug build) |
+| Headless run, no `DISPLAY`/`WAYLAND_DISPLAY` | prints `server url`, `url source`, `is listening`, then `not opening a window`; exit 0 |
+| Windowed run against a sandbox on 8899 | window `main` 1280x860 created; screenshot capture is refused by GNOME (`Screenshot is not allowed`), so rendering was proven by traffic instead |
+| Did the page actually load and run? | **yes** — a logging proxy in front of the server recorded `GET / -> 200 369713B` (index.html), 13× `GET /api/state`, `GET /api/gallery`, `GET /api/autostart` and `POST /api/excluded` in 12 s. That is the page's own polling loop running inside the WebView |
+
+The proxy trick is the cheap way to prove a window rendered without looking at a screenshot:
+
+```bash
+# 8898 -> 8899, logs every request line to /tmp/hwa-proxy.log
+python3 /tmp/hwa-logproxy.py &
+HW_SERVER_URL=http://127.0.0.1:8898 ./target/debug/hardlywatching
+sort /tmp/hwa-proxy.log | uniq -c | sort -rn
+```
+
+A window that shows an error page makes one request or none; a window that rendered the UI keeps
+polling `/api/state` about every 1.2 s.
+
+### Not done yet
+
+`cargo tauri build --bundles deb|appimage` has not run — the container build only produced a debug
+binary. Bundling, and wiring the Python sidecar in as an `externalBin` (spawn-or-attach), is card
+M2-WIRE on the kanban.
+
 

@@ -34,7 +34,7 @@ TTY=()
 [ -t 0 ] && TTY=(-it)
 
 exec podman run --rm "${TTY[@]}" --network=host --security-opt label=disable \
-  --workdir /src \
+  --workdir /src/src-tauri \
   -v "$REPO":/src:z \
   -v hardlywatching-cargo:/cargo \
   -e CARGO_HOME=/cargo \
