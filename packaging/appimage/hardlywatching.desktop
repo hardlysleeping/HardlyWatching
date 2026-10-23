@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=HardlyWatching
+Comment=Start, stop and open the HardlyWatching archive app
+Exec=hardlywatching
+Icon=hardlywatching
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=instagram;tiktok;download;archive;panel;

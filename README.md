@@ -168,13 +168,22 @@ delete-for-good still goes to Trash / Recycle Bin.
 Optional Linux extras:
 
 ```bash
-./install-desktop-icon.sh     # launcher icon in your applications menu
-python3 control-panel.py      # small window: start / stop / restart / copy link
+./install-desktop-icon.sh                                       # menu icon -> control panel
+./control-panel.sh                                              # small window: start / stop / restart / copy link
 ```
 
-The control panel needs PyGObject. Without it you get a plain terminal prompt
-with the same commands (`start`, `stop`, `restart`, `status`, `open`, `quit`).
-Closing the panel does **not** stop the app.
+The menu icon opens the control panel, not a terminal. The panel draws with GTK4
+when PyGObject is installed, otherwise with Qt (PySide6, installed into `.venv`),
+otherwise with a plain terminal prompt. It re-launches itself on the venv's python
+so the toolkit is found however it was started. Closing the panel does **not**
+stop the app.
+
+On a machine without PyGObject (Fedora/Bazzite and other immutable distros ship
+neither PyGObject nor tkinter), install the panel's toolkit once:
+
+```bash
+.venv/bin/python3 -m pip install PySide6-Essentials
+```
 
 ### Reach it from your phone
 

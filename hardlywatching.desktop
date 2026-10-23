@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=HardlyWatching
-Comment=Archive Instagram profiles with instaloader
-Exec=__INSTALL_DIR__/start.sh
+Comment=Start, stop and open the HardlyWatching archive app
+Exec=__INSTALL_DIR__/control-panel.sh
 Path=__INSTALL_DIR__
-Icon=folder-download
-Terminal=true
+Icon=__INSTALL_DIR__/icon-192.png
+Terminal=false
 Categories=Network;FileTransfer;
-Keywords=instagram;instaloader;download;archive;
+Keywords=instagram;tiktok;instaloader;download;archive;panel;

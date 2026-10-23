@@ -20,6 +20,9 @@
 <meta name="apple-mobile-web-app-title" content="HardlyWatching">
 <style>
   :root {
+    /* Tells the browser to draw its own widgets dark: the native dropdowns and
+       scrollbars were rendering white against this theme. */
+    color-scheme: dark;
     --bg:#0b0d12; --panel:#14171f; --panel-2:#1b1f2a; --panel-3:#20242f;
     --line:#262b38; --line-2:#333a4a; --text:#e7ebf3; --muted:#8b94a7;
     --accent:#c13584; --accent-2:#f77737;
@@ -184,10 +187,29 @@
     .layout{grid-template-columns:minmax(0,1fr);gap:0}
     .col-left,.col-right{margin-bottom:8px}
   }
+  /* A job card: who (avatar + queue place), what (name, badges, counts, log),
+     and what you can do about it, in three columns.
+     `minmax(0,1fr)` on the middle column is load-bearing. A bare `1fr` refuses
+     to shrink below its content, so the action row -- which cannot shrink
+     either -- used to push straight out through the card's right edge as soon
+     as the window got narrow, leaving the buttons hanging off the card. */
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-    padding:12px 14px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
+    padding:12px 14px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;
+    gap:10px 14px;align-items:start;transition:border-color .12s}
+  .card:hover{border-color:var(--line-2)}
+  .card > .actions{display:flex;gap:4px;align-items:center;flex-wrap:wrap;
+    justify-content:flex-end;min-width:0}
+  /* Quiet actions. Seven boxed buttons in a row read as a wall and made every
+     card shout; these are labels until you hover them. */
+  .card > .actions .small,.card > .actions button.icon{
+    background:transparent;border-color:transparent;color:var(--muted);
+    padding:5px 8px;border-radius:7px}
+  .card > .actions .small:hover:not(:disabled),
+  .card > .actions button.icon:hover:not(:disabled){
+    background:var(--panel-2);border-color:var(--line);color:var(--text)}
+  .card > .actions button.danger:hover:not(:disabled){color:#fca5a5}
   .card.running{border-color:#2d4a7a;background:#141a26}
-  .thumb{width:40px;height:40px;border-radius:50%;object-fit:cover;flex:none;
+  .thumb{width:38px;height:38px;border-radius:50%;object-fit:cover;flex:none;
     border:1px solid var(--line-2);background:var(--panel-2)}
   .thumb.ph{display:flex;align-items:center;justify-content:center;
     font-size:15px;color:var(--muted);font-weight:600}
@@ -246,13 +268,20 @@
   .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .name{font-weight:650;font-size:15px}
   .meta{color:var(--muted);font-size:12.5px;margin-top:3px}
+  /* The card's detail line: message first, then each count as its own item, so
+     a narrow card wraps between facts instead of breaking after a stray "·". */
+  .metaline{display:flex;flex-wrap:wrap;gap:1px 10px;font-size:12.5px;
+    color:var(--muted);margin-top:3px}
+  .metaline .mmsg{color:var(--text)}
+  .card.failed .metaline .mmsg{color:#fca5a5}
   .actions{display:flex;gap:6px;align-items:center}
   /* Phones: a 3-column card squeezes the name to almost nothing and leaves the
      priority buttons floating mid-card. Give the name the full width (top) and
      drop the buttons onto their own row, resting at the bottom. */
   @media (max-width:640px){
-    .card{grid-template-columns:auto 1fr;align-items:start}
-    .card > .actions{grid-column:1/-1;justify-content:flex-end;margin-top:4px}
+    .card{grid-template-columns:auto minmax(0,1fr);align-items:start}
+    .card > .actions{grid-column:1/-1;justify-content:flex-end;margin-top:0;
+      border-top:1px solid var(--line);padding-top:6px}
   }
   .pill{font-size:11.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
   .pill.queued{color:var(--muted)}
@@ -405,6 +434,32 @@
     font-size:12.5px;font-family:inherit}
   .tlbar .tlrange{flex:1;min-width:180px;accent-color:var(--accent)}
   .tlbar .hint{margin-left:auto;white-space:nowrap}
+  /* Timeline name picker. A <select> cannot be searched and a `multiple` list of
+     600 handles is unreadable, so it is a button that opens a small panel: a
+     search box, a checkbox per profile, Apply. Built once and re-used, so its
+     listeners do not pile up every time the timeline repaints. */
+  .tlpick{position:relative;display:inline-flex}
+  .tlmenu{position:absolute;top:calc(100% + 6px);left:0;z-index:60;width:268px;
+    display:flex;flex-direction:column;gap:7px;padding:8px;
+    background:var(--panel);border:1px solid var(--line-2);border-radius:11px;
+    box-shadow:0 18px 40px rgba(0,0,0,.62)}
+  .tlmenu[hidden]{display:none}
+  .tlmenu input[type=search]{width:100%;background:var(--panel-3);color:var(--text);
+    border:1px solid var(--line);border-radius:7px;padding:6px 9px;
+    font:inherit;font-size:12.5px}
+  .tlmenu input[type=search]:focus{outline:none;border-color:var(--accent)}
+  .tlmenu .rows{max-height:250px;overflow-y:auto;display:flex;flex-direction:column;
+    gap:1px;padding:3px 0;border-top:1px solid var(--line);
+    border-bottom:1px solid var(--line)}
+  .tlmenu label{display:flex;align-items:center;gap:8px;padding:5px 7px;
+    border-radius:6px;font-size:12.5px;cursor:pointer;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .tlmenu label:hover{background:var(--panel-2)}
+  .tlmenu label input{accent-color:var(--accent);flex:none}
+  .tlmenu .foot{display:flex;align-items:center;gap:6px}
+  .tlmenu .foot .hint{margin:0;font-size:11.5px;white-space:nowrap}
+  .tlmenu .foot button.go{background:var(--accent);color:#fff;border-color:transparent}
+  .tlmenu .empty{padding:8px 6px;color:var(--muted);font-size:12px}
   .ptile-play{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.72);
     color:#fff;border-radius:5px;padding:1px 6px;font-size:11px;pointer-events:none}
   .ptile-part{position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.72);
@@ -447,7 +502,156 @@
     font-family:inherit}
   .gsearch input:focus{outline:none;border-color:var(--accent)}
   .gsearch input[type=search]::-webkit-search-cancel-button{display:none}
-  .gsearch .hint{color:var(--muted);font-size:12px}
+  .gsearch .hint{color:var(--muted);font-size:12px;margin-left:auto}
+  /* Segmented control for the profile view. Sits beside the search box because
+     it changes the same thing: what the list under it looks like. */
+  .gviews{display:inline-flex;align-items:center;gap:2px;padding:2px;flex:none;
+    background:var(--panel-3);border:1px solid var(--line);border-radius:8px}
+  .gviews button{background:transparent;border:0;color:var(--muted);cursor:pointer;
+    font:600 12px ui-sans-serif,system-ui,sans-serif;padding:4px 11px;border-radius:6px}
+  .gviews button:hover:not(.on){background:var(--panel-2);color:var(--text)}
+  .gviews button.on{background:var(--accent);color:#fff}
+  .gdens{margin-left:-2px}
+  .gdens button{min-width:26px;padding:4px 8px}
+  /* On a phone the search box and the two switchers no longer fit on one line:
+     the search takes the top row and the controls share the one below, instead
+     of pushing the page wider than the screen. */
+  @media (max-width:700px){
+    .gsearch{flex-wrap:wrap;row-gap:8px}
+    .gsearch input{flex:1 1 100%;max-width:none}
+  }
+
+  /* ---------- profile size ---------- */
+  /* Small is what each view already looked like, so nobody's list changes under
+     them. Large doubles the column floor: half as many profiles across, twice
+     the room for each. Media queries are not needed for that -- auto-fill does
+     the counting off the floor -- so the parts that cannot scale with a column
+     (hero height, avatar, padding) are the only things spelled out. */
+  #profileGrid.gview-grid.den-l{grid-template-columns:repeat(auto-fill,minmax(236px,1fr));
+    gap:14px}
+  #profileGrid.gview-card.den-l{grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
+    gap:18px}
+  .gview-card.den-l .pcard.big .hero{height:132px}
+  .gview-card.den-l .pcard.big .nm{font-size:14.5px}
+  .gview-card.den-l .pcard.big .av{width:38px;height:38px}
+  .gview-card.den-l .pcard.big .peekgrid{grid-template-columns:repeat(3,1fr);gap:5px}
+  #profileGrid.gview-list.den-l{gap:8px}
+  .gview-list.den-l .pcard.rowv{padding:11px 14px;gap:13px}
+  .gview-list.den-l .pcard.rowv .av{width:44px;height:44px}
+  .gview-list.den-l .pcard.rowv .nm{font-size:14.5px}
+  .gview-list.den-l .pcard.rowv .mg{font-size:12.5px}
+
+  /* ---------- profile context menu ---------- */
+  /* Right-click on desktop, long press on a phone: the same short list of things
+     you would otherwise have to open the profile to do. A fixed panel so it is
+     never clipped by a card or a scrolling column, and deliberately small -- five
+     entries and a divider, nothing that needs a second level. */
+  .ctxmenu{position:fixed;z-index:88;min-width:200px;padding:5px;
+    background:var(--panel);border:1px solid var(--line-2);border-radius:11px;
+    box-shadow:0 18px 40px rgba(0,0,0,.64),0 2px 6px rgba(0,0,0,.5);
+    font:500 13px ui-sans-serif,system-ui,sans-serif;color:var(--text)}
+  .ctxmenu[hidden]{display:none}
+  .ctxmenu .hd{padding:5px 9px 7px;color:var(--muted);font-size:11.5px;
+    letter-spacing:.02em;border-bottom:1px solid var(--line);margin-bottom:4px;
+    max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ctxmenu button{display:flex;align-items:center;gap:10px;width:100%;
+    background:transparent;border:0;border-radius:7px;padding:7px 9px;
+    color:var(--text);font:inherit;text-align:left;cursor:pointer}
+  .ctxmenu button:hover,.ctxmenu button:focus-visible{background:var(--panel-2);
+    outline:none}
+  .ctxmenu button .g{width:15px;flex:none;text-align:center;color:var(--muted);
+    font-size:12.5px}
+  .ctxmenu button:hover .g,.ctxmenu button:focus-visible .g{color:var(--accent)}
+  .ctxmenu .sep{height:1px;background:var(--line);margin:4px 3px}
+
+  /* ---------- gallery profile views ---------- */
+  /* Card: a hero per profile. The top half opens the profile, the strip along
+     the bottom unfolds its photos in place, liked ones first. */
+  #profileGrid.gview-card{grid-template-columns:repeat(auto-fill,minmax(236px,1fr));
+    gap:14px;align-items:start}
+  .pcard.big{padding:0;text-align:left;border-radius:14px;transform:none;
+    /* The unfolded photos are a panel that hangs below the card, so the card
+       must not clip them. The hero clips its own picture instead. */
+    overflow:visible}
+  .pcard.big:hover{border-color:var(--line-2);transform:none}
+  .pcard.big .hero{position:relative;height:96px;cursor:pointer;overflow:hidden;
+    border-radius:13px 13px 0 0;
+    /* A colour wash under the blurred picture, so a profile with no avatar is a
+       tint rather than an empty grey box. */
+    background:
+      radial-gradient(120% 150% at 18% 0%, rgba(193,53,132,.30), transparent 62%),
+      radial-gradient(120% 150% at 92% 8%, rgba(247,119,55,.20), transparent 58%),
+      var(--panel-3)}
+  /* The profile picture, sharp: the point of the hero is to see the image, not
+     a wash of its colours. */
+  .pcard.big .hero img{width:100%;height:100%;object-fit:cover;display:block}
+  /* Only enough scrim at the bottom for the avatar and name to stay readable
+     over a bright photo. */
+  .pcard.big .hero::after{content:"";position:absolute;inset:0;
+    background:linear-gradient(180deg,transparent 42%,rgba(11,13,18,.80))}
+  .pcard.big .head{display:flex;align-items:center;gap:10px;position:relative;
+    z-index:1;padding:0 12px;margin-top:-21px;cursor:pointer}
+  .pcard.big .av{width:42px;height:42px;margin:0;flex:none;
+    border:2px solid var(--panel);background:var(--panel-3)}
+  .pcard.big .who{min-width:0}
+  .pcard.big .nm{font-size:13px;word-break:normal;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .pcard.big .ct{margin-top:1px}
+  .pcard.big .peek{display:flex;align-items:center;gap:7px;width:100%;
+    margin-top:11px;padding:8px 12px;background:transparent;border:0;
+    border-top:1px solid var(--line);color:var(--muted);cursor:pointer;
+    font:600 12.5px ui-sans-serif,system-ui,sans-serif;text-align:left}
+  .pcard.big .peek:hover{background:var(--panel-2);color:var(--text)}
+  .pcard.big .peek .peekn{margin-left:auto;color:var(--muted);font-weight:500}
+  .pcard.big .peek .chev{transition:transform .15s}
+  .pcard.big.open .peek .chev{transform:rotate(180deg)}
+  /* The photos hang under the card as an overlay instead of growing it. CSS
+     masonry would let the row close up around an unfolded card, but no shipping
+     browser implements it, and columns would scramble the A->Z reading order.
+     Floating the panel keeps every row the same height and costs no layout
+     work: open, close, search and page all stay cheap. */
+  .pcard.big .peekgrid{display:none;position:absolute;left:0;right:0;
+    top:calc(100% + 6px);z-index:20;padding:8px;
+    grid-template-columns:repeat(3,1fr);gap:4px;
+    background:var(--panel);border:1px solid var(--line-2);border-radius:12px;
+    box-shadow:0 20px 44px rgba(0,0,0,.6)}
+  .pcard.big.open .peekgrid{display:grid}
+  /* The card it belongs to stays above its neighbours, so the panel is not
+     painted underneath the next row's card. */
+  .pcard.big.open{z-index:3}
+  .pcard.big .peektile{position:relative;aspect-ratio:1;border-radius:6px;
+    overflow:hidden;background:var(--panel-3);cursor:pointer}
+  .pcard.big .peektile img{width:100%;height:100%;object-fit:cover;display:block}
+  .pcard.big .peektile:hover img{opacity:.85}
+  .pcard.big .peektile.liked::after{content:"♥";position:absolute;top:2px;left:5px;
+    font-size:11px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.9)}
+  .pcard.big .peekgrid .hint{padding:6px 2px 8px}
+  /* List: one row per profile, so a long archive is a column of names. */
+  #profileGrid.gview-list{display:flex;flex-direction:column;gap:6px}
+  .pcard.rowv{display:flex;align-items:center;gap:11px;padding:7px 12px;
+    text-align:left;transform:none;
+    transition:background .12s,border-color .12s}
+  /* Hover has to be obvious in a column of near-identical rows: the row lifts
+     out of the list, the border picks up the accent and the chevron leans in. */
+  .pcard.rowv:hover{transform:none;background:var(--panel-2);
+    border-color:var(--accent)}
+  .pcard.rowv:hover .nm{color:#fff}
+  .pcard.rowv:hover .chev{color:var(--accent);transform:translateX(3px)}
+  .pcard.rowv .chev{transition:color .12s,transform .12s}
+  .pcard.rowv .av{width:32px;height:32px;margin:0;flex:none}
+  .pcard.rowv .who{flex:1;min-width:0}
+  .pcard.rowv .nm{font-size:13px;word-break:normal;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  /* The count moves to the right edge, so the row reads name ... amount ›
+     instead of bunched at the left with a long empty middle. */
+  .pcard.rowv .rowct{flex:none;color:var(--muted);font-size:12px;
+    white-space:nowrap;font-variant-numeric:tabular-nums}
+  /* Badges and buttons in a row keep their place in the flow: absolutely
+     positioned they landed on top of the chevron. */
+  .pcard.rowv .livebadge{position:static;flex:none}
+  .pcard.rowv .mg{margin-top:1px}
+  .pcard.rowv .split{position:static;opacity:1;flex:none}
+  .pcard.rowv .chev{color:var(--muted);flex:none}
   .dropzone{border:1px dashed var(--line);border-radius:12px;padding:12px 14px;
     margin-bottom:14px;background:var(--panel);transition:.15s}
   .dropzone.over{border-color:var(--accent);background:rgba(120,120,255,.07)}
@@ -756,6 +960,21 @@
       <input id="gSearch" type="search" placeholder="Search profiles…"
              autocomplete="off" spellcheck="false"
              title="Filter the list by name as you type">
+      <!-- How the list is drawn. Grid is the compact default; card gives each
+           profile a hero you can unfold; list is one row each. -->
+      <span class="gviews" id="gViews" role="group" aria-label="Profile view">
+        <button type="button" data-gview="card" title="Card view — press the strip at the bottom of a card to see its photos">Card</button>
+        <button type="button" data-gview="grid" title="Grid view — the compact list">Grid</button>
+        <button type="button" data-gview="list" title="List view — one row per profile">List</button>
+      </span>
+      <!-- How big the list is drawn. Small is the size the grid has always had;
+           large halves the columns and gives every row more air. One setting per
+           view, remembered separately, because a size that suits a row of names
+           is not the size that suits a wall of photos. -->
+      <span class="gviews gdens" id="gDens" role="group" aria-label="Profile size">
+        <button type="button" data-gden="s">S</button>
+        <button type="button" data-gden="l">L</button>
+      </span>
       <span class="hint" id="gSearchN"></span>
       <button class="small" id="gSearchClear" title="Clear the search">✕</button>
     </div>
@@ -1084,6 +1303,11 @@ some.profile
       </div>
     </div>
                 <div class="toast" id="toast"></div>
+
+<!-- One menu, filled per card when it opens. Fixed so a scroll or a tall column
+     can never clip it; wireCtxMenu() re-parents it onto <body>, because the tab
+     switcher hides .wrap's direct children. -->
+<div class="ctxmenu" id="ctxMenu" role="menu" aria-label="Profile actions" hidden></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -2865,7 +3089,7 @@ function cardHtml(j, pos, qpos){
           ${j.attempts>1?`<span class="pill">try ${j.attempts}</span>`:""}
           ${j.settings&&j.settings.fast_update===false?`<span class="pill">full</span>`:""}
         </div>
-        <div class="meta">${esc(detail||"")}${bits.length?" · "+esc(bits.join(" · ")):""}</div>
+        <div class="metaline">${detail?`<span class="mmsg">${esc(detail)}</span>`:""}${bits.map(b=>`<span class="mbit">${esc(b)}</span>`).join("")}</div>
         ${j.platform==="tiktok"?ttCountBar(j):""}
         ${prog}
         ${tail}
@@ -3418,6 +3642,10 @@ let gAll = null;          // null | "favorites" | "trash" — cross-profile view
 let gFilter = "all";      // "all" | "favorites" | "trash"
 let gType = "any";        // "any" | "photos" | "videos"
 let gSort = "random";     // "random" | "newest" | "oldest"
+// Inside one profile there is nothing to shuffle and no counts to rank: the
+// only order that means anything is when it was posted. Kept apart from gSort
+// so the cross-profile views (All, Liked, Bookmarks) keep their own default.
+let gProfSort = "newest"; // "newest" | "oldest"
 let gSeed = 1;            // makes the random order stable for one view
 let gReq = 0;             // guards against out-of-order responses
 // Lowercased handle -> platform, for everything archived here. A caption's
@@ -3465,11 +3693,15 @@ function rememberView(){
   try{ history.replaceState(null, "", location.pathname + want); }catch(e){}
 }
 
-function showTab(which){
+function showTab(which, only){
   // Three top-level tabs: Download (queue + finished for both platforms),
   // Gallery, and Shorts. Shorts was a separate page reachable only through a
   // link; it is a tab now so it is swapped to like everything else, while
   // /shorts still works standalone for the installed phone/PWA copy.
+  //
+  // `only` names one profile for Shorts without touching what the Gallery is
+  // showing. The context menu opens someone's clips while you are still on the
+  // profile list, and that must not count as having opened their profile.
   const gallery = which === "gallery";
   const shorts = which === "shorts";
   currentTab = gallery ? "gallery" : shorts ? "shorts" : "queue";
@@ -3487,9 +3719,12 @@ function showTab(which){
       // Opened while looking at someone's gallery? Then Shorts is that person
       // alone. If you are on the profile list, it is the whole feed.
       const f = $("shortsFrame");
-      const want = gProfile
-        ? "/shorts?embed=1&profile=" + encodeURIComponent(gProfile)
-          + "&platform=" + encodeURIComponent(gPlatform || "instagram")
+      const tgt = only && only.profile
+        ? only
+        : (gProfile ? {profile: gProfile, platform: gPlatform || "instagram"} : null);
+      const want = tgt
+        ? "/shorts?embed=1&profile=" + encodeURIComponent(tgt.profile)
+          + "&platform=" + encodeURIComponent(tgt.platform || "instagram")
         : "/shorts?embed=1";
       // Only reload when the target actually changes. Loading the tab again must
       // not restart the sitting, but swapping the open profile must take effect,
@@ -3731,7 +3966,7 @@ function buildAllBar(profileCount){
     () => {
       const from = gProfile;
       gAll = "timeline"; gProfile = null; gPlatform = "instagram";
-      tlProfile = from || null;
+      tlPicks = from ? [from] : [];
       tlMonths = []; tlIndex = 0; tlCache.clear();
       renderTimeline();
     }));
@@ -3866,7 +4101,12 @@ let bmCats = [];          // the categories last read, for the pickers
 async function bookmarkPost(username, file, plat, on, category){
   const body = {profile: username, platform: plat || "instagram", file, on};
   if(category !== undefined) body.category = category;
-  return await post("/api/bookmark", body);
+  const r = await post("/api/bookmark", body);
+  // The write answers with the category counts, so the picker's "(n)" moves on
+  // its next open with no second request -- a grid has no bookmarks-view fetch
+  // to piggyback on, and a reload used to be the only thing that updated them.
+  if(r && Array.isArray(r.categories)) bmCats = r.categories;
+  return r;
 }
 
 function paintBook(btn, saved){
@@ -3945,7 +4185,9 @@ function bookmarkPicker(username, file, plat, current){
   document.body.appendChild(wrap);
 }
 
-// Redraw whichever view is on screen after a bookmark changed.
+// Redraw whichever view is on screen after a bookmark changed. The category
+// counts the picker shows come back with the write itself (bookmarkPost), so
+// this only has to redraw the collection when it is the view on screen.
 function repaintBookmarksView(){
   if(gAll === "bookmarks") renderBookmarks();
 }
@@ -4443,11 +4685,10 @@ async function uploadFiles(fileList){
 // The index is ~2.8KB (176 months, one count each) rather than the 7.6MB of
 // every post: the slider needs the months, and only one month is ever fetched.
 let tlOnlyFavs = false;   // liked-only timeline
-// One profile's timeline instead of every profile's. Set when the timeline is
-// opened from inside a profile's grid, cleared by the chip in the timeline bar.
-// Same idea as Shorts' ?profile=, which limits the feed to the profile you came
-// from rather than dropping you into everyone's clips.
-let tlProfile = null;
+// Which names the timeline is limited to. Empty is everybody; one or several
+// are the picker's selection, and the server walks only those folders. The
+// timeline reads Instagram post folders, so the picker offers Instagram handles.
+let tlPicks = [];
 let tlMonths = [];        // [["2026-10", 513], ...] oldest first
 let tlIndex = 0;          // position in tlMonths
 let tlReq = 0;
@@ -4474,12 +4715,15 @@ function tlDecadeOptions(){
 // does not show the other one's month counts. The scope is part of that: a
 // single profile's months are not everybody's months.
 let tlIndexedFavs = null;
-let tlIndexedProfile = null;
+let tlIndexedPicks = "";
 
 function tlQuery(extra){
   const q = [];
   if(tlOnlyFavs) q.push("favorites=1");
-  if(tlProfile) q.push("profile=" + encodeURIComponent(tlProfile));
+  // One name is the endpoint's old `profile`; several go as a list so the walk
+  // happens once instead of once per name.
+  if(tlPicks.length === 1) q.push("profile=" + encodeURIComponent(tlPicks[0]));
+  else if(tlPicks.length > 1) q.push("profiles=" + encodeURIComponent(tlPicks.join(",")));
   if(extra) q.push(extra);
   return q.length ? "?" + q.join("&") : "";
 }
@@ -4487,7 +4731,7 @@ function tlQuery(extra){
 async function loadTimelineIndex(){
   const r = await (await fetch("/api/timeline" + tlQuery())).json();
   tlIndexedFavs = tlOnlyFavs;
-  tlIndexedProfile = tlProfile;
+  tlIndexedPicks = tlPicks.join(",");
   tlCache.clear();
   tlMonths = Object.entries(r.months || {}).sort((a, b) => a[0] < b[0] ? -1 : 1);
   // Open on the newest month with posts: that is what you would look at first.
@@ -4503,6 +4747,181 @@ async function fetchMonth(key){
   const posts = r.posts || [];
   tlCache.set(key, posts);
   return posts;
+}
+
+/* ---------- timeline: who is on it ----------
+   The bar keeps a button that opens a searchable list of names. One pick limits
+   the timeline to that person; several limit it to those people, still walked
+   once on the server. Built once and re-attached on every repaint, so its
+   listeners never pile up. */
+let tlPickerEl = null;
+
+function tlPickerPaint(){
+  const btn = tlPickerEl && tlPickerEl.querySelector("button");
+  if(!btn) return;
+  const n = tlPicks.length;
+  btn.textContent = n === 0 ? "Everyone ▾"
+                  : n === 1 ? `@${tlPicks[0]} ▾`
+                  : `${n} names ▾`;
+  btn.classList.toggle("on", n > 0);
+  btn.title = n
+    ? "Limited to " + tlPicks.map(x => "@" + x).join(", ") + " — click to change"
+    : "Limit the timeline to one profile, or pick several";
+}
+
+function tlPicker(){
+  if(tlPickerEl){ tlPickerPaint(); return tlPickerEl; }
+
+  const wrap = document.createElement("div");
+  wrap.className = "tlpick";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "fchip";
+  btn.id = "tlNames";
+
+  const menu = document.createElement("div");
+  menu.className = "tlmenu";
+  menu.hidden = true;
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Search profiles…";
+  search.autocomplete = "off";
+  search.spellcheck = false;
+  search.setAttribute("aria-label", "Search profiles in the timeline");
+
+  const rows = document.createElement("div");
+  rows.className = "rows";
+
+  const foot = document.createElement("div");
+  foot.className = "foot";
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.className = "small go";
+  apply.textContent = "Apply";
+  const everyone = document.createElement("button");
+  everyone.type = "button";
+  everyone.className = "small";
+  everyone.textContent = "Clear";
+  everyone.title = "Show every profile again";
+  const hint = document.createElement("span");
+  hint.className = "hint";
+  foot.append(apply, everyone, hint);
+  menu.append(search, rows, foot);
+  wrap.append(btn, menu);
+  tlPickerEl = wrap;
+
+  let pending = new Set();
+
+  // The timeline walks Instagram post folders, so the list is Instagram handles:
+  // offering a TikTok-only name would promise posts this view cannot show.
+  const igNames = () => (gProfiles || [])
+    .filter(p => (p.platform || "instagram") === "instagram")
+    .map(p => p.username)
+    .sort((a, b) => a.localeCompare(b));
+
+  const paintHint = () => {
+    hint.textContent = pending.size ? `${pending.size} picked` : "all profiles";
+  };
+
+  const paintRows = () => {
+    const term = search.value.trim().toLowerCase();
+    const all = igNames();
+    const list = term ? all.filter(n => n.toLowerCase().includes(term)) : all;
+    rows.innerHTML = "";
+    if(!list.length){
+      const none = document.createElement("div");
+      none.className = "empty";
+      none.textContent = !gProfiles ? "Loading profiles…"
+                       : term ? "No profile matches that."
+                       : "Nothing archived yet.";
+      rows.appendChild(none);
+      paintHint();
+      return;
+    }
+    // 600 rows of DOM is slow to build and useless to scroll; past a screenful
+    // the search box is the way in.
+    for(const name of list.slice(0, 300)){
+      const lab = document.createElement("label");
+      lab.title = "@" + name;
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = pending.has(name.toLowerCase());
+      cb.onchange = () => {
+        if(cb.checked) pending.add(name.toLowerCase());
+        else pending.delete(name.toLowerCase());
+        paintHint();
+      };
+      const nm = document.createElement("span");
+      nm.textContent = "@" + name;
+      lab.append(cb, nm);
+      rows.appendChild(lab);
+    }
+    paintHint();
+  };
+
+  const close = () => { menu.hidden = true; };
+  const rerun = () => { tlMonths = []; tlIndex = 0; tlCache.clear(); renderTimeline(); };
+
+  const open = () => {
+    pending = new Set(tlPicks.map(n => n.toLowerCase()));
+    // Opening shows the whole list: a filter left from last time would hide the
+    // names you are about to pick and make the ticks look wrong.
+    search.value = "";
+    paintRows();
+    menu.hidden = false;
+    menu.style.left = "";
+    menu.style.top = "";
+    menu.style.bottom = "";
+    // A narrow window must not push the panel off the right edge: the bar wraps,
+    // so the button can sit anywhere along it. Same for the bottom edge on a
+    // phone, where the bar sits low and the list would run past the fold.
+    const r = menu.getBoundingClientRect();
+    if(r.right > window.innerWidth - 8)
+      menu.style.left = Math.round(window.innerWidth - 8 - r.right) + "px";
+    if(r.bottom > window.innerHeight - 8){
+      menu.style.top = "auto";
+      menu.style.bottom = "calc(100% + 6px)";
+    }
+    search.focus();
+    if(!gProfiles){
+      fetch("/api/gallery").then(r2 => r2.json())
+        .then(d => { gProfiles = sortProfiles(d.profiles || []); if(!menu.hidden) paintRows(); })
+        .catch(() => {});
+    }
+  };
+
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    if(menu.hidden) open(); else close();
+  };
+  menu.onclick = (ev) => ev.stopPropagation();
+  search.oninput = paintRows;
+  search.onkeydown = (ev) => {
+    // Enter takes the selection: the search box is the fastest way in, and
+    // stopping there would need a mouse to finish.
+    if(ev.key === "Enter"){ ev.preventDefault(); apply.click(); }
+  };
+
+  apply.onclick = () => {
+    // Only names the list knows: a stale pick (a folder deleted meanwhile) would
+    // quietly make the timeline empty.
+    tlPicks = igNames().filter(n => pending.has(n.toLowerCase()));
+    close();
+    rerun();
+  };
+  everyone.onclick = () => { tlPicks = []; pending.clear(); close(); rerun(); };
+
+  document.addEventListener("click", (ev) => {
+    if(!menu.hidden && !wrap.contains(ev.target)) close();
+  }, true);
+  document.addEventListener("keydown", (ev) => {
+    if(ev.key === "Escape" && !menu.hidden){ close(); btn.focus(); }
+  });
+
+  tlPickerPaint();
+  return wrap;
 }
 
 // Fetch a profile's posts and find one post in it. Used by the timeline to open
@@ -4661,14 +5080,14 @@ async function renderTimeline(){
   host.innerHTML = `<div class="gempty">Loading the timeline…</div>`;
 
   if(!tlMonths.length || tlIndexedFavs !== tlOnlyFavs
-     || tlIndexedProfile !== tlProfile){
+     || tlIndexedPicks !== tlPicks.join(",")){
     try { await loadTimelineIndex(); }
     catch(e){ host.innerHTML = `<div class="gempty">Could not load the timeline.</div>`; return; }
     if(mine !== tlReq) return;
   }
   if(!tlMonths.length){
     host.innerHTML = "";
-    if(!tlProfile){
+    if(!tlPicks.length){
       host.innerHTML = `<div class="gempty">Nothing to show yet.</div>`;
       return;
     }
@@ -4679,15 +5098,16 @@ async function renderTimeline(){
     back.style.gridColumn = "1/-1";
     back.style.justifySelf = "start";
     back.textContent = "✕ All profiles";
-    back.onclick = () => { tlProfile = null; tlMonths = []; renderTimeline(); };
+    back.onclick = () => { tlPicks = []; tlMonths = []; renderTimeline(); };
     const msg = document.createElement("div");
     msg.className = "gempty";
     msg.style.gridColumn = "1/-1";
     // Say which emptiness this is. "No posts archived" would be a lie about a
     // profile that has plenty of posts and none of them liked.
+    const who = tlPicks.map(n => "@" + n).join(", ");
     msg.textContent = tlOnlyFavs
-      ? `No liked posts from @${tlProfile}.`
-      : `No posts archived for @${tlProfile} yet.`;
+      ? `No liked posts from ${who}.`
+      : `No posts archived for ${who} yet.`;
     host.append(back, msg);
     return;
   }
@@ -4732,8 +5152,9 @@ async function renderTimeline(){
   const favChip = document.createElement("button");
   favChip.className = "fchip" + (tlOnlyFavs ? " on" : "");
   favChip.textContent = "♥ Liked only";
-  favChip.title = tlProfile
-    ? `Only what you have liked from @${tlProfile}`
+  const favWho = tlPicks.length ? " from " + tlPicks.map(n => "@" + n).join(", ") : "";
+  favChip.title = tlPicks.length
+    ? `Only what you have liked${favWho}`
     : "Show only posts you have liked, across every profile";
   favChip.onclick = () => {
     tlOnlyFavs = !tlOnlyFavs;
@@ -4743,24 +5164,7 @@ async function renderTimeline(){
     renderTimeline();
   };
 
-  // Which profile this timeline is limited to, with the way back to everyone.
-  // Always drawn while scoped, so the user is never looking at one person's
-  // months believing they are seeing the whole archive.
-  const scopeChip = document.createElement("button");
-  scopeChip.className = "fchip on";
-  scopeChip.id = "tlScope";
-  scopeChip.textContent = `@${tlProfile} ✕`;
-  scopeChip.title = "Limited to this profile — click to show every profile";
-  scopeChip.onclick = () => {
-    tlProfile = null;
-    tlMonths = [];
-    tlIndex = 0;
-    tlCache.clear();
-    renderTimeline();
-  };
-
-  if(tlProfile) bar.appendChild(scopeChip);
-  bar.append(prev, ySel, mSel, slider, next, jump, favChip, count);
+  bar.append(prev, ySel, mSel, slider, next, jump, tlPicker(), favChip, count);
   host.innerHTML = "";
   host.appendChild(bar);
 
@@ -4808,7 +5212,7 @@ async function renderTimeline(){
     // Scoped to one card, say which platform's posts these are: a merged card
     // also holds TikTok videos, which this by-month view does not carry, so the
     // count here is deliberately smaller than the card's own tile count.
-    count.textContent = (tlProfile ? "Instagram · " : "")
+    count.textContent = (tlPicks.length ? "Instagram · " : "")
       + `${tlLabel(key)} · ${total} post${total===1?"":"s"}`
       + (shown < total ? ` (showing ${shown})` : "")
       + ` · ${tlIndex + 1} of ${tlMonths.length}`;
@@ -5047,12 +5451,256 @@ async function refreshStatic(){
   }
 }
 
+/* ---------- profile list: card / grid / list ---------- */
+
+// Which shape the profile list takes. The grid is the default and is drawn
+// exactly as it always was; card and list are additions, not replacements.
+const GVIEW_KEY = "hw.gview";
+let gView = "grid";
+// The profile list as last fetched. A view switch is a change of markup, not of
+// data, so it repaints from here instead of asking the server again.
+let gProfiles = null;
+try{
+  const v = localStorage.getItem(GVIEW_KEY);
+  if(v === "card" || v === "list") gView = v;
+}catch(e){}
+
+function setGView(v){
+  if(v !== "card" && v !== "grid" && v !== "list") return;
+  gView = v;
+  try{ localStorage.setItem(GVIEW_KEY, v); }catch(e){}
+  paintGViewBtns();
+  if(gProfiles && !gProfile){
+    // Instant: no request, no loader, the search box keeps its text and the
+    // scroll position stays where it was.
+    paintProfileCards(gProfiles);
+    applyProfileSearch();
+    return;
+  }
+  // Nothing fetched yet (or a profile is open): fall back to a full draw.
+  renderGallery();
+}
+
+function paintGViewBtns(){
+  const wrap = $("gViews");
+  if(!wrap) return;
+  for(const b of wrap.querySelectorAll("[data-gview]"))
+    b.classList.toggle("on", b.dataset.gview === gView);
+  paintGDenBtns();
+}
+
+/* ---------- size ----------
+   One setting per view, so a size chosen for the wall of cards is not forced on
+   the column of names. Large is only a class on the host: the columns come from a
+   larger floor and the rest is CSS, so switching size is a repaint of styles, not
+   a re-render of 600 cards. */
+const GDEN_KEY = "hw.gden";
+let gDen = {card:"s", grid:"s", list:"s"};
+try{
+  const d = JSON.parse(localStorage.getItem(GDEN_KEY) || "{}");
+  for(const k of ["card", "grid", "list"]) if(d[k] === "l") gDen[k] = "l";
+}catch(e){}
+
+// The buttons say what they do in the view you are looking at: in the grid the
+// useful word is the number across, in a list it is just smaller or bigger.
+const GDEN_WORDS = {
+  grid: {s: ["8", "8 per row"], l: ["4", "4 per row"]},
+  card: {s: ["S", "Smaller cards"], l: ["L", "Larger cards"]},
+  list: {s: ["S", "Compact rows"], l: ["L", "Roomy rows"]},
+};
+
+function paintGDenBtns(){
+  const wrap = $("gDens");
+  if(!wrap) return;
+  const words = GDEN_WORDS[gView] || GDEN_WORDS.grid;
+  for(const b of wrap.querySelectorAll("[data-gden]")){
+    const on = b.dataset.gden === gDen[gView];
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    const w = words[b.dataset.gden];
+    if(w){ b.textContent = w[0]; b.title = w[1]; }
+  }
+}
+
+function applyGDen(){
+  const host = $("profileGrid");
+  if(!host) return;
+  host.classList.toggle("den-l", gDen[gView] === "l");
+}
+
+function setGDen(v){
+  if(v !== "s" && v !== "l") return;
+  gDen[gView] = v;
+  try{ localStorage.setItem(GDEN_KEY, JSON.stringify(gDen)); }catch(e){}
+  applyGDen();
+  paintGDenBtns();
+}
+
+function wireGDens(){
+  const wrap = $("gDens");
+  if(!wrap || wrap.dataset.wired) return;
+  wrap.dataset.wired = "1";
+  for(const b of wrap.querySelectorAll("[data-gden]"))
+    b.onclick = () => setGDen(b.dataset.gden);
+}
+
+function pAvatar(p){
+  return `<img class="av" loading="lazy" alt=""
+    src="/api/profile-pic?profile=${encodeURIComponent(p.username)}&platform=${encodeURIComponent(p.platform||"instagram")}"
+    onerror="this.style.visibility='hidden'">`;
+}
+
+function pLive(p){
+  // A profile still downloading is listed live, marked so the count climbing
+  // underneath reads as progress rather than as a bug.
+  return p.downloading
+    ? `<span class="livebadge" title="${esc(p.status||"")}${p.total_count?` — ${p.done_count}/${p.total_count} posts`:""}">● downloading</span>`
+    : "";
+}
+
+function pMerged(p){
+  if(!p.merged) return "";
+  return `<div class="mg" title="${esc((p.merged_platforms||[]).join(" + ") || "same site")}">+ @${p.merged.map(esc).join(" @ ")}${
+    (p.merged_platforms||[]).length
+      ? ` · ${(p.merged_platforms||[]).map(s => s === "tiktok" ? "TikTok" : "Instagram").join(" + ")}`
+      : ""}</div>`;
+}
+
+function pSplit(p){
+  return p.merged
+    ? `<button class="split" title="Different people — keep them apart">&#8901;&#8901;&#8901;</button>`
+    : "";
+}
+
+function pCount(p){
+  return `${p.count.toLocaleString()} ${p.count===1?"file":"files"}`;
+}
+
+// The compact grid: what the list has always looked like.
+function pcardGrid(p){
+  return `
+    <div class="pcard${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
+      ${pAvatar(p)}
+      ${pLive(p)}
+      <div class="nm">${esc(p.username)}</div>
+      <div class="ct">${pCount(p)}</div>
+      ${pMerged(p)}
+      ${pSplit(p)}
+    </div>`;
+}
+
+// The card: a hero and a name, with a strip along the bottom that unfolds this
+// profile's photos in place. Pressing the hero or the name still opens the
+// profile the ordinary way.
+function pcardBig(p){
+  const pic = `/api/profile-pic?profile=${encodeURIComponent(p.username)}&platform=${encodeURIComponent(p.platform||"instagram")}`;
+  return `
+    <div class="pcard big${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
+      <div class="hero" title="Open ${esc(p.username)}"><img loading="lazy" alt="" src="${pic}"
+        onerror="this.style.visibility='hidden'"></div>
+      ${pLive(p)}
+      <div class="head" title="Open ${esc(p.username)}">
+        ${pAvatar(p)}
+        <div class="who">
+          <div class="nm">${esc(p.username)}</div>
+          <div class="ct">${pCount(p)}</div>
+          ${pMerged(p)}
+        </div>
+      </div>
+      <button type="button" class="peek" aria-expanded="false">
+        <span>Photos</span><span class="peekn"></span><span class="chev">▾</span>
+      </button>
+      <div class="peekgrid"></div>
+      ${pSplit(p)}
+    </div>`;
+}
+
+// The list: one row a profile.
+function pcardRow(p){
+  return `
+    <div class="pcard rowv${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
+      ${pAvatar(p)}
+      <div class="who">
+        <div class="nm">${esc(p.username)}</div>
+        ${pMerged(p)}
+      </div>
+      <span class="rowct">${pCount(p)}</span>
+      ${pLive(p)}
+      ${pSplit(p)}
+      <span class="chev">›</span>
+    </div>`;
+}
+
+// Unfold one card's photos. Fetched per card, on the first press only:
+// /api/gallery carries counts but no media, and loading a profile's whole
+// photo list for every card on screen would be megabytes for nothing. The
+// server puts liked photos first when there are any.
+async function togglePeek(card){
+  const btn = card.querySelector(".peek");
+  const grid = card.querySelector(".peekgrid");
+  if(!btn || !grid) return;
+  const open = card.classList.toggle("open");
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  if(!open || grid.dataset.loaded) return;
+  grid.innerHTML = `<span class="hint">Loading…</span>`;
+  const user = card.dataset.profile, plat = card.dataset.platform || "instagram";
+  let d;
+  try{
+    d = await (await fetch(`/api/peek?profile=${encodeURIComponent(user)}`
+      + `&platform=${encodeURIComponent(plat)}&n=9`)).json();
+  }catch(e){
+    grid.innerHTML = `<span class="hint">Could not load photos.</span>`;
+    return;
+  }
+  const items = d.items || [];
+  if(!items.length){
+    grid.innerHTML = `<span class="hint">Nothing archived yet.</span>`;
+    return;
+  }
+  grid.dataset.loaded = "1";
+  grid.innerHTML = "";
+  const n = btn.querySelector(".peekn");
+  if(n) n.textContent = d.liked ? `♥ ${d.liked}` : "";
+  for(const it of items){
+    const tile = document.createElement("div");
+    tile.className = "peektile" + (it.liked ? " liked" : "");
+    tile.title = it.liked ? "Liked — open it" : "Open it";
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    const sel = encodeURIComponent(it.section || "main");
+    img.src = `/thumb?profile=${encodeURIComponent(user)}&file=${encodeURIComponent(it.file)}`
+            + (it.section === "main" ? "" : `&section=${sel}`)
+            + `&platform=${encodeURIComponent(it.platform || plat)}`;
+    tile.appendChild(img);
+    // A peek tile opens the viewer on just that file: the neighbour list the
+    // viewer steps through is the one it was handed, and nine unrelated thumbnails
+    // from different folders are not a post to walk.
+    tile.onclick = (ev) => {
+      ev.stopPropagation();
+      openViewer(user, {
+        items: [{file: it.file, kind: it.kind || "image"}],
+        section: it.section || "main",
+        platform: it.platform || plat,
+      }, it.section || "main", 0);
+    };
+    grid.appendChild(tile);
+  }
+}
+
 async function renderGallery(){
   const host = $("profileGrid");
   if(gProfile) return renderPhotos(gProfile, gPlatform);
   const mine = ++gReq;
   buildSortBtns();
   paintSortBtns();
+  // The name/count sorters belong to the profile LIST. Kept on screen while a
+  // profile is open, they read as controls for the photos in front of you --
+  // which they are not: they reorder the list you just left.
+  for(const id of ["sortNameBtn", "sortCountBtn"]){
+    const b = $(id);
+    if(b) b.style.display = "";
+  }
   // A repaint while profiles are downloading must not flash the grid away,
   // so only show the loader when there is nothing on screen yet.
   if(!host.querySelector(".pcard")) host.innerHTML = `<div class="gempty">Loading…</div>`;
@@ -5066,6 +5714,10 @@ async function renderGallery(){
   }
   if(mine !== gReq) return;
   const profiles = sortProfiles(data.profiles || []);
+  // Held on to so switching Card / Grid / List can repaint what is already in
+  // hand. Waiting on a fresh /api/gallery for a change of markup made a view
+  // switch feel like a page load.
+  gProfiles = profiles;
   // Remember who is archived, so a caption's @mention can link back here.
   rememberHandles(data.profiles || []);
   fillUploadProfiles(profiles);
@@ -5083,24 +5735,40 @@ async function renderGallery(){
     host.innerHTML = `<div class="gempty">Nothing archived yet. Profiles appear here as soon as files start landing.</div>`;
     return;
   }
-  host.innerHTML = profiles.map(p => `
-    <div class="pcard${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
-      <img class="av" loading="lazy" alt=""
-           src="/api/profile-pic?profile=${encodeURIComponent(p.username)}&platform=${encodeURIComponent(p.platform||"instagram")}"
-           onerror="this.style.visibility='hidden'">
-      ${p.downloading
-        ? `<span class="livebadge" title="${esc(p.status)}${p.total_count?` — ${p.done_count}/${p.total_count} posts`:""}">● downloading</span>`
-        : ""}
-      <div class="nm">${esc(p.username)}</div>
-      <div class="ct">${p.count.toLocaleString()} ${p.count===1?"file":"files"}</div>
-      ${p.merged ? `<div class="mg" title="${esc((p.merged_platforms||[]).join(" + ") || "same site")}">+ @${p.merged.map(esc).join(" @ ")}${
-        (p.merged_platforms||[]).length
-          ? ` · ${(p.merged_platforms||[]).map(s => s === "tiktok" ? "TikTok" : "Instagram").join(" + ")}`
-          : ""}</div>` : ""}
-      ${p.merged ? `<button class="split" title="Different people — keep them apart">&#8901;&#8901;&#8901;</button>` : ""}
-    </div>`).join("");
+  paintProfileCards(profiles);
+  // Re-apply the filter AFTER the cards exist, so a live repaint cannot silently
+  // undo what is typed in the box.
+  wireProfileSearch();
+  applyProfileSearch();
+  wireGViews();
+  paintGViewBtns();
+  rememberView();
+}
+
+// Draw the profile list in the current view from data already in hand. Called
+// by renderGallery after a fetch, and directly by the view switcher.
+function paintProfileCards(profiles){
+  const host = $("profileGrid");
+  if(!host) return;
+  // One card builder per view. The grid markup is untouched: switching views
+  // must not quietly change the view that was already there.
+  host.className = "profile-grid gview-" + gView;
+  applyGDen();
+  host.innerHTML = profiles.map(p =>
+    gView === "card" ? pcardBig(p) : gView === "list" ? pcardRow(p) : pcardGrid(p)
+  ).join("");
   for(const card of host.querySelectorAll(".pcard")){
-    card.onclick = () => renderPhotos(card.dataset.profile, card.dataset.platform);
+    card.onclick = () => {
+      // A long press ends as a tap too. That tap must not open the profile
+      // behind the menu it just raised.
+      if(gLpSuppress){ gLpSuppress = false; return; }
+      renderPhotos(card.dataset.profile, card.dataset.platform);
+    };
+    wireCardMenu(card);
+    // Card view: the strip along the bottom is the door to this profile's
+    // photos, unfolded in place so you never lose your place in the list.
+    const peek = card.querySelector(".peek");
+    if(peek) peek.onclick = (ev) => { ev.stopPropagation(); togglePeek(card); };
     const sp = card.querySelector(".split");
     if(!sp) continue;
     // The split has to outlive the automatic rule that put these together, so it
@@ -5117,12 +5785,243 @@ async function renderGallery(){
       } catch(e){ sp.disabled = false; }
     };
   }
-  // Re-apply the filter AFTER the cards exist, so a live repaint cannot silently
-  // undo what is typed in the box.
-  wireProfileSearch();
-  applyProfileSearch();
-  rememberView();
+  wireGViews();
+  wireGDens();
+  wireCtxMenu();
+  paintGViewBtns();
 }
+
+function wireGViews(){
+  const wrap = $("gViews");
+  if(!wrap || wrap.dataset.wired) return;
+  wrap.dataset.wired = "1";
+  for(const b of wrap.querySelectorAll("[data-gview]"))
+    b.onclick = () => setGView(b.dataset.gview);
+  // The unfolded panel floats over the row beneath it, so a click anywhere
+  // outside the card it belongs to folds it away again.
+  document.addEventListener("click", (ev) => {
+    const open = document.querySelector("#profileGrid .pcard.big.open");
+    if(!open || open.contains(ev.target)) return;
+    open.classList.remove("open");
+    const b = open.querySelector(".peek");
+    if(b) b.setAttribute("aria-expanded", "false");
+  }, true);
+}
+
+/* ---------- profile context menu ----------
+   Right-click on a card gives the handful of things you would otherwise open the
+   profile to do. Long press is the same menu on a phone, held rather than tapped
+   so a tap still opens the profile. One menu element is filled per card, and the
+   actions are all things the app already does somewhere else -- nothing here
+   reaches new server behaviour, so nothing here can behave differently from the
+   button it mirrors. */
+let gWantFilter = null;    // folder asked for before a profile's counts are known
+let gLpSuppress = false;   // swallow the tap that ends a long press
+
+function closeCtx(){
+  const m = $("ctxMenu");
+  if(m) m.hidden = true;
+}
+
+// The profile's own main job. Same lookup the profile page's "Fetch new" menu
+// uses, because "check for new" is the same thing: re-run that job, which is
+// already set to fast-update and therefore fetches only what is missing.
+function mainJobFor(username, platform){
+  return ((lastState && lastState.jobs) || []).find(j =>
+    (j.username || "").toLowerCase() === username.toLowerCase()
+    && (j.platform || "instagram") === (platform || "instagram")
+    && (j.kind || "main") === "main" && j.status !== "cancelled") || null;
+}
+
+async function checkForNew(username, platform){
+  const main = mainJobFor(username, platform);
+  toast(main ? `Checking @${username} for new…` : `Queueing @${username}…`);
+  try{
+    // Existing job: re-run it. No job (an archive copied in by hand): queue it
+    // from its own address, so the platform is decided by the link and not
+    // guessed from the handle.
+    const r = main
+      ? await post("/api/requeue", {id: main.id})
+      : await post("/api/add_mixed", {
+          text: platform === "tiktok"
+            ? "https://www.tiktok.com/@" + username
+            : "https://www.instagram.com/" + username + "/",
+          platform, count: 5 });
+    if(r && (r.ok || (r.added && r.added.length))){
+      toast(main ? `@${username} is checking for new posts` : `@${username} queued`);
+      return;
+    }
+    showErr((r && (r.error || (r.rejected && r.rejected[0] && r.rejected[0].reason)))
+            || "Could not queue that profile.");
+  }catch(e){
+    showErr("Could not reach the server.");
+  }
+}
+
+async function copyHandle(username){
+  const say = () => toast(`Copied @${username}`);
+  try{
+    await navigator.clipboard.writeText(username);
+    say();
+  }catch(e){
+    // No clipboard API off a secure origin still deserves to work.
+    const t = document.createElement("textarea");
+    t.value = username;
+    t.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(t);
+    t.select();
+    try{ document.execCommand("copy"); say(); }
+    catch(e2){ showErr("Could not copy that name."); }
+    t.remove();
+  }
+}
+
+function openCtx(x, y, card){
+  const menu = $("ctxMenu");
+  const username = card && card.dataset ? card.dataset.profile || "" : "";
+  if(!menu || !username) return;
+  const platform = card.dataset.platform || "instagram";
+  const main = mainJobFor(username, platform);
+
+  menu.innerHTML = "";
+  const hd = document.createElement("div");
+  hd.className = "hd";
+  hd.textContent = "@" + username + (platform === "tiktok" ? " · TikTok" : "");
+  menu.appendChild(hd);
+
+  const item = (glyph, label, fn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    const g = document.createElement("span");
+    g.className = "g";
+    g.textContent = glyph;
+    const t = document.createElement("span");
+    t.textContent = label;
+    b.appendChild(g);
+    b.appendChild(t);
+    b.onclick = (ev) => { ev.stopPropagation(); closeCtx(); fn(); };
+    menu.appendChild(b);
+  };
+
+  item("⟳", main ? "Check for new" : "Download this profile",
+       () => checkForNew(username, platform));
+  // Shorts, that one person: opens the tab without counting as having opened
+  // their profile, so going back to Gallery still shows the list.
+  item("▶", "Open in Shorts",
+       () => showTab("shorts", {profile: username, platform}));
+  item("♥", "See liked", () => openGalleryProfileFilter(username, platform, "favorites"));
+  item("🗑", "See trash", () => openGalleryProfileFilter(username, platform, "trash"));
+
+  const sep = document.createElement("div");
+  sep.className = "sep";
+  menu.appendChild(sep);
+  item("⧉", "Copy @" + username, () => copyHandle(username));
+
+  // Place it at the pointer, but never off the screen: flip above when there is
+  // no room below, and pull it inside on either side.
+  menu.hidden = false;
+  // The tab switcher may have left an inline display:none on this element from
+  // before it was re-parented; `hidden` alone would not bring it back.
+  menu.style.display = "";
+  const pad = 8;
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  const left = Math.max(pad, Math.min(x, window.innerWidth - mw - pad));
+  const top = (y + mh + pad <= window.innerHeight)
+    ? y
+    : Math.max(pad, y - mh);
+  menu.style.left = Math.round(left) + "px";
+  menu.style.top = Math.round(top) + "px";
+}
+
+function wireCtxMenu(){
+  const menu = $("ctxMenu");
+  if(!menu || menu.dataset.wired) return;
+  menu.dataset.wired = "1";
+  // Parked on the body, not under .wrap: the tab switcher hides every direct
+  // child of .wrap while Gallery is open and restores them on the way out, and a
+  // hidden menu that thinks it is open is invisible until the next tab swap.
+  if(menu.parentElement !== document.body) document.body.appendChild(menu);
+  menu.style.display = "";
+  // Anywhere else, Escape, a scroll or a resize puts it away. The dismissing
+  // click is swallowed: the first click outside a menu should put it away, not
+  // also open whichever card happened to be under it.
+  document.addEventListener("click", (ev) => {
+    if(menu.hidden) return;
+    if(menu.contains(ev.target)) return;
+    closeCtx();
+    ev.stopPropagation();
+    ev.preventDefault();
+  }, true);
+  document.addEventListener("keydown", (ev) => {
+    if(ev.key === "Escape" && !menu.hidden) closeCtx();
+  });
+  window.addEventListener("scroll", () => { if(!menu.hidden) closeCtx(); }, true);
+  window.addEventListener("resize", () => { if(!menu.hidden) closeCtx(); });
+}
+
+// Right-click and long press are wired per card, because they have to know which
+// card they were raised on.
+function wireCardMenu(card){
+  card.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    openCtx(ev.clientX, ev.clientY, card);
+  });
+  let timer = null, started = 0, moved = false, fired = false;
+  const fire = (x, y) => {
+    if(fired) return;
+    fired = true;
+    if(navigator.vibrate){ try{ navigator.vibrate(8); }catch(e){} }
+    openCtx(x, y, card);
+  };
+  card.addEventListener("touchstart", (ev) => {
+    if(ev.touches.length !== 1) return;
+    const t = ev.touches[0];
+    fired = false;
+    moved = false;
+    started = Date.now();
+    clearTimeout(timer);
+    timer = setTimeout(() => fire(t.clientX, t.clientY), 480);
+  }, {passive:true});
+  // A finger that moves is scrolling, not holding.
+  card.addEventListener("touchmove", () => {
+    moved = true;
+    fired = false;
+    clearTimeout(timer);
+  }, {passive:true});
+  card.addEventListener("touchend", (ev) => {
+    clearTimeout(timer);
+    // Rebuilding this list can hold the main thread long enough to starve the
+    // timer past the release. Held long enough is held long enough: raise the
+    // menu on the way up instead of swallowing the press.
+    if(!fired && !moved && Date.now() - started >= 480){
+      const t = ev.changedTouches && ev.changedTouches[0];
+      fire(t ? t.clientX : 0, t ? t.clientY : 0);
+    }
+    if(fired){
+      // The press ends as a tap as well, and that tap would open the profile
+      // behind the menu it just raised.
+      gLpSuppress = true;
+      setTimeout(() => { gLpSuppress = false; }, 700);
+    }
+  });
+  card.addEventListener("touchcancel", () => {
+    fired = false;
+    moved = true;
+    clearTimeout(timer);
+  });
+}
+
+// Open a profile directly on one of its folders. The counts are not known until
+// it loads, so drawPhotos applies the wish and reports an empty one.
+function openGalleryProfileFilter(username, platform, filter){
+  gWantFilter = filter || null;
+  openGalleryProfile(username, platform);
+}
+
+// Re-parent and wire it now, not on the first card paint: the tab switcher runs
+// before the gallery is drawn and would otherwise hide it one last time.
+wireCtxMenu();
 
 // Open one profile's gallery from the queue.
 //
@@ -5143,6 +6042,16 @@ function openGalleryProfile(username, platform){
 
 async function renderPhotos(username, platform){
   const host = $("profileGrid");
+  // The profile's own photo grid is not one of the list views, so the view
+  // class has to come off: in list mode the host is a flex column, and in card
+  // mode it is a grid, which would squeeze the photo grid into one cell.
+  if(host) host.className = "profile-grid";
+  // A profile's own photos are ordered by date, not by name or count, so the
+  // list's sorters go away while it is open.
+  for(const id of ["sortNameBtn", "sortCountBtn"]){
+    const b = $(id);
+    if(b) b.style.display = "none";
+  }
   const sw0 = $("gSearchWrap");
   if(sw0) sw0.style.display = "none";   // the search box is for the profile list only
   // None of the cross-profile views is the one you are in once a profile is
@@ -5387,10 +6296,10 @@ function tileFor(username, post, section){
       paintBook(bb, saved);
       tagBtn.style.display = saved ? "" : "none";
       toast(saved ? "Bookmarked" : "Bookmark removed");
-      // In the bookmarks view an unsaved post no longer belongs in the grid,
-      // and its category counts change with it: redraw from the server rather
-      // than leaving a stale "(2)" beside an empty grid.
-      if(!saved && gAll === "bookmarks") repaintBookmarksView();
+      // The counts move in whatever view this is drawn in: in the bookmarks
+      // view the post may also leave the grid, so redraw from the server rather
+      // than leaving a stale "(2)" beside the tiles.
+      repaintBookmarksView();
     });
     paintBook(bb, saved);
     bb.dataset.book = "1";
@@ -5442,6 +6351,16 @@ function sortPosts(list){
   return a;
 }
 
+// One profile's posts: chronological, newest first unless the direction is
+// flipped. No random order here -- a profile is a body of work in time, and
+// shuffling it just makes it harder to find what you saw last week.
+function sortProfPosts(list){
+  const a = list.slice();
+  a.sort((x,y) => gProfSort === "oldest" ? (x.ts||0) - (y.ts||0)
+                                         : (y.ts||0) - (x.ts||0));
+  return a;
+}
+
 // Posts of the profile currently drawn, so a timeline tile can open the viewer
 // directly on the post you clicked instead of fetching the profile again.
 let gPhotosNow = [];
@@ -5467,6 +6386,15 @@ function drawPhotos(username, sec){
   const opts = [["all","All",allCount],["favorites","♥ Liked",counts.favorites]];
   if(counts.trash) opts.push(["trash","🗑 Trash",counts.trash]);
   if(!opts.some(([k]) => k === gFilter)) gFilter = "all";
+  // A right-click asked for Liked or Trash before the counts were known. Apply
+  // it here -- and when that folder is empty, say so rather than quietly
+  // opening All and leaving the jump looking like a no-op.
+  if(gWantFilter){
+    const want = gWantFilter;
+    gWantFilter = null;
+    if(opts.some(([k]) => k === want)) gFilter = want;
+    else toast(want === "trash" ? "Nothing in trash" : "Nothing liked here");
+  }
   for(const [key,label,n] of opts){
     const c = document.createElement("button");
     c.className = "fchip" + (gFilter === key ? " on" : "");
@@ -5488,7 +6416,7 @@ function drawPhotos(username, sec){
   dlwrap.className = "dlwrap";
   const dlbtn = document.createElement("button");
   dlbtn.className = "small";
-  dlbtn.textContent = "⬇ Download…";
+  dlbtn.textContent = "Fetch new";
   dlbtn.title = "Fetch new, tagged or reel posts for this profile";
   const menu = document.createElement("div");
   menu.className = "dlmenu";
@@ -5577,7 +6505,8 @@ function drawPhotos(username, sec){
   });
   dlwrap.appendChild(dlbtn);
   dlwrap.appendChild(menu);
-  bar.appendChild(dlwrap);
+  // Appended to the profile head below, next to the name: this acts on the
+  // profile, not on the grid, so it does not belong in the filter row.
 
   const allPosts = sec.main.concat(sec.favorites, sec.trash);
   const items = allPosts.reduce((n,p) => n + p.count, 0);
@@ -5627,6 +6556,58 @@ function drawPhotos(username, sec){
   }
   head.appendChild(face);
   head.appendChild(pid);
+  // The fetch control lives with the name it acts on.
+  head.appendChild(dlwrap);
+
+  // Download the whole profile: the folder in the gallery IS the archive on
+  // disk, so the server zips that directory and hands it over. Kept where the
+  // fetch control used to sit, at the end of the filter row.
+  const zipbtn = document.createElement("button");
+  zipbtn.className = "small";
+  zipbtn.textContent = "⬇ Download all";
+  zipbtn.title = "Download every item in this profile's folder as one zip";
+  zipbtn.onclick = async () => {
+    const was = zipbtn.textContent;
+    const say = (t) => { zipbtn.textContent = t; };
+    zipbtn.disabled = true;
+    say("Zipping…");
+    try{
+      // The build runs on the server in its own thread; this page watches it so
+      // a big profile shows real progress instead of a dead label.
+      const started = await post("/api/profile-zip/start", {profile: username});
+      if(!started || !started.id)
+        throw new Error((started && started.error) || "could not start");
+      const id = started.id;
+      const mb = (n) => (n / 1048576).toFixed(n >= 10485760 ? 0 : 1);
+      let info = null;
+      for(let i = 0; i < 7200; i++){
+        await new Promise(res => setTimeout(res, 500));
+        const r = await fetch("/api/profile-zip/progress?id=" + encodeURIComponent(id));
+        if(!r.ok) throw new Error("build went away");
+        info = await r.json();
+        if(info.status === "ready") break;
+        if(info.status === "error") throw new Error(info.error || "zip failed");
+        say(`${info.pct}% · ${mb(info.bytes)}/${mb(info.total)} MB`);
+      }
+      if(!info || info.status !== "ready") throw new Error("timed out");
+      // Finished on disk: start the download without another click.
+      say("Downloading…");
+      const a = document.createElement("a");
+      a.href = "/api/profile-zip?id=" + encodeURIComponent(id);
+      a.download = username + ".zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }catch(err){
+      console.warn("profile zip:", err);
+      say("Zip failed");
+      await new Promise(res => setTimeout(res, 2500));
+    }finally{
+      zipbtn.disabled = false;
+      say(was);
+    }
+  };
+  bar.appendChild(zipbtn);
 
   // The heading said "select a profile" while one was open, which read as a
   // bug from inside a profile. Name it here; renderGallery puts it back.
@@ -5668,17 +6649,17 @@ function drawPhotos(username, sec){
     + (vids ? ` · ${vids.toLocaleString()} videos` : "");
   bar.appendChild(tot);
 
-  // sort toggle
-  const sorts = [["random","⇄ Random"],["newest","↓ Newest"],["oldest","↑ Oldest"]];
+  // Order toggle. Only the two chronological directions are offered: inside a
+  // profile the post date is the one axis that means anything.
+  const sorts = [["newest","↓ Newest"],["oldest","↑ Oldest"]];
   const sgroup = document.createElement("span");
   sgroup.className = "sortgroup";
   for(const [key,label] of sorts){
     const b = document.createElement("button");
-    b.className = "fchip" + (gSort === key ? " on" : "");
+    b.className = "fchip" + (gProfSort === key ? " on" : "");
     b.textContent = label;
     b.onclick = () => {
-      gSort = key;
-      if(key === "random") gSeed = (Date.now() & 0x7fffffff);
+      gProfSort = key;
       drawPhotos(username, sec);
     };
     sgroup.appendChild(b);
@@ -5722,7 +6703,7 @@ function drawPhotos(username, sec){
         ? `♥ Liked (${kept.length})`
         : `All media (${kept.length})`});
     }
-    for(const post of sortPosts(kept)) jobs.push({section, post});
+    for(const post of sortProfPosts(kept)) jobs.push({section, post});
   }
 
   if(!jobs.length){
@@ -6554,6 +7535,7 @@ async function viewerToggleBook(){
     return;
   }
   refreshBookTile(st.username, file, want);
+  repaintBookmarksView();
 }
 
 function viewerPickCategory(){

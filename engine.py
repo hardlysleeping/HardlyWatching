@@ -1618,9 +1618,27 @@ def gallery_posts(self, username: str, section: str = "main",
     return posts
 
 
+def _timeline_key(profile: str | None = None,
+                  profiles: list[str] | None = None) -> str | None:
+    """The identity of one timeline scope: the sorted, lowercased handle set.
+
+    Both the builder and the month reader derive the cache key from this, so a
+    request for a different selection can never be answered from the previous
+    selection's list. `profiles=[]` means "asked for names, none usable" and is
+    its own key, so it cannot be confused with "no scope asked for".
+    """
+    if profiles is not None:
+        picks = [p.strip().lower() for p in profiles if p and p.strip()]
+        return ",".join(sorted(set(picks))) or "@nobody"
+    if profile and profile.strip():
+        return profile.strip().lower()
+    return None
+
+
 def timeline(self, months: int | None = None,
              only_favorites: bool = False,
-             profile: str | None = None) -> dict:
+             profile: str | None = None,
+             profiles: list[str] | None = None) -> dict:
     """Every profile's posts in one chronological list, month-grouped.
 
     Returns the months present with their counts, and the posts, so the UI
@@ -1633,13 +1651,22 @@ def timeline(self, months: int | None = None,
     double-count posts that are also in main.
 
     `profile` narrows the walk to one profile, which is what the timeline
-    shows when it is opened from inside a profile's own grid. Matching is
-    case-insensitive and ignores surrounding space, because the name arrives
-    from a URL.
+    shows when it is opened from inside a profile's own grid. `profiles` does
+    the same for a hand-picked set, so the picker can ask for three people and
+    one walk. Matching is case-insensitive and ignores surrounding space,
+    because the names arrive from a URL.
     """
     raw = (profile or "").strip()
-    want = raw.lower() or None
-    if want:
+    if profiles is not None:
+        # An explicit selection, even an empty one: a name that survived no
+        # validation must show nothing rather than quietly opening every profile.
+        picks = [p.strip() for p in profiles if p and p.strip()][:200]
+    elif raw:
+        picks = [raw]
+    else:
+        picks = None
+    want_key = _timeline_key(profile, profiles)
+    if picks is not None:
         # One name is one card, and a card can stand for more than one folder:
         # a merged account keeps its other handles' posts in their own folders,
         # which is what the grid draws. Walk the family so the timeline of a
@@ -1648,17 +1675,18 @@ def timeline(self, months: int | None = None,
         # does, so the TikTok side of a merged card is not part of it.
         sources = []
         seen: set[str] = set()
-        for who, plat in self.profile_family(raw, "instagram"):
-            # Only the Instagram members: the same-name rule pairs a handle with
-            # its twin on the other site, and reading that twin's folder as an
-            # Instagram profile would count the card's posts twice.
-            if not who or (plat or "").lower() != "instagram":
-                continue
-            key = who.strip().lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            sources.append((who, "instagram"))
+        for name in picks:
+            for who, plat in self.profile_family(name, "instagram"):
+                # Only the Instagram members: the same-name rule pairs a handle
+                # with its twin on the other site, and reading that twin's
+                # folder as an Instagram profile would count the card twice.
+                if not who or (plat or "").lower() != "instagram":
+                    continue
+                key = who.strip().lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                sources.append((who, "instagram"))
     else:
         sources = [(p.get("username"), "instagram")
                    for p in self.gallery_profiles() if p.get("username")]
@@ -1733,28 +1761,30 @@ def timeline(self, months: int | None = None,
     self._timeline_favs = bool(only_favorites)
     # Which profile this list was built for, so a month request for a different
     # scope cannot be answered from the wrong cache.
-    self._timeline_profile = want
-    return {"months": groups, "total": len(out), "profile": want or ""}
+    self._timeline_profile = want_key
+    return {"months": groups, "total": len(out), "profile": want_key or ""}
 
 def timeline_month(self, month: str, offset: int = 0,
                    limit: int = 200, only_favorites: bool = False,
-                   profile: str | None = None) -> dict:
+                   profile: str | None = None,
+                   profiles: list[str] | None = None) -> dict:
     """One month's posts from the timeline, and how many there are in all.
 
     The UI drives a slider over the months and asks for just the one it is
     showing. Returning all 30,000 posts to draw one month was 7.6MB and 1.5s
     per request; a month is a few hundred posts.
 
-    `only_favorites` and `profile` must be passed through: the built list is
+    `only_favorites` and the scope must be passed through: the built list is
     cached, and each combination is a DIFFERENT list, so reusing the cached
     list here would quietly serve every post while the UI said something else.
     """
-    want = (profile or "").strip().lower() or None
+    want = _timeline_key(profile, profiles)
     allp = getattr(self, "_timeline_all", None)
     stale = (getattr(self, "_timeline_favs", None) != bool(only_favorites)
              or getattr(self, "_timeline_profile", None) != want)
     if allp is None or not getattr(self, "_timeline_groups", None) or stale:
-        self.timeline(only_favorites=only_favorites, profile=profile)
+        self.timeline(only_favorites=only_favorites, profile=profile,
+                      profiles=profiles)
         allp = getattr(self, "_timeline_all", []) or []
     if month == "all":
         chosen = allp
@@ -2681,6 +2711,46 @@ def ensure_pillow_formats() -> None:
         pass
 
 
+def profile_peek(self, username: str, platform: str = "instagram",
+                 limit: int = 9) -> dict:
+    """A handful of tiles for one profile: liked photos first, then recent.
+
+    The profile list is drawn from /api/gallery, which carries counts but no
+    media, so a card that unfolds has to ask for its own photos. Asking for
+    /api/photos here would ship a profile's entire gallery -- thousands of
+    posts -- to draw nine thumbnails, so this answers with just the first item
+    of each post, favourites ahead of everything else.
+    """
+    secs = self.gallery_sections(username, platform)
+    liked = secs.get("favorites") or []
+    items: list[dict] = []
+    seen: set[str] = set()
+    for posts, is_fav in ((liked, True), (secs.get("main") or [], False)):
+        # Newest first: a profile's most recent work is what you are looking
+        # for, and the gallery returns them oldest-first for the timeline.
+        for post in sorted(posts, key=lambda p: p.get("ts") or 0, reverse=True):
+            first = (post.get("items") or [None])[0]
+            if not first or first.get("file") in seen:
+                continue
+            seen.add(first.get("file"))
+            items.append({
+                "file": first.get("file"),
+                "kind": first.get("kind") or "image",
+                "section": post.get("section") or ("favorites" if is_fav else "main"),
+                # The account the file really lives under: a merged card mixes
+                # two sites, and a thumb requested from the wrong root is empty.
+                "platform": post.get("platform") or platform,
+                "liked": bool(is_fav or post.get("liked")),
+                "ts": post.get("ts") or 0,
+                "parts": len(post.get("items") or []),
+            })
+            if len(items) >= limit:
+                return {"profile": username, "platform": platform,
+                        "liked": len(liked), "items": items}
+    return {"profile": username, "platform": platform,
+            "liked": len(liked), "items": items}
+
+
 def make_thumb(src: Path, ext: str) -> Path | None:
     """Create (or reuse) a small JPEG for `src`. Returns None on failure.
 
@@ -3234,6 +3304,7 @@ class Engine:
 
     gallery_profiles = gallery_profiles
     gallery_sections = gallery_sections
+    profile_peek = profile_peek
     liked_posts = liked_posts
     bookmarked_posts = bookmarked_posts
     post_files = post_files

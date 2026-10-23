@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# HardlyWatching AppImage entry point.
+#
+# This is a launcher, not a frozen copy of the app. It runs the checkout that
+# systemd starts and the web UI serves (default ~/apps/hardlywatching, override
+# with HW_HOME), so a git pull or an edit in that folder is what this file runs.
+# Bundling the code here would make two versions drift, and the one that runs at
+# login would be the one you cannot see.
+#
+#   ./HardlyWatching-x86_64.AppImage            open the control panel
+#   ./HardlyWatching-x86_64.AppImage --install  add a menu entry for it
+#   HW_HOME=/path/to/checkout ./…AppImage       point it at another install
+#   HW_APPIMAGE_OPEN=1 ./…AppImage              skip the panel, open the web UI
+
+set -u
+
+APP_DIR="${HW_HOME:-$HOME/apps/hardlywatching}"
+HERE="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+
+fail() {
+  printf '%s\n' "$*" >&2
+  command -v notify-send >/dev/null 2>&1 && notify-send "HardlyWatching" "$*" || true
+  exit 1
+}
+
+[ -f "$APP_DIR/control-panel.py" ] || fail \
+  "HardlyWatching is not installed at $APP_DIR.
+Clone or move the app there, or set HW_HOME to its folder."
+
+# The panel needs a toolkit: PyGObject (GTK) or PySide6 (Qt). The install's own
+# venv is the one place we know PySide6 can live, so prefer it over whatever
+# python this launcher was started with.
+PY="$APP_DIR/.venv/bin/python3"
+[ -x "$PY" ] || PY="$(command -v python3 || true)"
+[ -n "$PY" ] || fail "Python 3 was not found; install the app's requirements first."
+
+# --install: a menu entry pointing back at this very file. No extra tooling
+# (appimaged, AppImageLauncher) is required, which is what makes double-click
+# install work on a stock desktop.
+if [ "${1:-}" = "--install" ]; then
+  APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps"
+  mkdir -p "$APPS" "$ICONS" || fail "Could not write to $APPS"
+  SELF="${APPIMAGE:-$0}"
+  SELF="$(readlink -f "$SELF")"
+  cp "$HERE/hardlywatching.png" "$ICONS/hardlywatching.png" 2>/dev/null || true
+  cat > "$APPS/hardlywatching-appimage.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=HardlyWatching (AppImage)
+Comment=Start, stop and open the HardlyWatching archive app
+Exec=$SELF
+Icon=hardlywatching
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=instagram;tiktok;download;archive;panel;
+EOF
+  chmod +x "$APPS/hardlywatching-appimage.desktop"
+  command -v update-desktop-database >/dev/null 2>&1 && \
+    update-desktop-database "$APPS" >/dev/null 2>&1 || true
+  command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+    gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" >/dev/null 2>&1 || true
+  printf 'Added "HardlyWatching (AppImage)" to the applications menu.\n'
+  exit 0
+fi
+
+if [ "${HW_APPIMAGE_OPEN:-0}" = "1" ]; then
+  # The panel already knows the address; opening it directly is one flag away.
+  exec "$PY" -c 'import sys, webbrowser; webbrowser.open(sys.argv[1])' \
+    "http://127.0.0.1:${INSTA_PORT:-8765}/"
+fi
+
+exec "$PY" "$APP_DIR/control-panel.py" "$@"

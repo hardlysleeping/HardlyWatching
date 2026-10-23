@@ -6,10 +6,13 @@ at, and buttons to open / copy the link and to start, stop or restart the
 server. Closing this window does NOT stop the server -- it keeps running in
 the background, and you can reopen this panel any time.
 
-    python3 control-panel.py
+    ./control-panel.sh          (or: .venv/bin/python3 control-panel.py)
 
-Uses GTK (PyGObject), already present on GNOME desktops. Falls back to a
-plain terminal prompt if GTK is unavailable.
+Draws with GTK4 when PyGObject is there, otherwise with Qt when PySide6 is in
+the project's venv, otherwise with a plain terminal prompt. Qt is installed
+into the venv because an immutable distro cannot be given PyGObject without
+layering packages and rebooting -- Bazzite's system python has neither, so the
+window used to fall back to a terminal prompt.
 """
 
 from __future__ import annotations
@@ -233,12 +236,159 @@ class Panel:
         self.GLib.timeout_add(600, self.refresh)
 
 
+# ---------- Qt window ----------
+
+def run_qt() -> int | None:
+    """The panel in Qt. Returns None when PySide6 is not installed."""
+    try:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel,
+                                       QPushButton, QVBoxLayout, QWidget)
+    except Exception:
+        return None
+
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    app.setApplicationName("HardlyWatching")
+    app.setDesktopFileName("hardlywatching")
+    icon_path = HERE / "icon-192.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
+    win = QWidget()
+    win.setWindowTitle("HardlyWatching")
+    win.resize(400, 260)
+
+    box = QVBoxLayout(win)
+    box.setContentsMargins(16, 16, 16, 16)
+    box.setSpacing(10)
+
+    dim = "color: palette(mid);"
+    state = QLabel()
+    detail = QLabel()
+    detail.setWordWrap(True)
+    detail.setStyleSheet(dim)
+    box.addWidget(state)
+    box.addWidget(detail)
+
+    def new_button(text):
+        return QPushButton(text)
+
+    link_row = QHBoxLayout()
+    open_btn, copy_btn = new_button("Open in browser"), new_button("Copy link")
+    link_row.addWidget(open_btn)
+    link_row.addWidget(copy_btn)
+    box.addLayout(link_row)
+
+    ctrl_row = QHBoxLayout()
+    start_btn, stop_btn, restart_btn = new_button("Start"), new_button("Stop"), new_button("Restart")
+    for b in (start_btn, stop_btn, restart_btn):
+        ctrl_row.addWidget(b)
+    box.addLayout(ctrl_row)
+
+    status = QLabel()
+    status.setStyleSheet(dim)
+    note = QLabel("Closing this window keeps the app running.")
+    note.setStyleSheet(dim)
+    box.addWidget(status)
+    box.addWidget(note)
+    box.addStretch(1)
+
+    def refresh():
+        up = running()
+        state.setText(
+            '<span style="color:#2ec27e;font-weight:600">&#9679; Running</span>'
+            if up else
+            '<span style="color:#e01b24;font-weight:600">&#9679; Stopped</span>')
+        detail.setText(URL if up else "The app is not running.")
+        open_btn.setEnabled(up)
+        copy_btn.setEnabled(up)
+        start_btn.setEnabled(not up)
+        stop_btn.setEnabled(up)
+        restart_btn.setEnabled(up)
+        return False
+
+    def on_open():
+        if not running():
+            status.setText("Not running -- press Start first.")
+            return
+        open_in_browser()
+
+    def on_copy():
+        # Qt's own clipboard first: wl-copy is not on every desktop, and the
+        # toolkit already owns the selection.
+        try:
+            app.clipboard().setText(URL)
+            status.setText("Link copied.")
+        except Exception:
+            status.setText("Link copied." if copy_to_clipboard(URL) else "Copy failed.")
+
+    def on_start():
+        status.setText(start_server()[1])
+        QTimer.singleShot(600, refresh)
+
+    def on_stop():
+        status.setText(stop_server()[1])
+        QTimer.singleShot(600, refresh)
+
+    def on_restart():
+        status.setText(restart_server()[1])
+        QTimer.singleShot(600, refresh)
+
+    open_btn.clicked.connect(on_open)
+    copy_btn.clicked.connect(on_copy)
+    start_btn.clicked.connect(on_start)
+    stop_btn.clicked.connect(on_stop)
+    restart_btn.clicked.connect(on_restart)
+
+    # The app can be started from elsewhere (a desktop click on Start, the
+    # systemd unit coming up), so the window watches instead of trusting the
+    # state it drew last.
+    timer = QTimer(win)
+    timer.timeout.connect(refresh)
+    timer.start(2000)
+
+    refresh()
+    win.show()
+    return app.exec()
+
+
+def _restart_under_venv() -> None:
+    """Re-launch on the project's venv python, which is where the GUI lives.
+
+    A click on the menu icon can land on the system python, which on an immutable
+    distro has neither PyGObject nor PySide6 and cannot be given one without
+    layering packages and rebooting. The venv's python has PySide6, so hand
+    ourselves over to it once; HW_PANEL_VENV stops that from looping.
+    """
+    if os.environ.get("HW_PANEL_VENV") == "1":
+        return
+    venv_py = HERE / ".venv" / "bin" / "python3"
+    try:
+        if not venv_py.exists():
+            return
+        if Path(sys.executable).resolve() == venv_py.resolve():
+            return
+    except OSError:
+        return
+    env = dict(os.environ, HW_PANEL_VENV="1")
+    try:
+        os.execve(str(venv_py),
+                  [str(venv_py), str(HERE / "control-panel.py"), *sys.argv[1:]], env)
+    except OSError:
+        return
+
+
 def run_gui() -> int:
+    _restart_under_venv()
     try:
         import gi
         gi.require_version("Gtk", "4.0")
         from gi.repository import Gtk, GLib
     except Exception:
+        qt = run_qt()
+        if qt is not None:
+            return qt
         return run_terminal_fallback()
 
     app = Gtk.Application(application_id="ing.hardlysleep.hardlywatching")

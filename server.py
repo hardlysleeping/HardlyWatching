@@ -16,12 +16,15 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -33,7 +36,8 @@ if str(_HERE / "tools") not in sys.path:
 
 from urllib.parse import urlparse
 
-from engine import (Engine, UPLOAD_EXTS, clean_profile_name, ensure_pillow_formats,
+from engine import (Engine, UPLOAD_EXTS, cache_dir, clean_profile_name,
+                    ensure_pillow_formats,
                     make_playable, make_preview, make_thumb, _cache, _media_cache_forget)
 
 HERE = Path(__file__).resolve().parent
@@ -99,6 +103,24 @@ def get_engine() -> Engine:
 # Local SQLite record of imported profiles. Created lazily and shared, so the
 # connection is not reopened per request.
 _profile_db_inst = None
+
+
+def _profile_list_param(raw) -> list[str]:
+    """The handles out of a comma-separated `profiles=` query value.
+
+    The timeline picker sends several names at once; `profile` (exactly one) is
+    still accepted everywhere. Anything that is not a plausible handle is
+    dropped here rather than handed to the folder walk.
+    """
+    from urllib.parse import unquote
+    values = raw if isinstance(raw, list) else ([raw] if raw else [])
+    out: list[str] = []
+    for value in values:
+        for part in str(value or "").split(","):
+            name = clean_profile_name(unquote(part.strip()))
+            if name and name not in out:
+                out.append(name)
+    return out[:200]
 
 
 def _mark_bookmarks(posts, profile: str | None = None) -> list[dict]:
@@ -605,6 +627,72 @@ class QuietServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+# Zip builds run in their own thread: a big profile takes minutes, and a button
+# that says nothing for minutes reads as a hang. The page watches `_ZIPS` through
+# /api/profile-zip/progress and starts the download itself when the build lands.
+_ZIPS: dict[str, dict] = {}
+# A built zip nobody downloaded would otherwise sit in the cache forever; one day
+# is long enough to fetch it twice and short enough not to be a space problem.
+ZIP_TTL = 24 * 60 * 60
+
+
+def _zip_dir() -> Path:
+    folder = cache_dir() / "zips"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def purge_zips(max_age: float = ZIP_TTL) -> None:
+    """Delete built zips older than a day, and forget their tokens.
+
+    The sweep goes by file mtime rather than only the in-memory table: after a
+    restart the table is empty while the files are still on disk, and those
+    would otherwise never be reclaimed.
+    """
+    cutoff = time.time() - max_age
+    try:
+        entries = list(_zip_dir().iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            continue
+    for token, info in list(_ZIPS.items()):
+        if (info.get("finished") or info.get("started") or 0) < cutoff:
+            _ZIPS.pop(token, None)
+
+
+def build_zip(token: str, plan: list[tuple[Path, str, int]]) -> None:
+    """Write `plan` into the zip `token` names, reporting progress as it goes."""
+    info = _ZIPS[token]
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", dir=str(_zip_dir()), delete=False)
+    tmp.close()
+    try:
+        # Photos and videos are already compressed: store them, so a multi-GB
+        # profile is a straight copy instead of a CPU burn.
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+            for path, arc, size in plan:
+                try:
+                    zf.write(path, arc)
+                    info["done"] += 1
+                    info["bytes"] += size
+                except OSError:
+                    continue      # the file went away mid-build; skip it
+        info["path"] = tmp.name
+        info["finished"] = time.time()
+        info["status"] = "ready"
+    except OSError as exc:
+        info["status"] = "error"
+        info["error"] = str(exc)
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "InstaQueue/2.0"
 
@@ -788,6 +876,108 @@ class Handler(BaseHTTPRequestHandler):
                            "saved": saved, "skipped": skipped,
                            "failed": [{"file": f, "why": w} for f, w in failed],
                            "section": section})
+
+    def _plan_zip(self, name: str) -> list[tuple[Path, str, int]]:
+        """The files that belong in `name`'s zip, and their arc names.
+
+        The folder in the gallery is the archive itself, so this is just a walk:
+        `<root>/<handle>` for Instagram, `<parent>/tiktok/<handle>` for TikTok. A
+        handle on both sites is one card, so it is one zip with `instagram/` and
+        `tiktok/` inside; on a single site the handle is the archive's root
+        folder. 0-byte files are the marker a deleted post leaves behind, not
+        content, so they are skipped.
+        """
+        eng = get_engine()
+        folders = []
+        for platform in ("instagram", "tiktok"):
+            folder = eng.root_for(name, platform)
+            if folder is not None and folder.is_dir():
+                folders.append((platform, folder))
+        plan = []
+        for platform, folder in folders:
+            for path in sorted(folder.rglob("*")):
+                if not path.is_file():
+                    continue
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                if size == 0:
+                    continue
+                rel = path.relative_to(folder).as_posix()
+                arc = f"{name}/{rel}" if len(folders) == 1 \
+                    else f"{name}/{platform}/{rel}"
+                plan.append((path, arc, size))
+        return plan
+
+    def _start_zip(self, name: str, wait: bool = False) -> str | None:
+        """Begin building `name`'s zip; the page polled for progress gets the token."""
+        purge_zips()
+        plan = self._plan_zip(name)
+        if not plan:
+            self._json({"error": "nothing on disk for that profile"}, 404)
+            return None
+        token = secrets.token_urlsafe(9)
+        _ZIPS[token] = {"status": "building", "name": name, "done": 0,
+                        "files": len(plan), "bytes": 0,
+                        "total": sum(item[2] for item in plan),
+                        "path": None, "error": None, "started": time.time()}
+        if wait:
+            build_zip(token, plan)
+        else:
+            threading.Thread(target=build_zip, args=(token, plan), daemon=True).start()
+        return token
+
+    def _zip_progress(self, token: str) -> None:
+        """How far along a build is, in files and bytes, for the button's label."""
+        purge_zips()
+        info = _ZIPS.get(token)
+        if info is None:
+            # The token aged out or the app restarted: the page stops polling and
+            # says so, rather than watching a build that no longer exists.
+            return self._json({"status": "unknown"}, 404)
+        total = info["total"] or 0
+        pct = 100 if info["status"] == "ready" else (
+            int(info["bytes"] * 100 / total) if total else 0)
+        self._json({"status": info["status"], "done": info["done"],
+                    "files": info["files"], "bytes": info["bytes"],
+                    "total": total, "pct": pct, "error": info.get("error")})
+
+    def _send_ready_zip(self, token: str) -> None:
+        """Serve a finished build.
+
+        The file is left on disk after the send: it is swept a day later, so a
+        second click in the same sitting downloads the same bytes instead of
+        re-reading the whole profile.
+        """
+        info = _ZIPS.get(token)
+        if info is None:
+            return self.send_error(404)
+        if info["status"] != "ready" or not info.get("path"):
+            return self._json({"status": info["status"]}, 409)
+        path = Path(info["path"])
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return self.send_error(410)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition",
+                         'attachment; filename="%s.zip"' % info["name"])
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with open(path, "rb") as fh:
+                shutil.copyfileobj(fh, self.wfile, 1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _send_profile_zip(self, name: str) -> None:
+        """Direct URL: build and serve in one request, no progress to report."""
+        token = self._start_zip(name, wait=True)
+        if token:
+            self._send_ready_zip(token)
 
     def _serve_file(self, path: Path, cache: bool = False) -> None:
         if not path.is_file():
@@ -1005,8 +1195,11 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             favs = (q.get("favorites") or ["0"])[0] in ("1", "true", "yes")
             one = (q.get("profile") or [""])[0].strip()[:64] or None
+            many_raw = q.get("profiles")
+            many = _profile_list_param(many_raw) if many_raw else None
             return self._json(get_engine().timeline(only_favorites=favs,
-                                                    profile=one))
+                                                    profile=one,
+                                                    profiles=many))
         if p == "/api/timeline-month":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -1018,8 +1211,11 @@ class Handler(BaseHTTPRequestHandler):
                 offset, limit = 0, 200
             favs = (q.get("favorites") or ["0"])[0] in ("1", "true", "yes")
             one = (q.get("profile") or [""])[0].strip()[:64] or None
+            many_raw = q.get("profiles")
+            many = _profile_list_param(many_raw) if many_raw else None
             got = get_engine().timeline_month(
-                month, offset, limit, only_favorites=favs, profile=one)
+                month, offset, limit, only_favorites=favs, profile=one,
+                profiles=many)
             # The month's page, not the whole timeline: that is what is drawn.
             if isinstance(got.get("posts"), list):
                 _mark_bookmarks(got["posts"], one)
@@ -1085,6 +1281,22 @@ class Handler(BaseHTTPRequestHandler):
             for posts in secs.values():
                 _mark_bookmarks(posts, name)
             return self._json({"profile": name, "sections": secs})
+        if p == "/api/peek":
+            # A few tiles for one profile, liked first. Small on purpose: the
+            # card view unfolds nine thumbnails, not a whole gallery.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            if not name:
+                return self.send_error(400)
+            plat = (q.get("platform") or ["instagram"])[0]
+            if plat not in ("instagram", "tiktok"):
+                plat = "instagram"
+            try:
+                n = max(1, min(24, int((q.get("n") or ["9"])[0])))
+            except ValueError:
+                n = 9
+            return self._json(get_engine().profile_peek(name, plat, n))
         if p == "/media":
             # Serve a file, but only one inside a finished profile's folder.
             from urllib.parse import parse_qs
@@ -1111,6 +1323,24 @@ class Handler(BaseHTTPRequestHandler):
                     return self._serve_file(playable, cache=True)
             # Allow the browser to cache: these files never change in place.
             return self._serve_file(target, cache=True)
+        if p == "/api/profile-zip/progress":
+            # The button polls this while the build runs, so a multi-GB profile
+            # shows a real percentage instead of a dead "Zipping…".
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            return self._zip_progress((q.get("id") or [""])[0])
+        if p == "/api/profile-zip":
+            # Either `?id=` for a build the page started, or `?profile=` for a
+            # direct URL that builds and serves in one request.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            token = (q.get("id") or [""])[0]
+            if token:
+                return self._send_ready_zip(token)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            if not name:
+                return self.send_error(400)
+            return self._send_profile_zip(name)
         if p == "/view":
             # Full-size view of one image. HEIC is what phones write and only
             # Safari can draw it, so it is converted to JPEG here; everything
@@ -1202,6 +1432,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._upload()
 
         body = self._read_json()
+
+        if p == "/api/profile-zip/start":
+            # Kick off a build in the background and hand back its token; the
+            # page then polls progress and starts the download itself.
+            name = clean_profile_name(str(body.get("profile") or ""))
+            if not name:
+                return self._json({"error": "no profile given"}, 400)
+            token = self._start_zip(name)
+            if token is None:
+                return                      # the 404 was already sent
+            info = _ZIPS[token]
+            return self._json({"id": token, "files": info["files"],
+                               "total": info["total"]})
 
         if p == "/api/add":
             raw = body.get("profiles")
@@ -1490,12 +1733,18 @@ class Handler(BaseHTTPRequestHandler):
             if not on:
                 db.set_bookmark(plat, prof, name, False)
                 return self._json({"ok": True, "bookmarked": False,
-                                   "category": None})
+                                   "category": None,
+                                   # The picker draws "(n)" beside each category
+                                   # from this answer, so the number moves as
+                                   # soon as the write lands instead of staying
+                                   # stale until a reload.
+                                   "categories": db.bookmark_categories()})
             if cat == "__keep__":
                 cur = db.bookmark_for(plat, prof, name)
                 cat = cur.get("category") if cur else None
             got = db.set_bookmark(plat, prof, name, True, cat)
-            return self._json({"ok": True, **got})
+            return self._json({"ok": True, **got,
+                               "categories": db.bookmark_categories()})
 
         if p == "/api/bookmark/category":
             # The categories themselves: add, rename, delete. Deleting one never
