@@ -101,6 +101,29 @@ def get_engine() -> Engine:
 _profile_db_inst = None
 
 
+def _mark_bookmarks(posts, profile: str | None = None) -> list[dict]:
+    """Mark which of these posts are already saved, with the category each is in.
+
+    Every view that draws tiles needs this, or the bookmark button lies: a post
+    saved from Shorts showed an empty button in its profile's grid. One query for
+    the whole list rather than one per tile.
+    """
+    try:
+        keys = _profile_db().bookmark_keys()
+    except Exception:
+        return posts
+    for p in posts:
+        items = p.get("items") or []
+        if not items or not items[0].get("file"):
+            continue
+        who = (profile or p.get("username") or "").strip().lower()
+        key = (who, items[0]["file"])
+        if key in keys:
+            p["bookmarked"] = 1
+            p["category"] = keys[key]
+    return posts
+
+
 def _profile_db():
     # Delegates to the single shared instance so the engine and the HTTP layer
     # never hold two connections to the same database.
@@ -995,8 +1018,12 @@ class Handler(BaseHTTPRequestHandler):
                 offset, limit = 0, 200
             favs = (q.get("favorites") or ["0"])[0] in ("1", "true", "yes")
             one = (q.get("profile") or [""])[0].strip()[:64] or None
-            return self._json(get_engine().timeline_month(
-                month, offset, limit, only_favorites=favs, profile=one))
+            got = get_engine().timeline_month(
+                month, offset, limit, only_favorites=favs, profile=one)
+            # The month's page, not the whole timeline: that is what is drawn.
+            if isinstance(got.get("posts"), list):
+                _mark_bookmarks(got["posts"], one)
+            return self._json(got)
         if p == "/api/gallery/all":
             # Overarching Liked / Trash across every profile.
             from urllib.parse import parse_qs
@@ -1006,10 +1033,45 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(400)
             # Liked is the favourites folder plus every clip liked in the viewer
             # (gallery_all joins the two); trash is a folder like any other.
-            posts = get_engine().gallery_all(section)
+            posts = _mark_bookmarks(get_engine().gallery_all(section))
             return self._json({"section": section,
                                "profiles": get_engine().gallery_profiles(),
                                "posts": posts})
+        if p == "/api/bookmarks":
+            # The user's own collection: every bookmarked post, newest first,
+            # plus the categories they have made. `category` filters the list --
+            # an id, or "none" for the ones not filed under anything yet.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            cat = (q.get("category") or ["all"])[0] or "all"
+            db = _profile_db()
+            # Resolve the whole set once, then filter: the counts have to agree
+            # with the tiles on screen, and a bookmark whose file is gone has no
+            # tile (bookmarked_posts drops those rows as it notices them).
+            allposts = get_engine().bookmarked_posts("all")
+            cats = db.bookmark_categories()
+            counts: dict = {}
+            for p in allposts:
+                counts[p.get("category")] = counts.get(p.get("category"), 0) + 1
+            for c in cats:
+                c["count"] = counts.get(c["id"], 0)
+            if cat in ("", "all"):
+                posts = allposts
+            elif cat == "none":
+                posts = [p for p in allposts if p.get("category") is None]
+            else:
+                posts = [p for p in allposts if str(p.get("category")) == str(cat)]
+            return self._json({
+                "categories": cats,
+                "category": cat,
+                "posts": posts,
+                "total": len(allposts),
+                "uncategorised": counts.get(None, 0),
+                # Keyed the same way a tile is, so a grid can paint its own
+                # bookmark buttons from one answer instead of asking per tile.
+                "keys": {"%s/%s" % (p["username"].lower(), p["items"][0]["file"]):
+                         p.get("category") for p in allposts},
+            })
         if p == "/api/photos":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -1019,8 +1081,10 @@ class Handler(BaseHTTPRequestHandler):
             plat = (q.get("platform") or ["instagram"])[0]
             if plat not in ("instagram", "tiktok"):
                 plat = "instagram"
-            return self._json({"profile": name,
-                               "sections": get_engine().gallery_sections(name, plat)})
+            secs = get_engine().gallery_sections(name, plat)
+            for posts in secs.values():
+                _mark_bookmarks(posts, name)
+            return self._json({"profile": name, "sections": secs})
         if p == "/media":
             # Serve a file, but only one inside a finished profile's folder.
             from urllib.parse import parse_qs
@@ -1395,6 +1459,54 @@ class Handler(BaseHTTPRequestHandler):
             result = _tt_raise_all(get_engine(), step, scope)
             return self._json(result)
 
+        if p == "/api/bookmark":
+            # One post, saved or not. `category` only matters when it is being
+            # saved; omitting it keeps whatever category it already had.
+            db = _profile_db()
+            prof = str(body.get("profile") or "").strip()[:64]
+            plat = str(body.get("platform") or "instagram").strip().lower()
+            if plat not in ("instagram", "tiktok"):
+                plat = "instagram"
+            name = str(body.get("file") or "").strip().rsplit("/", 1)[-1]
+            if not prof or not name:
+                return self._json({"ok": False, "error": "a post is needed"})
+            if "on" in body or "bookmarked" in body:
+                on = bool(body.get("on", body.get("bookmarked")))
+            else:
+                # No explicit state: this is the button, so flip what is there.
+                on = db.bookmark_for(plat, prof, name) is None
+            cat = body.get("category", "__keep__")
+            if not on:
+                db.set_bookmark(plat, prof, name, False)
+                return self._json({"ok": True, "bookmarked": False,
+                                   "category": None})
+            if cat == "__keep__":
+                cur = db.bookmark_for(plat, prof, name)
+                cat = cur.get("category") if cur else None
+            got = db.set_bookmark(plat, prof, name, True, cat)
+            return self._json({"ok": True, **got})
+
+        if p == "/api/bookmark/category":
+            # The categories themselves: add, rename, delete. Deleting one never
+            # touches the bookmarks in it -- they fall back to uncategorised.
+            db = _profile_db()
+            op = str(body.get("op") or "").strip().lower()
+            if op == "add":
+                made = db.add_bookmark_category(str(body.get("name") or ""))
+                if not made:
+                    return self._json({"ok": False, "error": "a name is needed"})
+                return self._json({"ok": True, "category": made,
+                                   "categories": db.bookmark_categories()})
+            if op == "rename":
+                ok = db.rename_bookmark_category(int(body.get("id") or 0),
+                                                 str(body.get("name") or ""))
+                return self._json({"ok": ok, "categories": db.bookmark_categories()})
+            if op == "delete":
+                n = db.delete_bookmark_category(int(body.get("id") or 0))
+                return self._json({"ok": True, "kept": n,
+                                   "categories": db.bookmark_categories()})
+            return self._json({"ok": False, "error": "unknown op"})
+
         if p == "/api/shorts/feed":
             # Newest-first scan of what is actually on disk, synced into the
             # clips table, then a weighted pick. Verifying against disk each
@@ -1420,10 +1532,16 @@ class Handler(BaseHTTPRequestHandler):
             by_path = {f["path"]: f for f in found}
             rows = db.feed(limit, liked_only=fav, exclude=seen, known_paths=alive,
                            profile=prof or None, platform=plat or None)
+            saved = db.bookmark_keys()
             out = []
             for r in rows:
                 meta = by_path.get(r["path"], {})
-                out.append({**r, **{k: meta.get(k) for k in ("url", "mtime", "bytes")}})
+                key = (str(r.get("profile") or "").lower(),
+                       str(r.get("path") or "").rsplit("/", 1)[-1])
+                out.append({**r,
+                            **{k: meta.get(k) for k in ("url", "mtime", "bytes")},
+                            "bookmarked": 1 if key in saved else 0,
+                            "bookmark_category": saved.get(key)})
             db.mark_shown([r["path"] for r in out])
             return self._json({"clips": out, "stats": db.clip_stats(),
                                "profile": prof, "platform": plat})
@@ -1500,6 +1618,13 @@ class Handler(BaseHTTPRequestHandler):
                 # before the two flags were merged still works. It is a like now.
                 db.set_liked(path, bool(body.get("value", True)))
                 return self._json({"ok": True, "liked": db.clip(path)["liked"]})
+            if action in ("bookmark", "unbookmark"):
+                row = db.clip(path) or {}
+                base = path.rsplit("/", 1)[-1]
+                got = db.set_bookmark(row.get("platform") or "instagram",
+                                      row.get("profile") or "", base,
+                                      action == "bookmark")
+                return self._json({"ok": True, **got})
             if action == "trash":
                 # Take it out of the feed AND out of the profile's main folder.
                 # The clip moves to trash/, which is what the gallery's All
@@ -1655,7 +1780,8 @@ class Handler(BaseHTTPRequestHandler):
             db = _profile_db()
             action = str(body.get("action") or "")
             items = [i for i in (body.get("items") or []) if isinstance(i, dict)]
-            flags = ("like", "unlike", "star", "unstar")
+            flags = ("like", "unlike", "star", "unstar",
+                     "bookmark", "unbookmark")
             if action not in ("trash", "favorites", "main", *flags):
                 return self._json({"ok": False, "error": "unknown action"})
             if not items:
@@ -1694,6 +1820,12 @@ class Handler(BaseHTTPRequestHandler):
                     if not f:
                         continue
                     try:
+                        if action in ("bookmark", "unbookmark"):
+                            # A bookmark is a property of the post, not of the
+                            # clip row, so unlike a like this works for photos.
+                            db.set_bookmark(plat, name, f, action == "bookmark")
+                            done += 1
+                            continue
                         if action in flags:
                             path = db.clip_path(name, f, plat)
                             if not path:

@@ -56,6 +56,34 @@ CREATE TABLE IF NOT EXISTS profile_weights (
     weight   REAL NOT NULL DEFAULT 1.0,
     PRIMARY KEY (platform, profile)
 );
+
+-- Bookmarks: the higher-level save, one step above a like. A like says "seen";
+-- a bookmark says "I want to find this again", so it is a separate flag with a
+-- category of its own -- never implied by a like, and never a like by itself.
+--
+-- Categories are the user's own; a bookmark may sit in none (uncategorised),
+-- and deleting a category leaves its bookmarks in place with no category rather
+-- than destroying them.
+CREATE TABLE IF NOT EXISTS bookmark_categories (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name     TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created  REAL NOT NULL
+);
+
+-- Keyed by the file that identifies the post, the same way the gallery names a
+-- tile, so it works for photos as well as clips: a bookmark is not a property
+-- of a video, it is a property of a post.
+CREATE TABLE IF NOT EXISTS bookmarks (
+    platform TEXT NOT NULL,
+    profile  TEXT NOT NULL,           -- lowercased handle
+    file     TEXT NOT NULL,
+    category INTEGER,                 -- bookmark_categories.id, NULL = none
+    created  REAL NOT NULL,
+    PRIMARY KEY (platform, profile, file)
+);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_created ON bookmarks(created DESC);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_cat ON bookmarks(category, created DESC);
 """
 
 
@@ -634,6 +662,154 @@ class ProfileDB:
                 "UPDATE clips SET liked=?, liked_at=? WHERE path=?",
                 (1 if liked else 0, time.time() if liked else 0.0, path))
             self._conn.commit()
+
+    # ---------- bookmarks ----------
+    # A bookmark is the higher-level save: "keep this, I want it again", not "I
+    # liked this". It lives on the post (profile + file) rather than on the clip
+    # row, so a photo can be bookmarked too, and it survives the file being
+    # filed into favourites/ or moved to trash.
+
+    def bookmark_categories(self) -> list[dict]:
+        """The user's categories, in the order they made them, with counts."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT c.id, c.name, c.position, c.created,"
+                " (SELECT COUNT(*) FROM bookmarks b WHERE b.category=c.id) AS n"
+                " FROM bookmark_categories c ORDER BY c.position ASC, c.id ASC")
+            return [{"id": int(r["id"]), "name": r["name"],
+                     "position": int(r["position"]), "count": int(r["n"] or 0)}
+                    for r in cur]
+
+    def add_bookmark_category(self, name: str) -> dict | None:
+        """Make a category. An empty or duplicate name returns the existing one."""
+        clean = " ".join((name or "").split())[:40]
+        if not clean:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, name FROM bookmark_categories WHERE lower(name)=?",
+                (clean.lower(),)).fetchone()
+            if row:
+                return {"id": int(row["id"]), "name": row["name"]}
+            nxt = self._conn.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM bookmark_categories"
+            ).fetchone()[0]
+            cur = self._conn.execute(
+                "INSERT INTO bookmark_categories (name, position, created)"
+                " VALUES (?,?,?)", (clean, nxt, time.time()))
+            self._conn.commit()
+            return {"id": int(cur.lastrowid), "name": clean}
+
+    def rename_bookmark_category(self, cid: int, name: str) -> bool:
+        clean = " ".join((name or "").split())[:40]
+        if not clean:
+            return False
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE bookmark_categories SET name=? WHERE id=?", (clean, int(cid)))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def delete_bookmark_category(self, cid: int) -> int:
+        """Drop a category. Its bookmarks stay, uncategorised. Returns how many."""
+        with self._lock:
+            n = self._conn.execute(
+                "SELECT COUNT(*) FROM bookmarks WHERE category=?", (int(cid),)
+            ).fetchone()[0]
+            self._conn.execute("UPDATE bookmarks SET category=NULL WHERE category=?",
+                               (int(cid),))
+            self._conn.execute("DELETE FROM bookmark_categories WHERE id=?",
+                               (int(cid),))
+            self._conn.commit()
+            return int(n or 0)
+
+    def bookmarks(self, category=None) -> list[dict]:
+        """Every bookmark, newest first. `category` filters: an id, or "none"."""
+        sql = ("SELECT platform, profile, file, category, created FROM bookmarks")
+        args: list = []
+        if category == "none":
+            sql += " WHERE category IS NULL"
+        elif category not in (None, "", "all"):
+            sql += " WHERE category=?"
+            args.append(int(category))
+        sql += " ORDER BY created DESC"
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, args)]
+
+    def bookmark_for(self, platform: str, profile: str, file: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT platform, profile, file, category, created FROM bookmarks"
+                " WHERE platform=? AND profile=? AND file=?",
+                ((platform or "instagram").lower(), _key(profile),
+                 (file or "").strip())).fetchone()
+            return dict(row) if row else None
+
+    def bookmark_keys(self, platform: str | None = None) -> dict:
+        """{(profile_lower, file): category_id} for painting tiles in one pass."""
+        sql = "SELECT platform, profile, file, category FROM bookmarks"
+        args: list = []
+        if platform:
+            sql += " WHERE platform=?"
+            args.append(platform.lower())
+        with self._lock:
+            return {(r["profile"], r["file"]): r["category"]
+                    for r in self._conn.execute(sql, args)}
+
+    def set_bookmark(self, platform: str, profile: str, file: str,
+                     on: bool = True, category=None) -> dict:
+        """Add or remove a bookmark. Returns the row it left behind (or None)."""
+        plat = (platform or "instagram").lower()
+        who = _key(profile)
+        name = (file or "").strip()
+        if not who or not name:
+            return {"bookmarked": False, "category": None}
+        with self._lock:
+            if not on:
+                self._conn.execute(
+                    "DELETE FROM bookmarks WHERE platform=? AND profile=? AND file=?",
+                    (plat, who, name))
+                self._conn.commit()
+                return {"bookmarked": False, "category": None}
+            cat = None
+            if category not in (None, "", "none"):
+                try:
+                    cat = int(category)
+                except (TypeError, ValueError):
+                    cat = None
+                if cat is not None:
+                    known = self._conn.execute(
+                        "SELECT 1 FROM bookmark_categories WHERE id=?", (cat,)
+                    ).fetchone()
+                    if not known:
+                        cat = None
+            self._conn.execute(
+                "INSERT INTO bookmarks (platform, profile, file, category, created)"
+                " VALUES (?,?,?,?,?)"
+                " ON CONFLICT(platform, profile, file) DO UPDATE SET category=excluded.category",
+                (plat, who, name, cat, time.time()))
+            self._conn.commit()
+            return {"bookmarked": True, "category": cat}
+
+    def set_bookmark_category(self, platform: str, profile: str, file: str,
+                              category) -> dict:
+        """Move one bookmark into a category (or none)."""
+        plat = (platform or "instagram").lower()
+        who = _key(profile)
+        name = (file or "").strip()
+        cat = None
+        if category not in (None, "", "none"):
+            try:
+                cat = int(category)
+            except (TypeError, ValueError):
+                cat = None
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE bookmarks SET category=?"
+                " WHERE platform=? AND profile=? AND file=?",
+                (cat, plat, who, name))
+            self._conn.commit()
+            return {"ok": cur.rowcount > 0, "category": cat}
 
     def set_trashed(self, path: str, trashed: bool = True):
         with self._lock:

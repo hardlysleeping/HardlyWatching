@@ -101,6 +101,9 @@
   }
   .act:active{transform:scale(.9)}
   .act.liked{color:#ff5c8a}
+  /* Blue, not the heart's pink: saving for later is a different intent from
+     liking, and the two buttons sit next to each other. */
+  .act.bookmarked{color:#7cc7ff}
   .act.trashed{color:#ff5c5c}
   .act small{font-size:.55rem;display:block;margin-top:-.15rem}
   .lbl{font-size:.58rem;color:var(--muted);text-align:center;margin-top:.15rem;
@@ -153,6 +156,7 @@
   .act .ic{width:1.25rem;height:1.25rem}
   .filt .ic{width:1.05rem;height:1.05rem}
   .liked .ic{fill:currentColor}
+  .bookmarked .ic{fill:currentColor}
   .filt.on .ic{fill:currentColor}
   /* Sound on shows the waves; muted shows the slash. Both are in the markup so
      a state change is a class, not a rebuilt button. */
@@ -360,6 +364,12 @@
   <button class="act" id="likeBtn" aria-label="Like" title="Like (l)">
     <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 20.3l-1.2-1.1C6 15 3 12.3 3 9a4.6 4.6 0 0 1 4.7-4.6A5 5 0 0 1 12 6.3a5 5 0 0 1 4.3-1.9A4.6 4.6 0 0 1 21 9c0 3.3-3 6-7.8 10.2z"/>
+    </svg>
+  </button>
+  <button class="act" id="bookBtn" aria-label="Bookmark"
+          title="Bookmark — save this one for later (b)">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6.6 3.6h10.8a1 1 0 0 1 1 1v15.8l-6.4-4-6.4 4V4.6a1 1 0 0 1 1-1z"/>
     </svg>
   </button>
   <button class="act" id="dlBtn" aria-label="Download" title="Save the file to this device">
@@ -913,6 +923,8 @@ function fillRail(){
     .filter(Boolean).join(" · ");
   $("likeBtn").classList.toggle("liked", !!c.liked);
   $("likeBtn").setAttribute("aria-pressed", c.liked ? "true" : "false");
+  $("bookBtn").classList.toggle("bookmarked", !!c.bookmarked);
+  $("bookBtn").setAttribute("aria-pressed", c.bookmarked ? "true" : "false");
   $("count").textContent = (idx + 1) + " / " + clips.length
     + (ONLY_USER ? " · only @" + ONLY_USER : "");
 }
@@ -1289,6 +1301,25 @@ $("likeBtn").onclick = async () => {
   await act("like", {value: !!c.liked});
 };
 
+// Saving for later. The clip is not moved; the bookmark lives in the database
+// with the categories the gallery's Bookmarks view manages.
+$("bookBtn").onclick = async () => {
+  const c = currentData();
+  if(!c) return;
+  const want = !c.bookmarked;
+  const was = c.bookmarked;
+  c.bookmarked = want ? 1 : 0;
+  fillRail();
+  const r = await act(want ? "bookmark" : "unbookmark");
+  if(!r || !r.ok){
+    c.bookmarked = was;
+    fillRail();
+    toast("Could not update bookmarks");
+    return;
+  }
+  toast(want ? "Bookmarked" : "Bookmark removed");
+};
+
 wireChromeToggle();
 
 $("who").onclick = () => {
@@ -1535,6 +1566,7 @@ document.addEventListener("keydown", e => {
     e.preventDefault();
     toggleSound();
   }else if(e.key === "l"){ $("likeBtn").click(); }
+  else if(e.key === "b"){ $("bookBtn").click(); }
   else if(e.key === "f"){ $("favBtn").click(); }
 });
 

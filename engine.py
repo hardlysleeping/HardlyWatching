@@ -2218,6 +2218,57 @@ def liked_posts(self) -> list[dict]:
     return out
 
 
+def bookmarked_posts(self, category=None) -> list[dict]:
+    """Every bookmarked post, newest bookmark first, shaped like a gallery post.
+
+    A bookmark is stored against the post (profile + file), not against a clip
+    row, so a photo can be bookmarked too -- and it outlives the file being filed
+    into favourites/ or moved to trash, because the section is resolved from where
+    the file is now rather than remembered when it was saved. A bookmark whose
+    file has since been deleted stays in the database but has no tile here.
+    """
+    import profile_db as _pdb
+    video_exts = {".mp4", ".mov", ".webm", ".m4v", ".mkv"}
+    out = []
+    for row in _pdb._shared_db().bookmarks(category):
+        name = str(row.get("file") or "").rsplit("/", 1)[-1]
+        plat = str(row.get("platform") or "instagram").lower()
+        stored = str(row.get("profile") or "")
+        if not name or not stored:
+            continue
+        # The folder's own spelling: the bookmark stores the handle lowercased.
+        who = self._real_profile_name(stored, plat)
+        if not who:
+            continue
+        section = None
+        for cand in ("", FAVORITES_DIR, TRASH_DIR):
+            if self.resolve_media(who, name, cand, plat) is not None:
+                section = cand or "main"
+                break
+        if section is None:
+            # The account's folder is here but the file is in none of the three
+            # places a post can be: it was deleted (trash cleared, or removed by
+            # hand). A bookmark pointing at nothing is not something the user can
+            # act on, so it goes -- but only when the folder proves the archive is
+            # readable, never when an unplugged drive makes every file look gone.
+            _pdb._shared_db().set_bookmark(plat, stored, name, False)
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        out.append({
+            "post": os.path.splitext(name)[0],
+            "username": who,
+            "platform": plat,
+            "ts": float(row.get("created") or 0),
+            "section": section,
+            "items": [{"file": name, "part": 1,
+                       "kind": "video" if ext in video_exts else "image"}],
+            # Marks the tile as saved, and carries the category it is filed under.
+            "bookmarked": 1,
+            "category": row.get("category"),
+        })
+    return out
+
+
 def gallery_all(self, section: str) -> list[dict]:
     """Every profile's posts for one section, across the whole archive.
 
@@ -3134,6 +3185,7 @@ class Engine:
     gallery_profiles = gallery_profiles
     gallery_sections = gallery_sections
     liked_posts = liked_posts
+    bookmarked_posts = bookmarked_posts
     post_files = post_files
     tiktok_avatar = tiktok_avatar
     gallery_posts = gallery_posts

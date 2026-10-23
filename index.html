@@ -542,6 +542,14 @@
   /* A heart that changes has to look like it changed. One short spring, no
      colour flash, nothing that fights the tile's own hover state. */
   .ptile .acts button.pop,#vwrap [data-vfav].pop{animation:favpop .24s ease-out}
+  /* A bookmark button that is not set yet keeps its glyph, dimmed: the same
+     button in two states, not two different controls. */
+  .ptile .acts button.dim,.vact.dim{opacity:.42}
+  /* The category picker: one full-width row per choice, so a long name or a
+     fat thumb does not miss the target. */
+  .bmlist{display:flex;flex-direction:column;gap:6px;margin:12px 0 14px}
+  .bmlist button{text-align:left;width:100%}
+  .bmlist button.on{background:var(--accent);border-color:var(--accent);color:#fff}
   @keyframes favpop{
     0%{transform:scale(1)}
     40%{transform:scale(1.4)}
@@ -3699,6 +3707,11 @@ function buildAllBar(profileCount){
   // second chip here for the latter, called Starred; one heart, one view.
   bar.appendChild(mk("♥ Liked", gAll === "favorites",
     () => { gAll = "favorites"; gProfile = null; gPlatform = "instagram"; renderAllSection("favorites"); }));
+  // Saved for later. The higher-level flag: a like is "seen", a bookmark is
+  // "find this again", and it is the one that carries a category.
+  bar.appendChild(mk("🔖 Bookmarks", gAll === "bookmarks",
+    () => { gAll = "bookmarks"; gProfile = null; gPlatform = "instagram";
+            bmCat = "all"; renderBookmarks(); }));
   bar.appendChild(mk("🗑 All Trash", gAll === "trash",
     () => { gAll = "trash"; gProfile = null; gPlatform = "instagram"; renderAllSection("trash"); }));
   bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
@@ -3823,6 +3836,242 @@ async function renderAllSection(section){
   } else {
     for(const post of sortPosts(posts)){
       const tile = tileFor(post.username, post, section);
+      const tag = document.createElement("span");
+      tag.className = "ptile-user";
+      tag.textContent = post.username;
+      tile.appendChild(tag);
+      grid.appendChild(tile);
+    }
+  }
+  host.appendChild(grid);
+}
+
+/* ---------- bookmarks: the higher-level save ---------- */
+
+let bmCat = "all";        // "all" | "none" | a category id
+let bmCats = [];          // the categories last read, for the pickers
+
+// Save or unsave one post. `category` is omitted when it must keep the one it
+// already has, which is what the button in a grid wants.
+async function bookmarkPost(username, file, plat, on, category){
+  const body = {profile: username, platform: plat || "instagram", file, on};
+  if(category !== undefined) body.category = category;
+  return await post("/api/bookmark", body);
+}
+
+function paintBook(btn, saved){
+  btn.textContent = "🔖";
+  btn.classList.toggle("dim", !saved);
+  btn.title = saved ? "Bookmarked — tap to remove" : "Bookmark this";
+}
+
+// Choosing a category for one saved post. Native prompt() is not used anywhere
+// else in this page, so this is the same small overlay the confirm dialogs use.
+function bookmarkPicker(username, file, plat, current){
+  const wrap = document.createElement("div");
+  wrap.className = "confirm";
+  const box = document.createElement("div");
+  box.className = "box";
+  const title = document.createElement("p");
+  title.textContent = "File this bookmark";
+  box.appendChild(title);
+  const why = document.createElement("div");
+  why.className = "why";
+  why.textContent = "Categories are yours to name. A bookmark can sit in one, or none.";
+  box.appendChild(why);
+
+  const list = document.createElement("div");
+  list.className = "bmlist";
+  const close = () => wrap.remove();
+
+  const addRow = (label, cat, n) => {
+    const b = document.createElement("button");
+    b.className = "small" + (String(current ?? "none") === String(cat) ? " on" : "");
+    b.textContent = n === undefined ? label : `${label} (${n})`;
+    b.onclick = async () => {
+      const r = await bookmarkPost(username, file, plat, true, cat);
+      close();
+      if(!r.ok){ toast("Could not file that"); return; }
+      toast(cat === "none" ? "Uncategorised" : `Filed under ${label}`);
+      repaintBookmarksView();
+      if(vState) paintViewerActions();
+    };
+    list.appendChild(b);
+  };
+  addRow("No category", "none");
+  for(const c of bmCats) addRow(c.name, c.id, c.count);
+
+  const row = document.createElement("div");
+  row.className = "row";
+  const fresh = document.createElement("button");
+  fresh.className = "small";
+  fresh.textContent = "＋ New category…";
+  fresh.onclick = async () => {
+    const name = window.prompt("Name the category");
+    if(!name) return;
+    const r = await post("/api/bookmark/category", {op: "add", name});
+    if(!r.ok){ toast(r.error || "Could not add that"); return; }
+    bmCats = r.categories || bmCats;
+    const made = r.category;
+    if(made){
+      const got = await bookmarkPost(username, file, plat, true, made.id);
+      close();
+      toast(`Filed under ${made.name}`);
+      repaintBookmarksView();
+      if(vState) paintViewerActions();
+      return;
+    }
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "small";
+  cancel.textContent = "Cancel";
+  cancel.onclick = close;
+  row.appendChild(fresh);
+  row.appendChild(cancel);
+  box.appendChild(list);
+  box.appendChild(row);
+  wrap.appendChild(box);
+  wrap.onclick = (e) => { if(e.target === wrap) close(); };
+  document.body.appendChild(wrap);
+}
+
+// Redraw whichever view is on screen after a bookmark changed.
+function repaintBookmarksView(){
+  if(gAll === "bookmarks") renderBookmarks();
+}
+
+async function renderBookmarks(){
+  const host = $("profileGrid");
+  const sw = $("gSearchWrap");
+  if(sw) sw.style.display = "none";
+  gProfile = null;
+  rememberView();
+  const mine = ++gReq;
+  host.innerHTML = `<div class="gempty">Loading…</div>`;
+  let data;
+  try {
+    data = await (await fetch(`/api/bookmarks?category=${encodeURIComponent(bmCat)}`)).json();
+  } catch(e){
+    host.innerHTML = `<div class="gempty">Could not load.</div>`;
+    return;
+  }
+  if(mine !== gReq) return;
+  bmCats = data.categories || [];
+  const posts = data.posts || [];
+  buildAllBar(new Set(posts.map(p => p.username)).size);
+
+  const bar = document.createElement("div");
+  bar.className = "gbar";
+  bar.style.gridColumn = "1/-1";
+  const tot = document.createElement("span");
+  tot.className = "hint";
+  const uniq = new Set(posts.map(p => p.username)).size;
+  tot.textContent = `${posts.length} saved across ${uniq} profile${uniq===1?"":"s"}`;
+  bar.appendChild(tot);
+
+  // Categories, as chips that filter. "Uncategorised" is a real filter, not an
+  // error state: saving fast and filing later is the normal way to use this.
+  const cats = document.createElement("span");
+  cats.className = "sortgroup";
+  const chip = (label, active, fn) => {
+    const b = document.createElement("button");
+    b.className = "fchip" + (active ? " on" : "");
+    b.textContent = label;
+    b.onclick = fn;
+    cats.appendChild(b);
+    return b;
+  };
+  chip(`All (${data.total || 0})`, bmCat === "all", () => { bmCat = "all"; renderBookmarks(); });
+  chip(`Uncategorised (${data.uncategorised || 0})`, bmCat === "none",
+       () => { bmCat = "none"; renderBookmarks(); });
+  for(const c of bmCats){
+    chip(`${c.name} (${c.count})`, String(bmCat) === String(c.id),
+         () => { bmCat = c.id; renderBookmarks(); });
+  }
+  chip("＋ Category", false, async () => {
+    const name = window.prompt("Name the category");
+    if(!name) return;
+    const r = await post("/api/bookmark/category", {op: "add", name});
+    if(!r.ok){ toast(r.error || "Could not add that"); return; }
+    // Stay on the filter you were on: creating a category and being thrown into
+    // its (empty) list reads as if the bookmarks vanished.
+    bmCats = r.categories || [];
+    renderBookmarks();
+  });
+  bar.appendChild(cats);
+
+  // A category can be renamed or dropped, but only while it is the one in view,
+  // so neither is a button sitting there waiting to be hit by mistake.
+  const active = bmCats.find(c => String(c.id) === String(bmCat));
+  if(active){
+    const ren = document.createElement("button");
+    ren.className = "small";
+    ren.textContent = "✎ Rename";
+    ren.onclick = async () => {
+      const name = window.prompt("Rename the category", active.name);
+      if(!name) return;
+      const r = await post("/api/bookmark/category", {op: "rename", id: active.id, name});
+      if(!r.ok){ toast("Could not rename that"); return; }
+      renderBookmarks();
+    };
+    bar.appendChild(ren);
+    const del = document.createElement("button");
+    del.className = "small danger";
+    del.textContent = "🗑 Delete category";
+    del.title = "The bookmarks in it stay, uncategorised";
+    del.onclick = async () => {
+      if(!confirm(`Delete the category "${active.name}"?\n\nThe ${active.count} bookmark${active.count===1?"":"s"} in it are kept, uncategorised.`)) return;
+      const r = await post("/api/bookmark/category", {op: "delete", id: active.id});
+      if(!r.ok){ toast("Could not delete that"); return; }
+      toast(`Deleted — ${r.kept} kept`);
+      bmCat = "all";
+      renderBookmarks();
+    };
+    bar.appendChild(del);
+  }
+
+  const sorts = [["random","⇄ Random"],["newest","↓ Newest"],["oldest","↑ Oldest"]];
+  const sg = document.createElement("span");
+  sg.className = "sortgroup";
+  for(const [key,label] of sorts){
+    const b = document.createElement("button");
+    b.className = "fchip" + (gSort === key ? " on" : "");
+    b.textContent = label;
+    b.onclick = () => { gSort = key; if(key === "random") gSeed = (Date.now()&0x7fffffff); renderBookmarks(); };
+    sg.appendChild(b);
+  }
+  bar.appendChild(sg);
+  if(posts.length){
+    const play = document.createElement("button");
+    play.className = "small";
+    play.style.marginLeft = "9px";
+    play.textContent = "▶ Swipe saved";
+    play.title = "Open full screen and swipe through every saved item";
+    play.onclick = () => {
+      allViewList = sortPosts(posts);
+      allViewIndex = 0;
+      openAllItem();
+    };
+    bar.appendChild(play);
+  }
+  bar.appendChild(selButton());
+  host.innerHTML = "";
+  host.appendChild(bar);
+
+  const grid = document.createElement("div");
+  grid.className = "pgrid";
+  grid.style.gridColumn = "1/-1";
+  if(!posts.length){
+    grid.innerHTML = `<div class="gempty">${
+      bmCat === "all" ? "Nothing saved yet — tap 🔖 on a post or in Shorts."
+      : bmCat === "none" ? "Nothing uncategorised."
+      : "Nothing filed under this category yet."}</div>`;
+  } else {
+    for(const post of sortPosts(posts)){
+      // Saved by definition: the tile shows it as bookmarked and keeps the
+      // category it carries, so the picker opens on the right one.
+      post.bookmarked = 1;
+      const tile = tileFor(post.username, post, post.section || "main");
       const tag = document.createElement("span");
       tag.className = "ptile-user";
       tag.textContent = post.username;
@@ -5105,6 +5354,38 @@ function tileFor(username, post, section){
     btn.dataset.heart = "1";
     acts.appendChild(btn);
   }
+
+  // Save for later. This is the higher-level flag -- a like says "seen", this
+  // says "find it again" -- and it is stored on the post, so it survives the
+  // file being filed into favourites/ or moved to trash.
+  {
+    let saved = !!post.bookmarked;
+    const tagBtn = mkBtn("🏷", "File this bookmark under a category",
+      () => bookmarkPicker(username, first.file, plat, post.category ?? "none"));
+    tagBtn.dataset.tag = "1";
+    const bb = mkBtn("🔖", "Bookmark this", async () => {
+      const want = !saved;
+      bb.disabled = true;
+      const r = await bookmarkPost(username, first.file, plat, want);
+      bb.disabled = false;
+      if(!r || !r.ok){ toast("Could not update bookmarks"); return; }
+      saved = want;
+      post.bookmarked = want ? 1 : 0;
+      post.category = r.category ?? null;
+      paintBook(bb, saved);
+      tagBtn.style.display = saved ? "" : "none";
+      toast(saved ? "Bookmarked" : "Bookmark removed");
+      // In the bookmarks view an unsaved post no longer belongs in the grid,
+      // and its category counts change with it: redraw from the server rather
+      // than leaving a stale "(2)" beside an empty grid.
+      if(!saved && gAll === "bookmarks") repaintBookmarksView();
+    });
+    paintBook(bb, saved);
+    bb.dataset.book = "1";
+    acts.appendChild(bb);
+    tagBtn.style.display = saved ? "" : "none";
+    acts.appendChild(tagBtn);
+  }
   if(srcSection === "trash"){
     actsRight.appendChild(mkBtn("↩","Restore to main folder", async () => {
       // Restoring takes the post out of the trash grid, so the tile goes with
@@ -5832,6 +6113,8 @@ function openViewer(username, post, section, idx){
         <span class="vdate"></span>
         <span style="flex:1"></span>
         <button class="vact" data-vfav title="Add to liked">♡</button>
+        <button class="vact" data-vbook title="Bookmark this">🔖</button>
+        <button class="vact" data-vtag title="File this bookmark" hidden>🏷</button>
         <button class="vact" data-vdl title="Download this file" hidden>⤓</button>
         <button class="vact" data-vtrash title="Move to trash">🗑</button>
         <button class="small" data-vclose>Close ✕</button>
@@ -5849,11 +6132,15 @@ function openViewer(username, post, section, idx){
     host.querySelector("[data-vprev]").onclick = (e) => { e.stopPropagation(); stepViewer(-1); };
     host.querySelector("[data-vnext]").onclick = (e) => { e.stopPropagation(); stepViewer(1); };
     host.querySelector("[data-vfav]").onclick = (e) => { e.stopPropagation(); viewerToggleFav(); };
+    host.querySelector("[data-vbook]").onclick = (e) => { e.stopPropagation(); viewerToggleBook(); };
+    host.querySelector("[data-vtag]").onclick = (e) => { e.stopPropagation(); viewerPickCategory(); };
     host.querySelector("[data-vtrash]").onclick = (e) => { e.stopPropagation(); viewerTrash(); };
     host.querySelector("[data-vdl]").onclick = (e) => { e.stopPropagation(); viewerDownload(); };
     host.onclick = (e) => { if(e.target === host) closeViewer(); };
     // Cache the three action buttons once; paintViewer repaints their state.
     VIEWER_BTN.fav = host.querySelector("[data-vfav]");
+    VIEWER_BTN.book = host.querySelector("[data-vbook]");
+    VIEWER_BTN.tag = host.querySelector("[data-vtag]");
     VIEWER_BTN.dl = host.querySelector("[data-vdl]");
     VIEWER_BTN.trash = host.querySelector("[data-vtrash]");
   }
@@ -6094,7 +6381,7 @@ function paintViewer(){
 // The viewer's like / trash / download state, for the item on screen.
 // A carousel can mix images and videos, so the download button appears only
 // for a video part and the liked state is re-read per part.
-const VIEWER_BTN = {fav:null, dl:null, trash:null};
+const VIEWER_BTN = {fav:null, dl:null, trash:null, book:null, tag:null};
 
 function viewerCurrentFile(){
   if(!vState) return null;
@@ -6110,6 +6397,15 @@ function paintViewerActions(pop){
 
   // Trash view: the only sensible actions are restore and download.
   VIEWER_BTN.fav.style.display = trashView ? "none" : "";
+  if(VIEWER_BTN.book){
+    VIEWER_BTN.book.style.display = trashView ? "none" : "";
+    const saved = !!vState.post.bookmarked;
+    paintBook(VIEWER_BTN.book, saved);
+    if(VIEWER_BTN.tag){
+      VIEWER_BTN.tag.hidden = !(!trashView && saved);
+      VIEWER_BTN.tag.style.display = (!trashView && saved) ? "" : "none";
+    }
+  }
   VIEWER_BTN.trash.textContent = trashView ? "↩" : "🗑";
   VIEWER_BTN.trash.title = trashView ? "Restore to main folder" : "Move to trash";
 
@@ -6207,6 +6503,57 @@ async function viewerToggleFav(){
   // Pass the post and its new home so the matching tile is updated in place --
   // redrawing the grid here is what made it flash and lose its scroll.
   refreshAfterMove(st.username, firstFile, target);
+}
+
+async function viewerToggleBook(){
+  if(!vState) return;
+  const st = vState;
+  const post = st.post;
+  const file = viewerCurrentFile();
+  if(!file) return;
+  const want = !post.bookmarked;
+  const r = await bookmarkPost(st.username, file, postPlatform(post), want);
+  if(!r || !r.ok){ toast("Could not update bookmarks"); return; }
+  post.bookmarked = want ? 1 : 0;
+  post.category = r.category ?? null;
+  paintViewerActions();
+  toast(want ? "Bookmarked" : "Bookmark removed");
+  if(!want && gAll === "bookmarks"){
+    // It left the view it was opened from: close, and let the tile go with it.
+    refreshBookTile(st.username, file, false);
+    closeViewer();
+    return;
+  }
+  refreshBookTile(st.username, file, want);
+}
+
+function viewerPickCategory(){
+  if(!vState) return;
+  const file = viewerCurrentFile();
+  if(!file) return;
+  bookmarkPicker(vState.username, file, postPlatform(vState.post),
+                  vState.post.category ?? "none");
+}
+
+// The tile behind the viewer, after a bookmark changed. No file moved, so only
+// the one button is repainted rather than the grid redrawn.
+function refreshBookTile(username, file, saved){
+  for(const tile of document.querySelectorAll("#profileGrid .pgrid .ptile")){
+    if(tile.dataset.post !== file) continue;
+    const who = tile.querySelector(".ptile-user");
+    if(username && who && who.textContent !== username) continue;
+    const b = tile.querySelector("[data-book]");
+    if(b) paintBook(b, saved);
+    const tg = tile.querySelector("[data-tag]");
+    if(tg) tg.style.display = saved ? "" : "none";
+    if(!saved && gAll === "bookmarks"){
+      // This list is the collection itself, and its counts are drawn from the
+      // server. Pulling the tile out locally left the header saying "0 posts"
+      // above chips that still read "(1)": redraw from one answer instead.
+      renderBookmarks();
+      return;
+    }
+  }
 }
 
 async function viewerTrash(){
@@ -6552,7 +6899,8 @@ async function runBulk(action){
   toast(`${r.done} done${r.skipped ? `, ${r.skipped} skipped` : ""}`);
   selPicked.clear();
   // Redraw whatever view this is, so the grid shows what is left.
-  if(gAll === "favorites" || gAll === "trash") renderAllSection(gAll);
+  if(gAll === "bookmarks") renderBookmarks();
+  else if(gAll === "favorites" || gAll === "trash") renderAllSection(gAll);
   else if(gAll === "timeline") renderTimeline();
   else if(gProfile) renderPhotos(gProfile, gPlatform);
   else renderGallery();
@@ -6600,6 +6948,12 @@ function paintSelBar(){
     } else {
       bar.appendChild(mk("♥ File as liked", "Move these into the favourites folder",
                          () => runBulk("favorites")));
+    }
+    // Saving a selection is the one bulk action that also works for photos.
+    bar.appendChild(mk("🔖 Save", "Bookmark these", () => runBulk("bookmark")));
+    if(gAll === "bookmarks"){
+      bar.appendChild(mk("↩ Unsave", "Remove these bookmarks",
+                         () => runBulk("unbookmark")));
     }
     bar.appendChild(mk("🗑 Trash", "Move these to the trash", () => runBulk("trash")));
   }

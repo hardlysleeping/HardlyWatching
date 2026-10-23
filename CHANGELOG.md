@@ -6,6 +6,21 @@ versioning is [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Bookmarks, with categories you name.** A bookmark is a second, higher
+  intention than the heart: the heart says *I like this*, the bookmark says *find
+  this again*. `🔖` saves a post from a profile grid, the enlarged view, or the
+  Shorts rail (`b`), and saving one never likes it or moves a file out of place.
+  The `🔖 Bookmarks` chip in the Gallery shows everything saved across profiles,
+  newest first, with chips for **All**, **Uncategorised** and each category you
+  make — `＋ Category` adds one, `✎ Rename` and `🗑 Delete category` act on the
+  one being shown. `🏷` on a tile (or in the enlarged view) files that bookmark
+  under a category, or takes it back out. Deleting a category never deletes
+  bookmarks: they return to Uncategorised. The saved state travels with the post,
+  so a bookmark made in Shorts shows filled in its profile's grid and in the
+  timeline; a bookmark whose file is gone from the archive is forgotten rather
+  than left as a tile that cannot open, while an unplugged drive merely hides it
+  until it is back. Stored in the same SQLite database as everything else
+  (`bookmarks`, `bookmark_categories`).
 - **The enlarged view zooms with the wheel.** Over the picture, the wheel grows
   or shrinks the whole frame around the pointer, from 40% to 400%, with the
   percentage shown in the corner while it moves. It scales the picture rather
