@@ -38,7 +38,7 @@ code, they are not on the MVP path because neither can be built or verified on t
 
 | Card | Row | Item | Owner | Branch | Worktree |
 |---|---|---|---|---|---|
-| M2-SCAFFOLD | 9–10 | Tauri shell committed + merged; container `cargo build` running to prove it compiles | parent | `task/m2-scaffold` | `~/.hermes/worktrees/hwa/m2-scaffold` |
+| CI / DOCS-FLAGS / UI-BASELINE | 3, 4, 24 | wave 2 running (CI workflow, README flags, UI baseline from a demo archive) | agents | `task/{ci,docs-flags,ui-baseline}` | `~/.hermes/worktrees/hwa/*` |
 
 ## Review
 
@@ -55,6 +55,7 @@ code, they are not on the MVP path because neither can be built or verified on t
 | RULES | — | Guardrails for work in this repo (protected paths, sandbox env, done criteria) | `docs/agent-rules.md` |
 | M0-TESTS | 1–2 | Sandbox harness + 29-case API smoke suite | merged `ab57e33`; re-run by parent on merged master: **46 tests OK**; sandbox proves isolation (temp HOME, stub downloaders, port ≥8899) |
 | M1-LOCK | 6, 7, 8, 23 | Instance lock, `--attach`, `--no-browser`, `/api/version` | merged; 17 lock tests OK; manual on master: second start exits 0 with "already running at http://127.0.0.1:8899", `--attach` 0, `/api/version` 0.1.0, one listener, clean stop |
+| M2-SCAFFOLD | 9–10 | Tauri 2 shell, built in a Fedora container, window proven to render | host `cargo build` fails (no `dbus-1.pc` on immutable Bazzite); `build-in-container.sh build` → Finished dev in 1m48s; windowed run: window `main` 1280x860, and a logging proxy recorded `GET /` (369,713 B) + 13× `/api/state` + `/api/gallery` + `/api/autostart` + `POST /api/excluded` in 12 s. Repro in `docs/desktop-shell.md` |
 | M2-SIDECAR | 11 | PyInstaller onedir bundle, no system Python | merged; 113 MB; `env -i` run with no venv: `/api/health`, `/`, `/shorts`, `/api/version` all 200/0.1.0; SIGINT clean. Caveats: ffmpeg is dynamically linked (needs FFmpeg 8.x sonames), instaloader not bundled, glibc ≥ 2.38 required |
 
 
