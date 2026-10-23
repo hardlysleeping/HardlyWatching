@@ -575,11 +575,21 @@
     border-bottom:1px solid var(--line);font-size:12.5px;color:var(--muted)}
   .vcount{color:var(--text);font-weight:600}
   .vstage{position:relative;flex:1;min-height:0;display:flex;
-    align-items:center;justify-content:center;background:#000}
+    align-items:center;justify-content:center;background:#000;overflow:hidden}
   .vmedia{display:flex;align-items:center;justify-content:center;
     width:100%;height:100%;min-height:0}
   .vmedia img,.vmedia video{max-width:100%;max-height:76vh;object-fit:contain;
-    display:block}
+    display:block;transform-origin:center center;user-select:none;-webkit-user-drag:none}
+  /* Wheel zoom: the picture is scaled, never cropped to a detail -- the whole
+     frame grows or shrinks and only gets clipped by the stage at the far end.
+     While it is bigger than the stage it can be dragged around. */
+  .vmedia.panning{cursor:grabbing}
+  .vmedia img,.vmedia video{cursor:zoom-in}
+  .vmedia.zoomed img,.vmedia.zoomed video{cursor:grab}
+  .vzoomtag{position:absolute;right:10px;bottom:10px;z-index:2;padding:3px 8px;
+    border-radius:999px;background:rgba(0,0,0,.62);color:#fff;font-size:11.5px;
+    font-variant-numeric:tabular-nums;opacity:0;transition:opacity .2s}
+  .vzoomtag.on{opacity:1}
   .vnav{position:absolute;top:50%;transform:translateY(-50%);width:46px;height:70px;
     background:rgba(0,0,0,.5);border:none;color:#fff;font-size:30px;line-height:1;
     cursor:pointer;border-radius:10px;z-index:2}
@@ -5655,20 +5665,46 @@ async function movePhoto(username, name, section, quiet, platform){
 // between the All and Favorites lists. Only the cases that genuinely change the
 // grid's membership fall back to a rebuild; everything else is one tile.
 async function refreshAfterMove(username, file, section){
-  if(gProfile !== username) return;
+  // Archive-wide views (All Favourites, All Trash, Starred) have no single open
+  // profile, and this used to return early for them -- so after un-favouriting
+  // in the viewer the tile behind it kept its heart and the count kept its
+  // number, while the viewer said otherwise. That disagreement, until a reload,
+  // is the whole bug.
+  const archive = gAll || null;
+  if(!archive && gProfile !== username) return;
   const host = $("profileGrid");
   if(!host || !file) return;
   const tile = [...host.querySelectorAll(".ptile")]
     .find(t => t.dataset.post === file);
+  const faved = section === "favorites";
 
   // Favourites are shown inside All as well, so favouriting while on All leaves
   // the tile exactly where it is. Only the Favorites chip can gain or lose a
   // member, and only trash can be affected when a file leaves the grid.
-  const changesMembership =
-       (gFilter === "favorites" && section !== "favorites")
-    || section === "trash";
+  const changesMembership = archive
+    ? (archive === "trash" ? section !== "trash"
+       : archive === "favorites" ? !faved
+       : archive === "starred" ? section === "trash"
+       : false)
+    : (gFilter === "favorites" && !faved) || section === "trash";
 
-  if(!tile || changesMembership){
+  // Nothing of this post on screen: the profile grid is drawn from the server's
+  // sections, so ask again; an archive view simply had nothing to correct.
+  if(!tile){
+    if(archive) return;
+    const d = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}`)).json();
+    if(gProfile === username) drawPhotos(username, d.sections || {main:[],favorites:[],trash:[]});
+    return;
+  }
+
+  if(changesMembership){
+    // In an archive view the count line ("N posts across M profiles") and the
+    // profile tally behind it both go stale on a removal, so redraw that view.
+    // The viewer lives on <body>, so it keeps playing through the redraw.
+    if(archive){
+      renderAllSection(archive);
+      return;
+    }
     // Genuinely different set of tiles on screen: a rebuild is the honest way.
     const d = await (await fetch(`/api/photos?profile=${encodeURIComponent(username)}`)).json();
     if(gProfile === username) drawPhotos(username, d.sections || {main:[],favorites:[],trash:[]});
@@ -5676,7 +5712,6 @@ async function refreshAfterMove(username, file, section){
   }
 
   // Same tile, same place: just restyle it.
-  const faved = section === "favorites";
   tile.classList.toggle("faved", faved);
   tile.dataset.section = section;
   const heart = tile.querySelector("[data-heart]");
@@ -5768,6 +5803,7 @@ function openViewer(username, post, section, idx){
         <button class="vnav prev" data-vprev title="Previous">‹</button>
         <div class="vmedia"></div>
         <button class="vnav next" data-vnext title="Next">›</button>
+        <div class="vzoomtag"></div>
       </div>
       <div class="vcap"></div>
     </div>`;
@@ -5834,12 +5870,132 @@ document.addEventListener("click", (e) => {
   openGalleryProfile(handle, plat);
 });
 
+// Zoom the picture in the popup, never a crop of it.
+//
+// The whole frame scales around the point under the cursor, so wheeling out
+// shows the picture smaller and wheeling in grows it -- the entire image stays
+// in the frame the whole way, and once it is larger than the stage the edges go
+// past the sides and the picture can be dragged to see them. Nothing here
+// touches a file: it is one CSS transform plus a translation.
+const VZOOM = {z: 1, x: 0, y: 0, min: 0.4, max: 4, t: 0};
+
+function vZoomEl(){
+  const host = document.getElementById("vwrap");
+  return host && host.querySelector(".vmedia > img, .vmedia > video");
+}
+function vZoomPaint(){
+  const host = document.getElementById("vwrap");
+  if(!host) return;
+  const media = host.querySelector(".vmedia");
+  const el = vZoomEl();
+  if(!media || !el) return;
+  const z = VZOOM.z;
+  // Snap the sub-pixel drift that repeated wheel steps leave behind, so the
+  // picture returns to exactly its plain fit instead of a 1e-17 nudge.
+  if(Math.abs(VZOOM.x) < 0.5) VZOOM.x = 0;
+  if(Math.abs(VZOOM.y) < 0.5) VZOOM.y = 0;
+  el.style.transform = (Math.abs(z - 1) < 1e-4 && !VZOOM.x && !VZOOM.y)
+    ? "" : `translate(${VZOOM.x}px, ${VZOOM.y}px) scale(${z})`;
+  media.classList.toggle("zoomed", z > 1.001);
+  const tag = host.querySelector(".vzoomtag");
+  if(tag){
+    tag.textContent = Math.round(z * 100) + "%";
+    tag.classList.add("on");
+    clearTimeout(VZOOM.t);
+    VZOOM.t = setTimeout(() => tag.classList.remove("on"), 850);
+  }
+}
+function vZoomReset(){
+  VZOOM.z = 1; VZOOM.x = 0; VZOOM.y = 0;
+  clearTimeout(VZOOM.t);
+  const el = vZoomEl();
+  if(el) el.style.transform = "";
+  const media = document.querySelector("#vwrap .vmedia");
+  if(media) media.classList.remove("zoomed", "panning");
+  const tag = document.querySelector("#vwrap .vzoomtag");
+  if(tag) tag.classList.remove("on");
+}
+function vZoomAt(z2, clientX, clientY){
+  const host = document.getElementById("vwrap");
+  if(!host) return;
+  const stage = host.querySelector(".vstage");
+  if(!stage || !vZoomEl()) return;
+  const z1 = VZOOM.z;
+  const z = Math.min(VZOOM.max, Math.max(VZOOM.min, z2));
+  if(!isFinite(z) || Math.abs(z - z1) < 1e-4) return;
+  // Keep whatever the cursor is over where it is, so zooming reads as the frame
+  // growing around that point rather than the picture sliding away.
+  let cx = 0, cy = 0;
+  if(typeof clientX === "number" && typeof clientY === "number"){
+    const r = stage.getBoundingClientRect();
+    cx = clientX - (r.left + r.width / 2);
+    cy = clientY - (r.top + r.height / 2);
+  }
+  const k = z / z1;
+  VZOOM.x = cx - k * (cx - VZOOM.x);
+  VZOOM.y = cy - k * (cy - VZOOM.y);
+  VZOOM.z = z;
+  vZoomPaint();
+}
+
+// Wheel over the picture grows or shrinks the frame; the caption keeps its own
+// scrolling, and the wheel outside the viewer is left alone.
+document.addEventListener("wheel", (e) => {
+  if(!vState || !e.target || !e.target.closest) return;
+  const host = document.getElementById("vwrap");
+  if(!host || !host.contains(e.target)) return;
+  if(e.target.closest(".vcap")) return;
+  if(!e.target.closest(".vmedia")) return;
+  e.preventDefault();
+  const d = e.deltaMode === 1 ? e.deltaY * 40
+          : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+  vZoomAt(VZOOM.z * Math.exp(-d * 0.0014), e.clientX, e.clientY);
+}, {passive: false});
+
+// Drag to look around once the picture is bigger than the frame. Mouse only:
+// on touch this would fight the double-tap that toggles favourites.
+let vDrag = null;
+document.addEventListener("pointerdown", (e) => {
+  if(!vState || e.pointerType === "touch") return;
+  if(!e.target || !e.target.closest || !e.target.closest(".vmedia")) return;
+  if(VZOOM.z <= 1.001) return;
+  const media = document.querySelector("#vwrap .vmedia");
+  if(!media) return;
+  vDrag = {x: e.clientX, y: e.clientY, ox: VZOOM.x, oy: VZOOM.y};
+  media.classList.add("panning");
+});
+document.addEventListener("pointermove", (e) => {
+  if(!vDrag) return;
+  VZOOM.x = vDrag.ox + (e.clientX - vDrag.x);
+  VZOOM.y = vDrag.oy + (e.clientY - vDrag.y);
+  vZoomPaint();
+});
+document.addEventListener("pointerup", () => {
+  if(!vDrag) return;
+  vDrag = null;
+  const media = document.querySelector("#vwrap .vmedia");
+  if(media) media.classList.remove("panning");
+});
+// A cancelled pointer (window blur, OS gesture) must not leave it stuck dragging.
+document.addEventListener("pointercancel", () => {
+  vDrag = null;
+  const media = document.querySelector("#vwrap .vmedia");
+  if(media) media.classList.remove("panning");
+});
+// Back to the plain fit: double-click the picture.
+document.addEventListener("dblclick", (e) => {
+  if(!vState || !e.target || !e.target.closest) return;
+  if(e.target.closest("#vwrap .vmedia")) vZoomReset();
+});
+
 function paintViewer(){
   if(!vState) return;
   const host = document.getElementById("vwrap");
   const {srcs, idx, post} = vState;
   const cur = srcs[idx];
   const stage = host.querySelector(".vmedia");
+  // A new picture starts at the plain fit; the old zoom belonged to the old one.
+  vZoomReset();
   stage.innerHTML = "";
   if(cur.item.kind === "video"){
     const v = document.createElement("video");

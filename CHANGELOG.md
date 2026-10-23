@@ -6,6 +6,13 @@ versioning is [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The enlarged view zooms with the wheel.** Over the picture, the wheel grows
+  or shrinks the whole frame around the pointer, from 40% to 400%, with the
+  percentage shown in the corner while it moves. It scales the picture rather
+  than cropping to a magnified patch, so nothing is cut off until the frame is
+  larger than the stage; past that, drag to see the edges. Double-click returns
+  to the plain fit, stepping to another post starts fresh, and the wheel over
+  the caption still scrolls the caption.
 - **Finished can be sorted by how much it got.** The finished list has a `sort:`
   button that cycles *as added* → *most files* → *fewest files*. "Most" reads the
   folder count taken when each run finished (falling back to the posts that run
@@ -54,6 +61,14 @@ versioning is [SemVer](https://semver.org/).
   you back on Download. Pasting that link elsewhere opens the same page.
 
 ### Fixed
+- **The heart agrees with itself in All Favourites and All Trash.** Un-favouriting
+  from the enlarged view in an archive-wide list flipped the heart in the viewer
+  but left the tile behind it showing ♥ — and the count line still claimed the old
+  total — until a reload. The tile under the viewer is only refreshed for an open
+  profile, and an archive list has none, so the refresh returned immediately. The
+  refresh now knows which of those views can gain or lose a post, and redraws that
+  view when one moves: the tile goes, the count follows, and the viewer keeps
+  playing through the redraw because it lives outside the grid.
 - **The profile chip in Shorts takes a tap.** The bottom bar is
   `pointer-events:none` so its gradient never eats a swipe, and the chip inside
   it never re-enabled pointer events — it painted perfectly and every tap went to

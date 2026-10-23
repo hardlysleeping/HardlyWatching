@@ -88,12 +88,22 @@ arrow keys), favourite, download a video, or trash it.
 
 ![A post enlarged over the grid, with previous and next arrows and action buttons](docs/viewer.png)
 
+**Wheel over the picture to resize it.** The whole frame grows or shrinks around
+the pointer — 40% at the far end, 400% at the other — so you can pull back to see
+a whole tall post or push in to look at a detail. It scales the picture rather
+than cropping to a magnified patch, so nothing is cut off until the frame is
+bigger than the stage; past that point drag the picture to see the edges. The
+percent shows in the corner while you zoom, double-click puts it back to the
+plain fit, and moving to another post starts fresh. The caption keeps its own
+scrolling, so a long description still scrolls with the wheel.
+
 The heart works the same in both places, and both tell the truth: the tile under
-the viewer updates as the move lands, and a move that fails springs the heart
-back with *Could not update favourites* instead of pretending. Reloading keeps
-you where you were — same tab, same site, same profile — because the view is
-written into the URL (`?tab=gallery&profile=…`); paste that link anywhere and it
-opens the same page.
+the viewer updates as the move lands — including in **All Favourites** and **All
+Trash**, where a post that no longer belongs drops out of the grid and the count
+follows — and a move that fails springs the heart back with *Could not update
+favourites* instead of pretending. Reloading keeps you where you were — same
+tab, same site, same profile — because the view is written into the URL
+(`?tab=gallery&profile=…`); paste that link anywhere and it opens the same page.
 
 **Shorts** — a full-screen, phone-sized feed of your reels and TikTok videos.
 Swipe through it, like, trash, download, or change how often a clip comes back.
@@ -644,7 +654,8 @@ looking rather than below everything you want to filter.
 On a tile: **♥** favourite, **⤢** open bigger, **🗑** trash. In the enlarged view:
 **♡/♥**, **⤓** download (videos), **🗑**, and **‹ ›** to step through posts. On
 desktop the arrow keys do the same, `f` favourites, `t` trashes, `d` downloads,
-`Esc` closes. On a phone, swipe left/right to move and swipe down to close.
+`Esc` closes, the wheel resizes the picture and double-click resets it. On a
+phone, swipe left/right to move and swipe down to close.
 
 ### Profile pictures and thumbnails
 
