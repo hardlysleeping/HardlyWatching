@@ -29,14 +29,15 @@ code, they are not on the MVP path because neither can be built or verified on t
 
 | Card | Row | Item | Worktree |
 |---|---|---|---|
-| M2-WIRE | 12–13 | Sidecar wired into the shell as `externalBin` (spawn-or-attach), Linux DEB + AppImage bundle | `hwa/m2-wire` |
+| INSTALOADER-BUNDLE | 44 | **The one thing between this and a usable desktop app**: the bundle carries yt-dlp/ffmpeg/ffprobe but not instaloader, so TikTok works and every Instagram download fails on a fresh machine. Bundle it (pure Python, PyInstaller can collect it) and re-cut both bundles | `hwa/instaloader` |
 | CI-PROVE | 4 | First push is the first real Actions run — confirm the workflow is green on GitHub, then leave it alone | — |
+| RELEASE | 38–40 | `release.yml`: on a tag, build the DEB + AppImage in the container and attach both to a GitHub Release | `hwa/release` |
 
 ## In Progress
 
 | Card | Row | Item | Owner | Branch | Worktree |
 |---|---|---|---|---|---|
-| M2-WIRE | 12–13 | Sidecar as `externalBin`, spawn-or-attach, DEB/AppImage | parent | `task/m2-wire` | `hwa/m2-wire` |
+| — | — | (nothing in progress) | — | — | — |
 
 ## Review
 
@@ -60,6 +61,7 @@ code, they are not on the MVP path because neither can be built or verified on t
 | SYNC-UPSTREAM | — | `scripts/sync-upstream.sh` + `docs/upstream-sync.md` + a daily cron job | merge → VERSION from tag → suite → push; conflict aborts and restores, red rolls back. Proven in a scratch clone with a fake upstream: clean merge (VERSION 0.2.0→0.3.0, 46 PASS, pushed), same-line conflict (exit 2, HEAD unchanged, no MERGE_HEAD), broken version (exit 3, rolled back, 0 listeners on 89xx), `--check` exit 10, current exit 0. Job `469cbec772f5`, 5am daily, silent when up to date |
 | SYNC-1 | — | First real upstream sync merged (upstream `ce1abbc`: README cut to 627 lines, risk-first; CHANGELOG folded into 0.2.0) | one conflict (control-panel paragraph) resolved to upstream's shorter wording; fork's lock/flags paragraphs survived; `VERSION` 0.1.0→0.2.0 from tag `v0.2.0`; the four lock tests had the version hard-coded and now read `VERSION`; 46 tests OK |
 | RUN-PY-FLAGS | follow-up | `run.py` now forwards `--attach`, `--no-browser`, `--force` | parent-verified: `run.py --attach` → `http://127.0.0.1:8897` exit 0 without installing anything; `--force` while held → second instance on 8898, first keeps the lock; `--no-browser` with `BROWSER=/bin/echo` printed 0 browser lines vs 1 without the flag |
+| M2-WIRE | 12–13 | Shell ships its own server; spawn-or-attach; DEB + AppImage | merged. Bundled PyInstaller onedir (128 MB, `bin/ffmpeg|ffprobe|yt-dlp` included) at `usr/lib/HardlyWatching/sidecar`; onedir chosen over onefile with measurements (0.08 s vs 0.31 s cold start, onefile can't carry `bin/`). Parent-verified end to end: `HardlyWatching_0.2.0_amd64.deb` 72.75 MiB `Version: 0.2.0`, extracted and run with a throwaway HOME → spawned its own bundled server on 8899, `/api/health` 200, `/api/version` 0.2.0, SIGTERM to the shell → no server, no listener; AppImage 73,464,312 B extracted and run the same way → 200/0.2.0. Attach path leaves a foreign server alone; only a child it spawned is reaped (PDEATHSIG as backstop). Version now one number: `VERSION` → `tauri.conf.json`/`Cargo.toml` at build, enforced by 4 new tests (50 total green) |
 | M2-SIDECAR | 11 | PyInstaller onedir bundle, no system Python | merged; 113 MB; `env -i` run with no venv: `/api/health`, `/`, `/shorts`, `/api/version` all 200/0.1.0; SIGINT clean. Caveats: ffmpeg is dynamically linked (needs FFmpeg 8.x sonames), instaloader not bundled, glibc ≥ 2.38 required |
 
 
@@ -81,6 +83,7 @@ code, they are not on the MVP path because neither can be built or verified on t
 | TILE-WRAP | Long profile names break mid-word in gallery tiles (`demo.slow.mornin\ngs` in the baseline shot). Cosmetic, seen in `tests/baseline/gallery-1440x900.png`, not fixed. |
 | VERSION-TAURI | `VERSION` is the one number, but `src-tauri/tauri.conf.json` still says `0.1.0` and the bundle takes its version from there. Fold the two together (generate the Tauri version from `VERSION`) before the first release, or the DEB will disagree with `/api/version`. |
 | CRON-GATEWAY | The daily sync job needs the Hermes gateway running (`hermes gateway start`) before it will fire at all. Local-only delivery otherwise: the run is recorded, nothing is sent. |
+| APPDIR-META | `pack-appimage.sh` writes its own `.desktop` entry because Tauri's appimage step cannot run; if `productName`/description changes in `tauri.conf.json` the two drift. Derive it from the config, or accept and keep them adjacent in the file. |
 | CI-DEPS | `scripts/ci-local.sh` installs `Pillow>=10.4,<12` although the suite passes with only `pip` — the list mirrors a real install so image tests have something to import. `pillow-heif` deliberately omitted. |
 
 ---
