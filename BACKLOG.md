@@ -123,6 +123,8 @@ AppImage/control-panel/bookmarks work from the live checkout. The live checkout
 | 43 | Static/trimmed `ffmpeg` in the sidecar | todo | Bundled ffmpeg is dynamically linked and needs FFmpeg 8.x sonames (`libavcodec.so.62`, `libavformat.so.62`, …). Without them only video thumbnails/previews/transcoding die — the UI and images are fine. Fix in CI with a static build, not by copying this box's libs |
 | 44 | Decide `instaloader`: bundle it or document the install | todo | Not in the bundle today: the UI serves, but nothing Instagram-side downloads. The model already offers to install it at first run (`run.py`) — the frozen binary needs the same answer |
 | 45 | glibc floor: 2.38 (FC44 build) | todo | Ubuntu 22.04 will not start the bundle. Fix by building in CI on an older base image |
+| 46 | Backup & restore in Settings: one zip of the app's memory, automatic daily backup, root remapping on restore | done | `backup.py` + 5 routes + a collapsed card; zip = `state.json` + `profiles.db` + optional session; `gallery-cache.db`/thumbs/avatars deliberately out (inode-keyed). Restore validates everything before writing, keeps a `hw-prerestore-*.zip`, reloads the engine in-process, comes back paused, refused (409) while jobs run. Round trip proven between two sandboxes with *different* archive roots; a bookmark and the remapped root survive. `tests/test_backup.py` (10 cases), 63 green |
+| 47 | `INSTA_DATA=/folder`: state, database, caches, thumbs, avatars, session and backups in one directory | done | Unset = current platform defaults unchanged; every existing `INSTA_*` override still wins. Resolution checked in a subprocess (`engine` reads it at import): one-folder mode, unset mode, override-still-wins |
 
 ---
 
