@@ -3,11 +3,25 @@
 Run:  python3 server.py
 Then open http://127.0.0.1:8765
 
+Flags:
+  --attach       print the URL of an instance that is already running, then exit
+                 (0 when one is up, 1 when none is). Starts nothing.
+  --no-browser   do not open a browser tab (for autostart, sidecars, headless)
+  --force        start even though the lock says an instance is already running
+  --port N       port to bind (same as INSTA_PORT)
+  --host ADDR    address to bind (same as INSTA_HOST)
+
 Environment:
   INSTA_PORT    port to bind (default 8765)
   INSTA_HOST    address to bind (default 127.0.0.1; use 0.0.0.0 for LAN/tailnet)
   INSTA_OUTPUT  where downloads go (default ~/instagram)
   INSTA_STATE   where app state is kept (default ~/.config/hardlywatching/state.json)
+  INSTA_LOCK    where the single-instance lock lives
+                (default run/hardlywatching.lock beside the state file)
+
+Only one instance may own a state file. A second start finds the lock, proves the
+recorded process is alive and answering /api/health, prints where it is and exits
+0 instead of binding a second port onto the same queue and the same archive.
 """
 
 from __future__ import annotations
@@ -16,12 +30,17 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.request
 import webbrowser
+import zipfile
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -33,7 +52,8 @@ if str(_HERE / "tools") not in sys.path:
 
 from urllib.parse import urlparse
 
-from engine import (Engine, UPLOAD_EXTS, clean_profile_name, ensure_pillow_formats,
+from engine import (Engine, STATE_FILE, UPLOAD_EXTS, cache_dir, clean_profile_name,
+                    ensure_pillow_formats,
                     make_playable, make_preview, make_thumb, _cache, _media_cache_forget)
 
 HERE = Path(__file__).resolve().parent
@@ -69,8 +89,11 @@ HOST = _opt("--host", "INSTA_HOST", "127.0.0.1")
 def find_free_port(start: int, host: str = "127.0.0.1") -> int:
     """Return the first free port at or after `start`.
 
-    Lets the app just work when the default port is taken by something else,
-    instead of dying with 'Address already in use'.
+    For a port taken by some *other* program, so the app still comes up
+    instead of dying with 'Address already in use'. A second copy of
+    HardlyWatching never gets this far: the lock in `running_instance()`
+    catches that first, because two servers on one state file are a bug,
+    not a fallback.
     """
     import socket
     for port in range(start, start + 50):
@@ -82,6 +105,176 @@ def find_free_port(start: int, host: str = "127.0.0.1") -> int:
             except OSError:
                 continue
     return start  # give up; let the real bind produce the error
+
+
+# ---------------------------------------------------------------------------
+# One instance per state file
+#
+# Two servers sharing a state file means two workers pulling the same queue and
+# two UIs writing over each other, and before this the second one silently moved
+# itself to 8766 and looked perfectly healthy. The lock makes that a non-event:
+# the second start notices the first, says where it is, and exits 0.
+#
+# The lock sits beside the state file, because it belongs to that state and not
+# to a port. `INSTA_LOCK` overrides the path outright.
+# ---------------------------------------------------------------------------
+
+# Bumped when the shape of /api/* changes; the desktop shell compares it.
+API_VERSION = 1
+# When this process started, for /api/version and the lock. Module import is as
+# close to process start as it gets, and it is the same value in both places.
+STARTED_AT = datetime.now().astimezone().isoformat(timespec="seconds")
+VERSION_FILE = HERE / "VERSION"
+# Loopback probes must never go through a proxy from the environment.
+_PROBE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def app_version() -> str:
+    """The version in VERSION at the repo root, or 'dev' when there is none.
+
+    Read per call rather than cached: a development checkout can be edited
+    underneath a running server, and 'dev' is the honest answer for a tree that
+    was never given a version.
+    """
+    try:
+        text = VERSION_FILE.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return "dev"
+    return text or "dev"
+
+
+def lock_path() -> Path:
+    """Where the lock file belongs: run/hardlywatching.lock beside the state."""
+    override = (os.environ.get("INSTA_LOCK") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(STATE_FILE).expanduser().parent / "run" / "hardlywatching.lock"
+
+
+def read_lock() -> dict:
+    """The lock's contents, or {} when it is missing, unreadable or malformed."""
+    try:
+        data = json.loads(lock_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_lock(port: int) -> dict:
+    """Record this process as the owner of the state file, atomically.
+
+    Written to a temp file and renamed over the lock, so a crash mid-write
+    leaves the old lock (or none) rather than half a JSON object that would
+    read as garbage on the next start.
+    """
+    info = {"pid": os.getpid(), "port": int(port),
+            "started": STARTED_AT, "version": app_version()}
+    path = lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".hardlywatching-", suffix=".lock",
+                               dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(info, fh)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return info
+
+
+def remove_lock() -> None:
+    """Delete the lock on the way out -- but only if it is ours.
+
+    A lock owned by another pid is left alone: it is either a live instance this
+    process was told to start alongside (--force), or a stale one that the next
+    start will take over.
+    """
+    info = read_lock()
+    if info.get("pid") not in (None, os.getpid()):
+        return
+    try:
+        lock_path().unlink()
+    except OSError:
+        pass
+
+
+def pid_alive(pid: int) -> bool:
+    """Is a process with this pid running?"""
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        # os.kill(pid, 0) *terminates* the target on Windows, so liveness there
+        # is left to the health probe that follows it.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # it exists, it is just not ours to signal
+    except OSError:
+        return False
+    return True
+
+
+def health_ok(port: int, host: str = "127.0.0.1", timeout: float = 0.8) -> bool:
+    """Does a HardlyWatching answer /api/health on that port right now?"""
+    try:
+        # A probe is loopback traffic: an http_proxy in the environment must not
+        # be allowed to answer for it, or a second instance would start.
+        req = urllib.request.Request(f"http://{host}:{port}/api/health")
+        with _PROBE_OPENER.open(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return False
+            return bool(json.loads(resp.read(4096) or b"{}").get("ok"))
+    except Exception:
+        return False
+
+
+def running_instance() -> dict | None:
+    """The lock's record of a live instance, or None when it is stale.
+
+    Stale means: no lock, unreadable lock, a dead pid, or a pid that no longer
+    answers /api/health. All four are safe to take over -- a lock left behind by
+    a killed process must never keep the app from starting.
+    """
+    info = read_lock()
+    try:
+        pid = int(info.get("pid") or 0)
+        port = int(info.get("port") or 0)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0 or not 1 <= port <= 65535:
+        return None
+    if not pid_alive(pid) or not health_ok(port):
+        return None
+    return {"pid": pid, "port": port,
+            "started": str(info.get("started") or ""),
+            "version": str(info.get("version") or ""),
+            "url": f"http://127.0.0.1:{port}"}
+
+
+def attach() -> int:
+    """Print the running instance's URL. 0 when one is up, 1 when none is.
+
+    The desktop shell and control-panel.py use this instead of guessing a port,
+    so nothing here may start a server, build an Engine or touch the browser.
+    """
+    run = running_instance()
+    if run is None:
+        print("HardlyWatching is not running.")
+        return 1
+    print(run["url"])
+    return 0
 
 # The Engine is created lazily so that importing this module (tests, tooling,
 # anything that just wants Handler) never constructs a worker or touches the
@@ -96,9 +289,62 @@ def get_engine() -> Engine:
     return _engine
 
 
+def reload_engine() -> None:
+    """Rebuild the in-process engine from the files on disk.
+
+    Used after a restore has replaced state.json/profiles.db underneath a running
+    app. The old engine is stopped first (its workers are daemons that exit on
+    stop_requested) and its shared database connection is dropped, because a
+    connection opened before the swap would keep serving rows that are no longer
+    in the file.
+    """
+    global _engine
+    old, _engine = _engine, None
+    if old is not None:
+        try:
+            with old.lock:
+                old.stop_requested = True
+        except Exception:
+            pass
+        # Close the listing cache's handle so the file is not kept open by a
+        # dead engine. The cache is shared module state, so this is a no-op for
+        # the new engine, which reuses it.
+        try:
+            import gc
+            del old
+            gc.collect()
+        except Exception:
+            pass
+    try:
+        from profile_db import reset_shared
+        reset_shared()
+    except Exception:
+        pass
+    _engine = Engine()
+    _engine.start()
+
+
 # Local SQLite record of imported profiles. Created lazily and shared, so the
 # connection is not reopened per request.
 _profile_db_inst = None
+
+
+def _profile_list_param(raw) -> list[str]:
+    """The handles out of a comma-separated `profiles=` query value.
+
+    The timeline picker sends several names at once; `profile` (exactly one) is
+    still accepted everywhere. Anything that is not a plausible handle is
+    dropped here rather than handed to the folder walk.
+    """
+    from urllib.parse import unquote
+    values = raw if isinstance(raw, list) else ([raw] if raw else [])
+    out: list[str] = []
+    for value in values:
+        for part in str(value or "").split(","):
+            name = clean_profile_name(unquote(part.strip()))
+            if name and name not in out:
+                out.append(name)
+    return out[:200]
 
 
 def _mark_bookmarks(posts, profile: str | None = None) -> list[dict]:
@@ -605,6 +851,72 @@ class QuietServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+# Zip builds run in their own thread: a big profile takes minutes, and a button
+# that says nothing for minutes reads as a hang. The page watches `_ZIPS` through
+# /api/profile-zip/progress and starts the download itself when the build lands.
+_ZIPS: dict[str, dict] = {}
+# A built zip nobody downloaded would otherwise sit in the cache forever; one day
+# is long enough to fetch it twice and short enough not to be a space problem.
+ZIP_TTL = 24 * 60 * 60
+
+
+def _zip_dir() -> Path:
+    folder = cache_dir() / "zips"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def purge_zips(max_age: float = ZIP_TTL) -> None:
+    """Delete built zips older than a day, and forget their tokens.
+
+    The sweep goes by file mtime rather than only the in-memory table: after a
+    restart the table is empty while the files are still on disk, and those
+    would otherwise never be reclaimed.
+    """
+    cutoff = time.time() - max_age
+    try:
+        entries = list(_zip_dir().iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            continue
+    for token, info in list(_ZIPS.items()):
+        if (info.get("finished") or info.get("started") or 0) < cutoff:
+            _ZIPS.pop(token, None)
+
+
+def build_zip(token: str, plan: list[tuple[Path, str, int]]) -> None:
+    """Write `plan` into the zip `token` names, reporting progress as it goes."""
+    info = _ZIPS[token]
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", dir=str(_zip_dir()), delete=False)
+    tmp.close()
+    try:
+        # Photos and videos are already compressed: store them, so a multi-GB
+        # profile is a straight copy instead of a CPU burn.
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+            for path, arc, size in plan:
+                try:
+                    zf.write(path, arc)
+                    info["done"] += 1
+                    info["bytes"] += size
+                except OSError:
+                    continue      # the file went away mid-build; skip it
+        info["path"] = tmp.name
+        info["finished"] = time.time()
+        info["status"] = "ready"
+    except OSError as exc:
+        info["status"] = "error"
+        info["error"] = str(exc)
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "InstaQueue/2.0"
 
@@ -635,6 +947,76 @@ class Handler(BaseHTTPRequestHandler):
     # body is read into RAM before being written out. Raise via the env var if
     # you ever need to push something bigger.
     MAX_UPLOAD = int(os.environ.get("INSTA_MAX_UPLOAD", 512 * 1024 * 1024))
+
+    def _backup_import(self) -> None:
+        """Restore state.json / profiles.db from a backup zip in the body.
+
+        Refuses while anything is downloading: the workers write state.json as
+        they go, so a swap underneath them would be undone a second later or
+        corrupt the queue. The pre-restore files are themselves backed up first,
+        so a restore that turns out to be the wrong zip can be undone the same
+        way.
+        """
+        from urllib.parse import parse_qs
+        import backup as _b
+
+        q = parse_qs(urlparse(self.path).query)
+        root_arg = (q.get("root") or [""])[0].strip()
+        parts = {x.strip() for x in (q.get("parts") or ["state,profiles,session"])[0].split(",")
+                 if x.strip()}
+
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return self._json({"ok": False, "error": "Empty upload."}, 400)
+        if n > 128 * 1024 * 1024:
+            return self._json({"ok": False, "error": "That backup is larger than 128MB."}, 413)
+
+        fd, tmp_name = tempfile.mkstemp(prefix="hw-restore-", suffix=".zip")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                remaining = n
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+
+            eng = get_engine()
+            active = [j for j in list(eng.jobs.values())
+                      if getattr(j, "status", "") in ("queued", "running", "retrying")]
+            if active:
+                return self._json({"ok": False, "error":
+                                   f"{len(active)} job(s) are queued or running. Clear the "
+                                   "queue first — a restore overwrites it."}, 409)
+
+            # Keep what is being replaced, so this is reversible.
+            pre = None
+            try:
+                pre = _b.export_zip(_b.backups_dir() /
+                                    ("hw-prerestore-" + time.strftime("%Y%m%d-%H%M%S") + ".zip"),
+                                    include_session=False)
+            except FileNotFoundError:
+                pre = None
+
+            summary = _b.restore(tmp, archive_root=Path(root_arg) if root_arg else None,
+                                 wanted=parts)
+        except Exception as exc:
+            return self._json({"ok": False, "error": str(exc)}, 400)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+        reload_engine()
+        summary["pre_restore_backup"] = pre.get("path") if pre else ""
+        summary["paths"] = _b.paths()
+        return self._json(summary)
 
     def _upload(self) -> None:
         """Accept files from the browser and write them into a profile folder.
@@ -788,6 +1170,108 @@ class Handler(BaseHTTPRequestHandler):
                            "saved": saved, "skipped": skipped,
                            "failed": [{"file": f, "why": w} for f, w in failed],
                            "section": section})
+
+    def _plan_zip(self, name: str) -> list[tuple[Path, str, int]]:
+        """The files that belong in `name`'s zip, and their arc names.
+
+        The folder in the gallery is the archive itself, so this is just a walk:
+        `<root>/<handle>` for Instagram, `<parent>/tiktok/<handle>` for TikTok. A
+        handle on both sites is one card, so it is one zip with `instagram/` and
+        `tiktok/` inside; on a single site the handle is the archive's root
+        folder. 0-byte files are the marker a deleted post leaves behind, not
+        content, so they are skipped.
+        """
+        eng = get_engine()
+        folders = []
+        for platform in ("instagram", "tiktok"):
+            folder = eng.root_for(name, platform)
+            if folder is not None and folder.is_dir():
+                folders.append((platform, folder))
+        plan = []
+        for platform, folder in folders:
+            for path in sorted(folder.rglob("*")):
+                if not path.is_file():
+                    continue
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                if size == 0:
+                    continue
+                rel = path.relative_to(folder).as_posix()
+                arc = f"{name}/{rel}" if len(folders) == 1 \
+                    else f"{name}/{platform}/{rel}"
+                plan.append((path, arc, size))
+        return plan
+
+    def _start_zip(self, name: str, wait: bool = False) -> str | None:
+        """Begin building `name`'s zip; the page polled for progress gets the token."""
+        purge_zips()
+        plan = self._plan_zip(name)
+        if not plan:
+            self._json({"error": "nothing on disk for that profile"}, 404)
+            return None
+        token = secrets.token_urlsafe(9)
+        _ZIPS[token] = {"status": "building", "name": name, "done": 0,
+                        "files": len(plan), "bytes": 0,
+                        "total": sum(item[2] for item in plan),
+                        "path": None, "error": None, "started": time.time()}
+        if wait:
+            build_zip(token, plan)
+        else:
+            threading.Thread(target=build_zip, args=(token, plan), daemon=True).start()
+        return token
+
+    def _zip_progress(self, token: str) -> None:
+        """How far along a build is, in files and bytes, for the button's label."""
+        purge_zips()
+        info = _ZIPS.get(token)
+        if info is None:
+            # The token aged out or the app restarted: the page stops polling and
+            # says so, rather than watching a build that no longer exists.
+            return self._json({"status": "unknown"}, 404)
+        total = info["total"] or 0
+        pct = 100 if info["status"] == "ready" else (
+            int(info["bytes"] * 100 / total) if total else 0)
+        self._json({"status": info["status"], "done": info["done"],
+                    "files": info["files"], "bytes": info["bytes"],
+                    "total": total, "pct": pct, "error": info.get("error")})
+
+    def _send_ready_zip(self, token: str) -> None:
+        """Serve a finished build.
+
+        The file is left on disk after the send: it is swept a day later, so a
+        second click in the same sitting downloads the same bytes instead of
+        re-reading the whole profile.
+        """
+        info = _ZIPS.get(token)
+        if info is None:
+            return self.send_error(404)
+        if info["status"] != "ready" or not info.get("path"):
+            return self._json({"status": info["status"]}, 409)
+        path = Path(info["path"])
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return self.send_error(410)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition",
+                         'attachment; filename="%s.zip"' % info["name"])
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with open(path, "rb") as fh:
+                shutil.copyfileobj(fh, self.wfile, 1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _send_profile_zip(self, name: str) -> None:
+        """Direct URL: build and serve in one request, no progress to report."""
+        token = self._start_zip(name, wait=True)
+        if token:
+            self._send_ready_zip(token)
 
     def _serve_file(self, path: Path, cache: bool = False) -> None:
         if not path.is_file():
@@ -966,6 +1450,81 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         if p == "/api/health":
             return self._json({"ok": True})
+        if p == "/api/version":
+            # Which build owns this port, and what API shape it speaks. The
+            # desktop shell calls this before trusting the rest of the API.
+            port = int(getattr(self.server, "server_address", ("", PORT))[1] or PORT)
+            return self._json({"version": app_version(), "pid": os.getpid(),
+                               "port": port, "started": STARTED_AT,
+                               "api": API_VERSION})
+        # ---------------- backup / restore ----------------
+        if p == "/api/backup/info":
+            # Everything the Backup card needs: where the files are on this
+            # machine, how big they are, and which automatic backups exist.
+            import backup as _b
+            info = _b.paths()
+            sizes = {}
+            for key in ("state", "profiles"):
+                try:
+                    sizes[key] = Path(info[key]).stat().st_size
+                except OSError:
+                    sizes[key] = 0
+            age = _b.last_backup_age()
+            return self._json({
+                "ok": True, "paths": info, "sizes": sizes,
+                "portable": bool(info.get("data_dir")),
+                "backups": _b.list_backups(),
+                "last_backup_age": age,
+                "counts": _b._counts(Path(info["profiles"]), None),
+            })
+
+        if p == "/api/backup/export":
+            # Downloads the portable zip. ?session=1 adds the instaloader
+            # session so the new machine does not have to log in again.
+            from urllib.parse import parse_qs
+            import backup as _b
+            q = parse_qs(urlparse(self.path).query)
+            want_session = (q.get("session") or ["0"])[0] in ("1", "true", "yes")
+            fd, tmp_name = tempfile.mkstemp(prefix="hw-backup-", suffix=".zip")
+            os.close(fd)
+            tmp = Path(tmp_name)
+            try:
+                manifest = _b.export_zip(tmp, include_session=want_session)
+                data = tmp.read_bytes()
+            except FileNotFoundError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 409)
+            except Exception as exc:
+                return self._json({"ok": False, "error": f"backup failed: {exc}"}, 500)
+            finally:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            stamp = time.strftime("%Y-%m-%d")
+            name = f"hardlywatching-backup-{stamp}.zip"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("X-Backup-Bytes", str(len(data)))
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+
+        if p == "/api/backup/download":
+            # One of the automatic backups, by name (no paths from the client).
+            from urllib.parse import parse_qs
+            import backup as _b
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("name") or [""])[0]
+            item = next((b for b in _b.list_backups() if b["name"] == name), None)
+            if item is None:
+                return self.send_error(404)
+            return self._serve_file(Path(item["path"]))
+
         if p == "/api/job-log":
             # Full log for one job. The state poll carries logs only for
             # running/failed jobs, so an opened log panel fetches the rest here.
@@ -1005,8 +1564,11 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             favs = (q.get("favorites") or ["0"])[0] in ("1", "true", "yes")
             one = (q.get("profile") or [""])[0].strip()[:64] or None
+            many_raw = q.get("profiles")
+            many = _profile_list_param(many_raw) if many_raw else None
             return self._json(get_engine().timeline(only_favorites=favs,
-                                                    profile=one))
+                                                    profile=one,
+                                                    profiles=many))
         if p == "/api/timeline-month":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -1018,8 +1580,11 @@ class Handler(BaseHTTPRequestHandler):
                 offset, limit = 0, 200
             favs = (q.get("favorites") or ["0"])[0] in ("1", "true", "yes")
             one = (q.get("profile") or [""])[0].strip()[:64] or None
+            many_raw = q.get("profiles")
+            many = _profile_list_param(many_raw) if many_raw else None
             got = get_engine().timeline_month(
-                month, offset, limit, only_favorites=favs, profile=one)
+                month, offset, limit, only_favorites=favs, profile=one,
+                profiles=many)
             # The month's page, not the whole timeline: that is what is drawn.
             if isinstance(got.get("posts"), list):
                 _mark_bookmarks(got["posts"], one)
@@ -1085,6 +1650,22 @@ class Handler(BaseHTTPRequestHandler):
             for posts in secs.values():
                 _mark_bookmarks(posts, name)
             return self._json({"profile": name, "sections": secs})
+        if p == "/api/peek":
+            # A few tiles for one profile, liked first. Small on purpose: the
+            # card view unfolds nine thumbnails, not a whole gallery.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            if not name:
+                return self.send_error(400)
+            plat = (q.get("platform") or ["instagram"])[0]
+            if plat not in ("instagram", "tiktok"):
+                plat = "instagram"
+            try:
+                n = max(1, min(24, int((q.get("n") or ["9"])[0])))
+            except ValueError:
+                n = 9
+            return self._json(get_engine().profile_peek(name, plat, n))
         if p == "/media":
             # Serve a file, but only one inside a finished profile's folder.
             from urllib.parse import parse_qs
@@ -1111,6 +1692,24 @@ class Handler(BaseHTTPRequestHandler):
                     return self._serve_file(playable, cache=True)
             # Allow the browser to cache: these files never change in place.
             return self._serve_file(target, cache=True)
+        if p == "/api/profile-zip/progress":
+            # The button polls this while the build runs, so a multi-GB profile
+            # shows a real percentage instead of a dead "Zipping…".
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            return self._zip_progress((q.get("id") or [""])[0])
+        if p == "/api/profile-zip":
+            # Either `?id=` for a build the page started, or `?profile=` for a
+            # direct URL that builds and serves in one request.
+            from urllib.parse import parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            token = (q.get("id") or [""])[0]
+            if token:
+                return self._send_ready_zip(token)
+            name = clean_profile_name((q.get("profile") or [""])[0])
+            if not name:
+                return self.send_error(400)
+            return self._send_profile_zip(name)
         if p == "/view":
             # Full-size view of one image. HEIC is what phones write and only
             # Safari can draw it, so it is converted to JPEG here; everything
@@ -1201,7 +1800,37 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/upload":
             return self._upload()
 
+        # The backup zip is the raw request body (no multipart wrapper), so it
+        # is handled before the JSON reader, exactly like an upload.
+        if p == "/api/backup/import":
+            return self._backup_import()
+
         body = self._read_json()
+
+        if p == "/api/backup/auto":
+            # Write one dated backup now; the card shows the ones already there.
+            import backup as _b
+            try:
+                keep = int(body.get("keep") or _b.DEFAULT_KEEP)
+                manifest = _b.auto_backup(keep=keep,
+                                          include_session=bool(body.get("session", True)))
+            except Exception as exc:
+                return self._json({"ok": False, "error": str(exc)}, 500)
+            return self._json({"ok": True, "backup": manifest,
+                               "backups": _b.list_backups()})
+
+        if p == "/api/profile-zip/start":
+            # Kick off a build in the background and hand back its token; the
+            # page then polls progress and starts the download itself.
+            name = clean_profile_name(str(body.get("profile") or ""))
+            if not name:
+                return self._json({"error": "no profile given"}, 400)
+            token = self._start_zip(name)
+            if token is None:
+                return                      # the 404 was already sent
+            info = _ZIPS[token]
+            return self._json({"id": token, "files": info["files"],
+                               "total": info["total"]})
 
         if p == "/api/add":
             raw = body.get("profiles")
@@ -1490,12 +2119,18 @@ class Handler(BaseHTTPRequestHandler):
             if not on:
                 db.set_bookmark(plat, prof, name, False)
                 return self._json({"ok": True, "bookmarked": False,
-                                   "category": None})
+                                   "category": None,
+                                   # The picker draws "(n)" beside each category
+                                   # from this answer, so the number moves as
+                                   # soon as the write lands instead of staying
+                                   # stale until a reload.
+                                   "categories": db.bookmark_categories()})
             if cat == "__keep__":
                 cur = db.bookmark_for(plat, prof, name)
                 cat = cur.get("category") if cur else None
             got = db.set_bookmark(plat, prof, name, True, cat)
-            return self._json({"ok": True, **got})
+            return self._json({"ok": True, **got,
+                               "categories": db.bookmark_categories()})
 
         if p == "/api/bookmark/category":
             # The categories themselves: add, rename, delete. Deleting one never
@@ -2102,13 +2737,42 @@ def _ensure_instaloader() -> bool:
     return False
 
 
-def main() -> None:
+def main() -> int:
+    """Start the server. Returns the process exit code.
+
+    A second copy on the same state file is refused before anything expensive
+    happens -- no Engine, no instaloader prompt, no browser, no second port.
+    """
+    argv = sys.argv[1:]
+
+    if "--attach" in argv:
+        # Print where the running instance is and get out of the way. Nothing
+        # below may run: the caller wants a URL, not another server.
+        return attach()
+
+    # `active` is the live owner of this state file, if there is one. It decides
+    # both whether to start and whether this process may claim the lock.
+    active = running_instance()
+    if active is not None and "--force" not in argv:
+        print(f"HardlyWatching is already running at {active['url']}")
+        return 0
+
     eng = get_engine()
     eng.output_root.mkdir(parents=True, exist_ok=True)
     _ensure_instaloader()
     # Clear interrupted-download leftovers from a previous run. Backgrounded so
     # housekeeping never delays the UI.
     eng.cleanup_partials_at_startup()
+    # One dated backup a day, in the background, keeping a week. This is the
+    # thing that makes "delete it and move to a new computer" recoverable even
+    # if nobody pressed Export: the zip is already there, next to the app's data.
+    def _auto_backup() -> None:
+        try:
+            import backup as _b
+            _b.auto_backup_if_due()
+        except Exception:
+            pass
+    threading.Thread(target=_auto_backup, daemon=True, name="backup").start()
     # Resume queued work -- only when actually run as the server. Importing
     # this module must never start a worker against the user's real queue.
     eng.kick_if_work()
@@ -2118,27 +2782,53 @@ def main() -> None:
     PORT = find_free_port(want, "127.0.0.1" if HOST in ("0.0.0.0", "::") else HOST)
     srv = QuietServer((HOST, PORT), Handler)
     url = f"http://{'127.0.0.1' if HOST in ('0.0.0.0', '::') else HOST}:{PORT}"
+    # Claim the state file only once the port is really ours, and never over a
+    # live owner: with --force the first instance keeps the lock, so --attach
+    # still points at the canonical one and this process does not delete it on
+    # the way out. A write failure (read-only config dir, say) must not keep the
+    # app from running; it just loses the protection, which is worth saying.
+    if active is None:
+        try:
+            write_lock(PORT)
+        except OSError as e:
+            print(f"  (could not write the lock file {lock_path()}: {e})")
+    else:
+        print(f"  (--force: {active['url']} is still running; it keeps the lock)")
     print()
     print("=" * 56)
     print(f"  HardlyWatching is running at {url}")
     if PORT != want:
         print(f"  (port {want} was busy, so it used {PORT})")
-    print("  It should have opened in your browser.")
-    print("  If not, copy that address into your browser.")
+    if "--no-browser" in argv:
+        print("  Open that address in your browser.")
+    else:
+        print("  It should have opened in your browser.")
+        print("  If not, copy that address into your browser.")
     print(f"  Downloads land in: {eng.output_root}")
     print("  Press Ctrl-C here to stop.")
     print("=" * 56)
     if HOST in ("0.0.0.0", "::"):
         print(f"Reachable from other devices at http://<this-box-ip>:{PORT}")
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    if "--no-browser" not in argv:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped.")
+    finally:
+        # Only a clean stop gets here. A killed process leaves the lock behind
+        # on purpose: the next start sees a dead pid, calls it stale and takes
+        # over, which costs one /api/health probe and no surprises.
+        remove_lock()
+        try:
+            srv.server_close()
+        except Exception:
+            pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "HardlyWatching",
+  "version": "0.2.0",
+  "identifier": "ing.hardlysleep.hardlywatching",
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "deb"
+    ],
+    "category": "Utility",
+    "shortDescription": "HardlyWatching desktop shell",
+    "longDescription": "A desktop window onto a HardlyWatching server. The UI is served by the server itself, so the window always shows that server's version of the web UI. The Python server ships inside the app, so no system Python and no separate server are needed.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/HardlyWatching/sidecar": "../dist/sidecar"
+        }
+      }
+    }
+  }
+}

@@ -87,12 +87,68 @@ def cache_dir() -> Path:
     return Path(base) / "hardlywatching"
 
 
+def data_dir() -> Path | None:
+    """One folder for everything this app remembers, when INSTA_DATA is set.
+
+    Unset (the default) keeps the platform-correct split: config next to the
+    other apps' config, caches in the cache folder. Set it and state.json,
+    profiles.db, gallery-cache.db, thumbs, avatars and the instaloader session
+    all live under one directory -- which is what makes the whole app portable:
+    copy that folder and the archive to another machine and nothing is left
+    behind. Every one of those paths still has its own INSTA_* override, so this
+    only moves the defaults.
+    """
+    raw = (os.environ.get("INSTA_DATA") or "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+def data_path(name: str, default: Path) -> Path:
+    """``name`` under INSTA_DATA when it is set, otherwise ``default``."""
+    data = data_dir()
+    return (data / name) if data is not None else default
+
+
+def state_path() -> Path:
+    if os.environ.get("INSTA_STATE"):
+        return Path(os.environ["INSTA_STATE"])
+    data = data_dir()
+    if data is not None:
+        return data / "state.json"
+    return config_dir() / "hardlywatching" / "state.json"
+
+
+def profiles_path() -> Path:
+    """The intent database: profiles, bookmarks, likes, shorts weights."""
+    if os.environ.get("INSTA_PROFILES_DB"):
+        return Path(os.environ["INSTA_PROFILES_DB"])
+    data = data_dir()
+    if data is not None:
+        return data / "profiles.db"
+    return config_dir() / "hardlywatching" / "profiles.db"
+
+
+def cache_db_path() -> Path:
+    if os.environ.get("INSTA_CACHE_DB"):
+        return Path(os.environ["INSTA_CACHE_DB"])
+    data = data_dir()
+    if data is not None:
+        return data / "gallery-cache.db"
+    return config_dir() / "hardlywatching" / "gallery-cache.db"
+
+
 def instaloader_config_dir() -> Path:
     """Where instaloader keeps its sessions and stamps.
 
     Mirrors instaloader's own rule so we look in the right place on every OS:
-    %LOCALAPPDATA%\\Instaloader on Windows, ~/.config/instaloader elsewhere.
+    %LOCALAPPDATA%\\Instaloader on Windows, ~/.config/instaloader elsewhere --
+    unless INSTA_DATA is set, in which case the session travels with the rest of
+    the app's data instead of hiding in the config folder.
     """
+    data = data_dir()
+    if data is not None:
+        return data / "instaloader"
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "Instaloader"
@@ -100,8 +156,7 @@ def instaloader_config_dir() -> Path:
 
 
 OUTPUT_ROOT = Path(os.environ.get("INSTA_OUTPUT", Path.home() / "instagram"))
-STATE_FILE = Path(os.environ.get(
-    "INSTA_STATE", config_dir() / "hardlywatching" / "state.json"))
+STATE_FILE = state_path()
 INSTALOADER = shutil.which("instaloader") or str(Path.home() / ".local/bin/instaloader")
 
 
@@ -721,8 +776,7 @@ UPLOAD_EXTS = GALLERY_EXTS
 _MEDIA_CACHE: dict[str, tuple[tuple, list[str]]] = {}
 _MEDIA_CACHE_MAX = 512
 
-CACHE_DB = Path(os.environ.get(
-    "INSTA_CACHE_DB", config_dir() / "hardlywatching" / "gallery-cache.db"))
+CACHE_DB = cache_db_path()
 
 
 # Bumped whenever the way a folder's files become posts changes. Cached posts
@@ -1618,9 +1672,27 @@ def gallery_posts(self, username: str, section: str = "main",
     return posts
 
 
+def _timeline_key(profile: str | None = None,
+                  profiles: list[str] | None = None) -> str | None:
+    """The identity of one timeline scope: the sorted, lowercased handle set.
+
+    Both the builder and the month reader derive the cache key from this, so a
+    request for a different selection can never be answered from the previous
+    selection's list. `profiles=[]` means "asked for names, none usable" and is
+    its own key, so it cannot be confused with "no scope asked for".
+    """
+    if profiles is not None:
+        picks = [p.strip().lower() for p in profiles if p and p.strip()]
+        return ",".join(sorted(set(picks))) or "@nobody"
+    if profile and profile.strip():
+        return profile.strip().lower()
+    return None
+
+
 def timeline(self, months: int | None = None,
              only_favorites: bool = False,
-             profile: str | None = None) -> dict:
+             profile: str | None = None,
+             profiles: list[str] | None = None) -> dict:
     """Every profile's posts in one chronological list, month-grouped.
 
     Returns the months present with their counts, and the posts, so the UI
@@ -1633,13 +1705,22 @@ def timeline(self, months: int | None = None,
     double-count posts that are also in main.
 
     `profile` narrows the walk to one profile, which is what the timeline
-    shows when it is opened from inside a profile's own grid. Matching is
-    case-insensitive and ignores surrounding space, because the name arrives
-    from a URL.
+    shows when it is opened from inside a profile's own grid. `profiles` does
+    the same for a hand-picked set, so the picker can ask for three people and
+    one walk. Matching is case-insensitive and ignores surrounding space,
+    because the names arrive from a URL.
     """
     raw = (profile or "").strip()
-    want = raw.lower() or None
-    if want:
+    if profiles is not None:
+        # An explicit selection, even an empty one: a name that survived no
+        # validation must show nothing rather than quietly opening every profile.
+        picks = [p.strip() for p in profiles if p and p.strip()][:200]
+    elif raw:
+        picks = [raw]
+    else:
+        picks = None
+    want_key = _timeline_key(profile, profiles)
+    if picks is not None:
         # One name is one card, and a card can stand for more than one folder:
         # a merged account keeps its other handles' posts in their own folders,
         # which is what the grid draws. Walk the family so the timeline of a
@@ -1648,17 +1729,18 @@ def timeline(self, months: int | None = None,
         # does, so the TikTok side of a merged card is not part of it.
         sources = []
         seen: set[str] = set()
-        for who, plat in self.profile_family(raw, "instagram"):
-            # Only the Instagram members: the same-name rule pairs a handle with
-            # its twin on the other site, and reading that twin's folder as an
-            # Instagram profile would count the card's posts twice.
-            if not who or (plat or "").lower() != "instagram":
-                continue
-            key = who.strip().lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            sources.append((who, "instagram"))
+        for name in picks:
+            for who, plat in self.profile_family(name, "instagram"):
+                # Only the Instagram members: the same-name rule pairs a handle
+                # with its twin on the other site, and reading that twin's
+                # folder as an Instagram profile would count the card twice.
+                if not who or (plat or "").lower() != "instagram":
+                    continue
+                key = who.strip().lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                sources.append((who, "instagram"))
     else:
         sources = [(p.get("username"), "instagram")
                    for p in self.gallery_profiles() if p.get("username")]
@@ -1733,28 +1815,30 @@ def timeline(self, months: int | None = None,
     self._timeline_favs = bool(only_favorites)
     # Which profile this list was built for, so a month request for a different
     # scope cannot be answered from the wrong cache.
-    self._timeline_profile = want
-    return {"months": groups, "total": len(out), "profile": want or ""}
+    self._timeline_profile = want_key
+    return {"months": groups, "total": len(out), "profile": want_key or ""}
 
 def timeline_month(self, month: str, offset: int = 0,
                    limit: int = 200, only_favorites: bool = False,
-                   profile: str | None = None) -> dict:
+                   profile: str | None = None,
+                   profiles: list[str] | None = None) -> dict:
     """One month's posts from the timeline, and how many there are in all.
 
     The UI drives a slider over the months and asks for just the one it is
     showing. Returning all 30,000 posts to draw one month was 7.6MB and 1.5s
     per request; a month is a few hundred posts.
 
-    `only_favorites` and `profile` must be passed through: the built list is
+    `only_favorites` and the scope must be passed through: the built list is
     cached, and each combination is a DIFFERENT list, so reusing the cached
     list here would quietly serve every post while the UI said something else.
     """
-    want = (profile or "").strip().lower() or None
+    want = _timeline_key(profile, profiles)
     allp = getattr(self, "_timeline_all", None)
     stale = (getattr(self, "_timeline_favs", None) != bool(only_favorites)
              or getattr(self, "_timeline_profile", None) != want)
     if allp is None or not getattr(self, "_timeline_groups", None) or stale:
-        self.timeline(only_favorites=only_favorites, profile=profile)
+        self.timeline(only_favorites=only_favorites, profile=profile,
+                      profiles=profiles)
         allp = getattr(self, "_timeline_all", []) or []
     if month == "all":
         chosen = allp
@@ -2631,12 +2715,13 @@ def set_output_root(self, path: str, migrate: bool = False) -> tuple[bool, str]:
 THUMB_MAX = 320          # px on the long edge; the grid shows them ~190px
 THUMB_VIDEO_AT = 1.0     # seconds into a clip for its poster frame
 THUMB_CACHE = Path(os.environ.get(
-    "INSTA_THUMBS", cache_dir() / "thumbs"))
+    "INSTA_THUMBS", data_path("thumbs", cache_dir() / "thumbs")))
 
 # Profile pictures fetched from the site, which the archive does not carry.
 # Kept in the cache rather than in the profile folder: everything in a profile
 # folder is scanned as media, so a picture put there appears as an extra post.
-AVATAR_CACHE = Path(os.environ.get("INSTA_AVATARS", cache_dir() / "avatars"))
+AVATAR_CACHE = Path(os.environ.get(
+    "INSTA_AVATARS", data_path("avatars", cache_dir() / "avatars")))
 
 # Hover-preview clips: a few silent seconds of the video, small enough to fetch
 # on hover. A 4 MB source becomes ~180 KB, so sweeping the cursor over a row of
@@ -2679,6 +2764,46 @@ def ensure_pillow_formats() -> None:
         pillow_heif.register_heif_opener()
     except Exception:
         pass
+
+
+def profile_peek(self, username: str, platform: str = "instagram",
+                 limit: int = 9) -> dict:
+    """A handful of tiles for one profile: liked photos first, then recent.
+
+    The profile list is drawn from /api/gallery, which carries counts but no
+    media, so a card that unfolds has to ask for its own photos. Asking for
+    /api/photos here would ship a profile's entire gallery -- thousands of
+    posts -- to draw nine thumbnails, so this answers with just the first item
+    of each post, favourites ahead of everything else.
+    """
+    secs = self.gallery_sections(username, platform)
+    liked = secs.get("favorites") or []
+    items: list[dict] = []
+    seen: set[str] = set()
+    for posts, is_fav in ((liked, True), (secs.get("main") or [], False)):
+        # Newest first: a profile's most recent work is what you are looking
+        # for, and the gallery returns them oldest-first for the timeline.
+        for post in sorted(posts, key=lambda p: p.get("ts") or 0, reverse=True):
+            first = (post.get("items") or [None])[0]
+            if not first or first.get("file") in seen:
+                continue
+            seen.add(first.get("file"))
+            items.append({
+                "file": first.get("file"),
+                "kind": first.get("kind") or "image",
+                "section": post.get("section") or ("favorites" if is_fav else "main"),
+                # The account the file really lives under: a merged card mixes
+                # two sites, and a thumb requested from the wrong root is empty.
+                "platform": post.get("platform") or platform,
+                "liked": bool(is_fav or post.get("liked")),
+                "ts": post.get("ts") or 0,
+                "parts": len(post.get("items") or []),
+            })
+            if len(items) >= limit:
+                return {"profile": username, "platform": platform,
+                        "liked": len(liked), "items": items}
+    return {"profile": username, "platform": platform,
+            "liked": len(liked), "items": items}
 
 
 def make_thumb(src: Path, ext: str) -> Path | None:
@@ -3234,6 +3359,7 @@ class Engine:
 
     gallery_profiles = gallery_profiles
     gallery_sections = gallery_sections
+    profile_peek = profile_peek
     liked_posts = liked_posts
     bookmarked_posts = bookmarked_posts
     post_files = post_files

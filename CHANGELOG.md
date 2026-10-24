@@ -60,6 +60,20 @@ Nothing yet.
   a month request can never be answered from another scope's list. A merged card
   is one card, so its timeline walks the family's Instagram handles; the same-name
   twin on the other site is skipped rather than counted twice.
+- **One instance per state file, and a way to ask which one.** A second start used
+  to move itself to the next free port and run a second worker over the same queue
+  and the same archive. It now finds the lock the first instance wrote beside its
+  state file, checks that the recorded process is alive and answering
+  `/api/health`, prints `HardlyWatching is already running at <url>` and exits 0
+  with nothing started. A lock left behind by a killed process is stale and taken
+  over on the next start, so a crash never keeps the app down. `--attach` prints
+  the running instance's URL and exits (0 when one is up, 1 when none is) without
+  starting anything, `--no-browser` serves without opening a tab, and `--force`
+  starts a second copy deliberately, on the next free port, leaving the lock with
+  the first so `--attach` still names the canonical one. `INSTA_LOCK` moves the
+  lock file itself. `GET /api/version` answers `{version, pid, port, started,
+  api}`, so a shell or a script can identify the build holding a port before
+  trusting the rest of the API.
 
 ### Changed
 - **One heart, one word: everything is "Liked".** There were two names for the

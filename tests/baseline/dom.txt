@@ -1,0 +1,547 @@
+# HardlyWatching UI baseline - DOM landmarks, captured from a FAKE archive.
+# format: tab @viewport | selector-or-role | visible label | count
+# regenerate: tests/baseline/capture.py (see README.md); do not hand-edit.
+# counts are per viewport: a control that only exists on one is a finding.
+
+Download > TikTok @1440x900 | a#ttOpenPath | <demo-root>/tiktok | 1
+Download > TikTok @1440x900 | button#autostartBtn | Turn off | 1
+Download > TikTok @1440x900 | button#changeFolderBtn | Change… | 1
+Download > TikTok @1440x900 | button#clearInputBtn | Clear text | 1
+Download > TikTok @1440x900 | button#openRoot | Open this platform's folder | 1
+Download > TikTok @1440x900 | button#pasteBtn | Paste from clipboard | 1
+Download > TikTok @1440x900 | button#refreshSess | Refresh | 1
+Download > TikTok @1440x900 | button#resetSettings | Reset to defaults | 1
+Download > TikTok @1440x900 | button#rootAdd | Add archive folder… | 1
+Download > TikTok @1440x900 | button#runBtn | Resume this queue | 1
+Download > TikTok @1440x900 | button#sessBtn | Sessions | 1
+Download > TikTok @1440x900 | button#sessPanelClose | Close | 1
+Download > TikTok @1440x900 | button#sessTtGrab | Save a new session | 1
+Download > TikTok @1440x900 | button#showAdv | Show advanced | 1
+Download > TikTok @1440x900 | button#showAllSettingsBtn | Show all platforms | 1
+Download > TikTok @1440x900 | button#startBtn | Add to queue | 1
+Download > TikTok @1440x900 | button#subIg | Instagram | 1
+Download > TikTok @1440x900 | button#subTt | TikTok | 1
+Download > TikTok @1440x900 | button#tabGallery | Gallery | 1
+Download > TikTok @1440x900 | button#tabQueue | Download | 1
+Download > TikTok @1440x900 | button#tabShorts | Shorts | 1
+Download > TikTok @1440x900 | button#ttCheckBtn | Check | 1
+Download > TikTok @1440x900 | button.icon | ↓ | 1
+Download > TikTok @1440x900 | button.icon | ⤓ | 1
+Download > TikTok @1440x900 | button[title="15 fewer"] | −15 | 1
+Download > TikTok @1440x900 | button[title="15 more"] | +15 | 1
+Download > TikTok @1440x900 | button[title="25 more"] | +25 | 1
+Download > TikTok @1440x900 | button[title="5 fewer"] | −5 | 1
+Download > TikTok @1440x900 | button[title="5 more"] | +5 | 1
+Download > TikTok @1440x900 | button[title="Every video on the profile"] | all | 1
+Download > TikTok @1440x900 | button[title="More actions"] | ⋯ | 1
+Download > TikTok @1440x900 | button[title="Next page"] | › | 1
+Download > TikTok @1440x900 | button[title="Open demo.tin.robot's gallery — the files already downloaded"] | Gallery | 1
+Download > TikTok @1440x900 | button[title="Open the download folder"] | Open | 1
+Download > TikTok @1440x900 | button[title="Previous page"] | ‹ | 1
+Download > TikTok @1440x900 | input#rootNew | /run/media/you/DRIVE/instagram | 1
+Download > TikTok @1440x900 | input#setSearch | Filter settings… (e.g. video, json, stories) | 1
+Download > TikTok @1440x900 | input.listsearch | Search waiting… | 1
+Download > TikTok @1440x900 | input[data-k="autocheck"] | Check for new posts automatically | 1
+Download > TikTok @1440x900 | input[data-k="autocheck_hours"] | Only if idle for (hours) | 1
+Download > TikTok @1440x900 | input[data-k="between_tiktok"] | Seconds between TikTok profiles | 1
+Download > TikTok @1440x900 | input[data-k="pictures"] | Pictures | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.chunk_all"] | "All" a slice at a time | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.chunk_size"] | Videos a turn | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.cookies_from_browser"] | Cookies from browser | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.date_after"] | Only videos on/after | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.date_before"] | Only videos on/before | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.embed_metadata"] | Embed metadata | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.embed_thumbnail"] | Embed cover art | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.fragment_retries"] | Fragment retries | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.limit_rate"] | Rate limit | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.merge_container"] | Merge into | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.proxy"] | Proxy | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.quality"] | Video quality | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.recode"] | Re-encode to | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.retries"] | Retries | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.sleep_interval"] | Sleep before each download (s) | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.sleep_requests"] | Sleep between requests (s) | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.write_description"] | Write description | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.write_info_json"] | Write metadata JSON | 1
+Download > TikTok @1440x900 | input[data-k="tiktok.write_thumbnail"] | Write thumbnail | 1
+Download > TikTok @1440x900 | input[data-k="video_thumbnails"] | Video thumbnails | 1
+Download > TikTok @1440x900 | input[data-k="videos"] | Videos | 1
+Download > TikTok @1440x900 | landmark:#diskChip | <size> free · <pct> used | 1
+Download > TikTok @1440x900 | landmark:#excludedCard | (container) | 1
+Download > TikTok @1440x900 | landmark:#sessChipWrap | no login needed | 1
+Download > TikTok @1440x900 | landmark:#sessPanel | (container) | 1
+Download > TikTok @1440x900 | landmark:#settingsBox | (container) | 1
+Download > TikTok @1440x900 | landmark:#statChip | 1 queued · 0 done | 1
+Download > TikTok @1440x900 | landmark:.bar | no login needed Sessions 1 queued · 0 done | 1
+Download > TikTok @1440x900 | landmark:.subtabs | Instagram TikTok | 1
+Download > TikTok @1440x900 | landmark:.tabs | Download Gallery Shorts | 1
+Download > TikTok @1440x900 | landmark:h1 | HardlyWatching TikTok | 1
+Download > TikTok @1440x900 | landmark:h2 | Waiting | 1
+Download > TikTok @1440x900 | landmark:h3 | TikTok notes | 1
+Download > TikTok @1440x900 | landmark:header | HardlyWatching TikTok <size> free · <pct> used | 1
+Download > TikTok @1440x900 | select#ttCount | TikTok videos per profile | 1
+Download > TikTok @1440x900 | select.listsearch | How many to show at a time | 1
+Download > TikTok @1440x900 | summary | Copying a whole following list | 1
+Download > TikTok @1440x900 | summary | Download settings · new only · stories, highlights | 1
+Download > TikTok @1440x900 | summary | Excluded — removed from the queue or deleted; restorable | 1
+Download > TikTok @1440x900 | textarea#input | Paste Instagram and TikTok links together — one per line: https://www… | 1
+Download > TikTok @390x844 | a#ttOpenPath | <demo-root>/tiktok | 1
+Download > TikTok @390x844 | button#autostartBtn | Turn off | 1
+Download > TikTok @390x844 | button#changeFolderBtn | Change… | 1
+Download > TikTok @390x844 | button#clearInputBtn | Clear text | 1
+Download > TikTok @390x844 | button#openRoot | Open this platform's folder | 1
+Download > TikTok @390x844 | button#pasteBtn | Paste from clipboard | 1
+Download > TikTok @390x844 | button#refreshSess | Refresh | 1
+Download > TikTok @390x844 | button#resetSettings | Reset to defaults | 1
+Download > TikTok @390x844 | button#rootAdd | Add archive folder… | 1
+Download > TikTok @390x844 | button#runBtn | Resume this queue | 1
+Download > TikTok @390x844 | button#sessBtn | Sessions | 1
+Download > TikTok @390x844 | button#sessPanelClose | Close | 1
+Download > TikTok @390x844 | button#sessTtGrab | Save a new session | 1
+Download > TikTok @390x844 | button#showAdv | Show advanced | 1
+Download > TikTok @390x844 | button#showAllSettingsBtn | Show all platforms | 1
+Download > TikTok @390x844 | button#startBtn | Add to queue | 1
+Download > TikTok @390x844 | button#subIg | Instagram | 1
+Download > TikTok @390x844 | button#subTt | TikTok | 1
+Download > TikTok @390x844 | button#tabGallery | Gallery | 1
+Download > TikTok @390x844 | button#tabQueue | Download | 1
+Download > TikTok @390x844 | button#tabShorts | Shorts | 1
+Download > TikTok @390x844 | button#ttCheckBtn | Check | 1
+Download > TikTok @390x844 | button.icon | ↓ | 1
+Download > TikTok @390x844 | button.icon | ⤓ | 1
+Download > TikTok @390x844 | button[title="15 fewer"] | −15 | 1
+Download > TikTok @390x844 | button[title="15 more"] | +15 | 1
+Download > TikTok @390x844 | button[title="25 more"] | +25 | 1
+Download > TikTok @390x844 | button[title="5 fewer"] | −5 | 1
+Download > TikTok @390x844 | button[title="5 more"] | +5 | 1
+Download > TikTok @390x844 | button[title="Every video on the profile"] | all | 1
+Download > TikTok @390x844 | button[title="More actions"] | ⋯ | 1
+Download > TikTok @390x844 | button[title="Next page"] | › | 1
+Download > TikTok @390x844 | button[title="Open demo.tin.robot's gallery — the files already downloaded"] | Gallery | 1
+Download > TikTok @390x844 | button[title="Open the download folder"] | Open | 1
+Download > TikTok @390x844 | button[title="Previous page"] | ‹ | 1
+Download > TikTok @390x844 | input#rootNew | /run/media/you/DRIVE/instagram | 1
+Download > TikTok @390x844 | input#setSearch | Filter settings… (e.g. video, json, stories) | 1
+Download > TikTok @390x844 | input.listsearch | Search waiting… | 1
+Download > TikTok @390x844 | input[data-k="autocheck"] | Check for new posts automatically | 1
+Download > TikTok @390x844 | input[data-k="autocheck_hours"] | Only if idle for (hours) | 1
+Download > TikTok @390x844 | input[data-k="between_tiktok"] | Seconds between TikTok profiles | 1
+Download > TikTok @390x844 | input[data-k="pictures"] | Pictures | 1
+Download > TikTok @390x844 | input[data-k="tiktok.chunk_all"] | "All" a slice at a time | 1
+Download > TikTok @390x844 | input[data-k="tiktok.chunk_size"] | Videos a turn | 1
+Download > TikTok @390x844 | input[data-k="tiktok.cookies_from_browser"] | Cookies from browser | 1
+Download > TikTok @390x844 | input[data-k="tiktok.date_after"] | Only videos on/after | 1
+Download > TikTok @390x844 | input[data-k="tiktok.date_before"] | Only videos on/before | 1
+Download > TikTok @390x844 | input[data-k="tiktok.embed_metadata"] | Embed metadata | 1
+Download > TikTok @390x844 | input[data-k="tiktok.embed_thumbnail"] | Embed cover art | 1
+Download > TikTok @390x844 | input[data-k="tiktok.fragment_retries"] | Fragment retries | 1
+Download > TikTok @390x844 | input[data-k="tiktok.limit_rate"] | Rate limit | 1
+Download > TikTok @390x844 | input[data-k="tiktok.merge_container"] | Merge into | 1
+Download > TikTok @390x844 | input[data-k="tiktok.proxy"] | Proxy | 1
+Download > TikTok @390x844 | input[data-k="tiktok.quality"] | Video quality | 1
+Download > TikTok @390x844 | input[data-k="tiktok.recode"] | Re-encode to | 1
+Download > TikTok @390x844 | input[data-k="tiktok.retries"] | Retries | 1
+Download > TikTok @390x844 | input[data-k="tiktok.sleep_interval"] | Sleep before each download (s) | 1
+Download > TikTok @390x844 | input[data-k="tiktok.sleep_requests"] | Sleep between requests (s) | 1
+Download > TikTok @390x844 | input[data-k="tiktok.write_description"] | Write description | 1
+Download > TikTok @390x844 | input[data-k="tiktok.write_info_json"] | Write metadata JSON | 1
+Download > TikTok @390x844 | input[data-k="tiktok.write_thumbnail"] | Write thumbnail | 1
+Download > TikTok @390x844 | input[data-k="video_thumbnails"] | Video thumbnails | 1
+Download > TikTok @390x844 | input[data-k="videos"] | Videos | 1
+Download > TikTok @390x844 | landmark:#diskChip | <size> free · <pct> used | 1
+Download > TikTok @390x844 | landmark:#excludedCard | (container) | 1
+Download > TikTok @390x844 | landmark:#sessChipWrap | no login needed | 1
+Download > TikTok @390x844 | landmark:#sessPanel | (container) | 1
+Download > TikTok @390x844 | landmark:#settingsBox | (container) | 1
+Download > TikTok @390x844 | landmark:#statChip | 1 queued · 0 done | 1
+Download > TikTok @390x844 | landmark:.bar | no login needed Sessions 1 queued · 0 done | 1
+Download > TikTok @390x844 | landmark:.subtabs | Instagram TikTok | 1
+Download > TikTok @390x844 | landmark:.tabs | Download Gallery Shorts | 1
+Download > TikTok @390x844 | landmark:h1 | HardlyWatching TikTok | 1
+Download > TikTok @390x844 | landmark:h2 | Waiting | 1
+Download > TikTok @390x844 | landmark:h3 | TikTok notes | 1
+Download > TikTok @390x844 | landmark:header | HardlyWatching TikTok <size> free · <pct> used | 1
+Download > TikTok @390x844 | select#ttCount | TikTok videos per profile | 1
+Download > TikTok @390x844 | select.listsearch | How many to show at a time | 1
+Download > TikTok @390x844 | summary | Copying a whole following list | 1
+Download > TikTok @390x844 | summary | Download settings · new only · stories, highlights | 1
+Download > TikTok @390x844 | summary | Excluded — removed from the queue or deleted; restorable | 1
+Download > TikTok @390x844 | textarea#input | Paste Instagram and TikTok links together — one per line: https://www… | 1
+Download @1440x900 | button | Use | 1
+Download @1440x900 | button#autostartBtn | Turn off | 1
+Download @1440x900 | button#changeFolderBtn | Change… | 1
+Download @1440x900 | button#clearFinishedBtn | Clear | 1
+Download @1440x900 | button#clearInputBtn | Clear text | 1
+Download @1440x900 | button#doneSortBtn | sort: as added | 1
+Download @1440x900 | button#grabBtn | Auto-grab best session | 1
+Download @1440x900 | button#loginBtn | Log in | 1
+Download @1440x900 | button#openRoot | Open this platform's folder | 1
+Download @1440x900 | button#pasteBtn | Paste from clipboard | 1
+Download @1440x900 | button#refreshSess | Refresh | 1
+Download @1440x900 | button#resetSettings | Reset to defaults | 1
+Download @1440x900 | button#rootAdd | Add archive folder… | 1
+Download @1440x900 | button#runBtn | Resume this queue | 1
+Download @1440x900 | button#sessBtn | Sessions | 1
+Download @1440x900 | button#sessPanelClose | Close | 1
+Download @1440x900 | button#showAdv | Show advanced | 1
+Download @1440x900 | button#showAllSettingsBtn | Show all platforms | 1
+Download @1440x900 | button#startBtn | Add to queue | 1
+Download @1440x900 | button#subIg | Instagram | 1
+Download @1440x900 | button#subTt | TikTok | 1
+Download @1440x900 | button#tabGallery | Gallery | 1
+Download @1440x900 | button#tabQueue | Download | 1
+Download @1440x900 | button#tabShorts | Shorts | 1
+Download @1440x900 | button#ttCheckBtn | Check | 1
+Download @1440x900 | button.danger | ✕ | 1
+Download @1440x900 | button.icon | ↓ | 1
+Download @1440x900 | button.icon | ⤓ | 1
+Download @1440x900 | button[title="More actions"] | ⋯ | 4
+Download @1440x900 | button[title="Next page"] | › | 2
+Download @1440x900 | button[title="Open demo.coral.reef's gallery — the files already downloaded"] | Gallery | 1
+Download @1440x900 | button[title="Open demo.pixel.garden's gallery — the files already downloaded"] | Gallery | 1
+Download @1440x900 | button[title="Open demo.quiet.harbor's gallery — the files already downloaded"] | Gallery | 1
+Download @1440x900 | button[title="Open demo.slow.mornings's gallery — the files already downloaded"] | Gallery | 1
+Download @1440x900 | button[title="Open the download folder"] | Open | 4
+Download @1440x900 | button[title="Previous page"] | ‹ | 2
+Download @1440x900 | button[title="Stop using this account for downloads (stays locked across restarts)"] | Lock | 1
+Download @1440x900 | input#loginUser | your instagram username | 1
+Download @1440x900 | input#rootNew | /run/media/you/DRIVE/instagram | 1
+Download @1440x900 | input#setSearch | Filter settings… (e.g. video, json, stories) | 1
+Download @1440x900 | input.listsearch | Search finished… | 1
+Download @1440x900 | input.listsearch | Search waiting… | 1
+Download @1440x900 | input[data-k="autocheck"] | Check for new posts automatically | 1
+Download @1440x900 | input[data-k="autocheck_hours"] | Only if idle for (hours) | 1
+Download @1440x900 | input[data-k="between_profiles"] | Seconds between profiles | 1
+Download @1440x900 | input[data-k="between_tiktok"] | Seconds between TikTok profiles | 1
+Download @1440x900 | input[data-k="captions"] | Captions | 1
+Download @1440x900 | input[data-k="comments"] | Comments | 1
+Download @1440x900 | input[data-k="compress_json"] | Compress JSON | 1
+Download @1440x900 | input[data-k="count"] | Max posts per profile | 1
+Download @1440x900 | input[data-k="fast_update"] | Only new posts | 1
+Download @1440x900 | input[data-k="geotags"] | Geotags | 1
+Download @1440x900 | input[data-k="highlights"] | Highlights | 1
+Download @1440x900 | input[data-k="igtv"] | IGTV | 1
+Download @1440x900 | input[data-k="iphone"] | Prefer iPhone versions | 1
+Download @1440x900 | input[data-k="latest_stamps"] | Remember what's archived | 1
+Download @1440x900 | input[data-k="max_connection_attempts"] | Connection attempts | 1
+Download @1440x900 | input[data-k="metadata_json"] | JSON metadata | 1
+Download @1440x900 | input[data-k="pictures"] | Pictures | 1
+Download @1440x900 | input[data-k="post_filter"] | Post filter | 1
+Download @1440x900 | input[data-k="posts"] | Posts | 1
+Download @1440x900 | input[data-k="profile_pic"] | Profile picture | 1
+Download @1440x900 | input[data-k="reels"] | Reels | 1
+Download @1440x900 | input[data-k="request_timeout"] | Request timeout (s) | 1
+Download @1440x900 | input[data-k="resume"] | Resume interrupted | 1
+Download @1440x900 | input[data-k="sanitize_paths"] | Sanitize filenames | 1
+Download @1440x900 | input[data-k="slide"] | Sidecar slide index | 1
+Download @1440x900 | input[data-k="stories"] | Stories | 1
+Download @1440x900 | input[data-k="storyitem_filter"] | Story filter | 1
+Download @1440x900 | input[data-k="tagged"] | Tagged posts | 1
+Download @1440x900 | input[data-k="video_thumbnails"] | Video thumbnails | 1
+Download @1440x900 | input[data-k="videos"] | Videos | 1
+Download @1440x900 | landmark:#diskChip | <size> free · <pct> used | 1
+Download @1440x900 | landmark:#excludedCard | (container) | 1
+Download @1440x900 | landmark:#sessChipWrap | logged in as demo.session | 1
+Download @1440x900 | landmark:#sessPanel | (container) | 1
+Download @1440x900 | landmark:#settingsBox | (container) | 1
+Download @1440x900 | landmark:#statChip | 1 queued · 3 done | 1
+Download @1440x900 | landmark:.bar | logged in as demo.session Sessions 1 queued · 3 done | 1
+Download @1440x900 | landmark:.subtabs | Instagram TikTok | 1
+Download @1440x900 | landmark:.tabs | Download Gallery Shorts | 1
+Download @1440x900 | landmark:h1 | HardlyWatching Instagram | 1
+Download @1440x900 | landmark:h2 | Finished | 1
+Download @1440x900 | landmark:h2 | Waiting | 1
+Download @1440x900 | landmark:header | HardlyWatching Instagram <size> free · <pct> used | 1
+Download @1440x900 | select#ttCount | TikTok videos per profile | 1
+Download @1440x900 | select.listsearch | How many to show at a time | 2
+Download @1440x900 | summary | Download settings · new only · stories, highlights | 1
+Download @1440x900 | summary | Excluded — removed from the queue or deleted; restorable | 1
+Download @1440x900 | textarea#input | Paste Instagram and TikTok links together — one per line: https://www… | 1
+Download @390x844 | button | Use | 1
+Download @390x844 | button#autostartBtn | Turn off | 1
+Download @390x844 | button#changeFolderBtn | Change… | 1
+Download @390x844 | button#clearFinishedBtn | Clear | 1
+Download @390x844 | button#clearInputBtn | Clear text | 1
+Download @390x844 | button#doneSortBtn | sort: as added | 1
+Download @390x844 | button#grabBtn | Auto-grab best session | 1
+Download @390x844 | button#loginBtn | Log in | 1
+Download @390x844 | button#openRoot | Open this platform's folder | 1
+Download @390x844 | button#pasteBtn | Paste from clipboard | 1
+Download @390x844 | button#refreshSess | Refresh | 1
+Download @390x844 | button#resetSettings | Reset to defaults | 1
+Download @390x844 | button#rootAdd | Add archive folder… | 1
+Download @390x844 | button#runBtn | Resume this queue | 1
+Download @390x844 | button#sessBtn | Sessions | 1
+Download @390x844 | button#sessPanelClose | Close | 1
+Download @390x844 | button#showAdv | Show advanced | 1
+Download @390x844 | button#showAllSettingsBtn | Show all platforms | 1
+Download @390x844 | button#startBtn | Add to queue | 1
+Download @390x844 | button#subIg | Instagram | 1
+Download @390x844 | button#subTt | TikTok | 1
+Download @390x844 | button#tabGallery | Gallery | 1
+Download @390x844 | button#tabQueue | Download | 1
+Download @390x844 | button#tabShorts | Shorts | 1
+Download @390x844 | button#ttCheckBtn | Check | 1
+Download @390x844 | button.danger | ✕ | 1
+Download @390x844 | button.icon | ↓ | 1
+Download @390x844 | button.icon | ⤓ | 1
+Download @390x844 | button[title="More actions"] | ⋯ | 4
+Download @390x844 | button[title="Next page"] | › | 2
+Download @390x844 | button[title="Open demo.coral.reef's gallery — the files already downloaded"] | Gallery | 1
+Download @390x844 | button[title="Open demo.pixel.garden's gallery — the files already downloaded"] | Gallery | 1
+Download @390x844 | button[title="Open demo.quiet.harbor's gallery — the files already downloaded"] | Gallery | 1
+Download @390x844 | button[title="Open demo.slow.mornings's gallery — the files already downloaded"] | Gallery | 1
+Download @390x844 | button[title="Open the download folder"] | Open | 4
+Download @390x844 | button[title="Previous page"] | ‹ | 2
+Download @390x844 | button[title="Stop using this account for downloads (stays locked across restarts)"] | Lock | 1
+Download @390x844 | input#loginUser | your instagram username | 1
+Download @390x844 | input#rootNew | /run/media/you/DRIVE/instagram | 1
+Download @390x844 | input#setSearch | Filter settings… (e.g. video, json, stories) | 1
+Download @390x844 | input.listsearch | Search finished… | 1
+Download @390x844 | input.listsearch | Search waiting… | 1
+Download @390x844 | input[data-k="autocheck"] | Check for new posts automatically | 1
+Download @390x844 | input[data-k="autocheck_hours"] | Only if idle for (hours) | 1
+Download @390x844 | input[data-k="between_profiles"] | Seconds between profiles | 1
+Download @390x844 | input[data-k="between_tiktok"] | Seconds between TikTok profiles | 1
+Download @390x844 | input[data-k="captions"] | Captions | 1
+Download @390x844 | input[data-k="comments"] | Comments | 1
+Download @390x844 | input[data-k="compress_json"] | Compress JSON | 1
+Download @390x844 | input[data-k="count"] | Max posts per profile | 1
+Download @390x844 | input[data-k="fast_update"] | Only new posts | 1
+Download @390x844 | input[data-k="geotags"] | Geotags | 1
+Download @390x844 | input[data-k="highlights"] | Highlights | 1
+Download @390x844 | input[data-k="igtv"] | IGTV | 1
+Download @390x844 | input[data-k="iphone"] | Prefer iPhone versions | 1
+Download @390x844 | input[data-k="latest_stamps"] | Remember what's archived | 1
+Download @390x844 | input[data-k="max_connection_attempts"] | Connection attempts | 1
+Download @390x844 | input[data-k="metadata_json"] | JSON metadata | 1
+Download @390x844 | input[data-k="pictures"] | Pictures | 1
+Download @390x844 | input[data-k="post_filter"] | Post filter | 1
+Download @390x844 | input[data-k="posts"] | Posts | 1
+Download @390x844 | input[data-k="profile_pic"] | Profile picture | 1
+Download @390x844 | input[data-k="reels"] | Reels | 1
+Download @390x844 | input[data-k="request_timeout"] | Request timeout (s) | 1
+Download @390x844 | input[data-k="resume"] | Resume interrupted | 1
+Download @390x844 | input[data-k="sanitize_paths"] | Sanitize filenames | 1
+Download @390x844 | input[data-k="slide"] | Sidecar slide index | 1
+Download @390x844 | input[data-k="stories"] | Stories | 1
+Download @390x844 | input[data-k="storyitem_filter"] | Story filter | 1
+Download @390x844 | input[data-k="tagged"] | Tagged posts | 1
+Download @390x844 | input[data-k="video_thumbnails"] | Video thumbnails | 1
+Download @390x844 | input[data-k="videos"] | Videos | 1
+Download @390x844 | landmark:#diskChip | <size> free · <pct> used | 1
+Download @390x844 | landmark:#excludedCard | (container) | 1
+Download @390x844 | landmark:#sessChipWrap | logged in as demo.session | 1
+Download @390x844 | landmark:#sessPanel | (container) | 1
+Download @390x844 | landmark:#settingsBox | (container) | 1
+Download @390x844 | landmark:#statChip | 1 queued · 3 done | 1
+Download @390x844 | landmark:.bar | logged in as demo.session Sessions 1 queued · 3 done | 1
+Download @390x844 | landmark:.subtabs | Instagram TikTok | 1
+Download @390x844 | landmark:.tabs | Download Gallery Shorts | 1
+Download @390x844 | landmark:h1 | HardlyWatching Instagram | 1
+Download @390x844 | landmark:h2 | Finished | 1
+Download @390x844 | landmark:h2 | Waiting | 1
+Download @390x844 | landmark:header | HardlyWatching Instagram <size> free · <pct> used | 1
+Download @390x844 | select#ttCount | TikTok videos per profile | 1
+Download @390x844 | select.listsearch | How many to show at a time | 2
+Download @390x844 | summary | Download settings · new only · stories, highlights | 1
+Download @390x844 | summary | Excluded — removed from the queue or deleted; restorable | 1
+Download @390x844 | textarea#input | Paste Instagram and TikTok links together — one per line: https://www… | 1
+Gallery > Bookmarks @1440x900 | button#pickFiles | Choose files | 1
+Gallery > Bookmarks @1440x900 | button#pickFolder | Choose folder | 1
+Gallery > Bookmarks @1440x900 | button#sortCountBtn | count ↓ | 1
+Gallery > Bookmarks @1440x900 | button#sortNameBtn | A→Z | 1
+Gallery > Bookmarks @1440x900 | button#staticChip | 🖼 Still videos | 1
+Gallery > Bookmarks @1440x900 | button#tabGallery | Gallery | 1
+Gallery > Bookmarks @1440x900 | button#tabQueue | Download | 1
+Gallery > Bookmarks @1440x900 | button#tabShorts | Shorts | 1
+Gallery > Bookmarks @1440x900 | button.fchip | All (3) | 1
+Gallery > Bookmarks @1440x900 | button.fchip | Profiles (1) | 1
+Gallery > Bookmarks @1440x900 | button.fchip | Studio refs (1) | 1
+Gallery > Bookmarks @1440x900 | button.fchip | Uncategorised (1) | 1
+Gallery > Bookmarks @1440x900 | button.fchip | Watch later (1) | 1
+Gallery > Bookmarks @1440x900 | button.fchip | ↑ Oldest | 1
+Gallery > Bookmarks @1440x900 | button.fchip | ↓ Newest | 1
+Gallery > Bookmarks @1440x900 | button.fchip | ⇄ Random | 1
+Gallery > Bookmarks @1440x900 | button.fchip | ♥ Liked | 1
+Gallery > Bookmarks @1440x900 | button.fchip | ＋ Category | 1
+Gallery > Bookmarks @1440x900 | button.fchip | 🔖 Bookmarks | 1
+Gallery > Bookmarks @1440x900 | button.fchip | 🕒 Timeline | 1
+Gallery > Bookmarks @1440x900 | button.fchip | 🗑 All Trash | 1
+Gallery > Bookmarks @1440x900 | button[title="Add to liked"] | ♡ | 3
+Gallery > Bookmarks @1440x900 | button[title="Bookmarked — tap to remove"] | 🔖 | 3
+Gallery > Bookmarks @1440x900 | button[title="File this bookmark under a category"] | 🏷 | 3
+Gallery > Bookmarks @1440x900 | button[title="Move to trash"] | 🗑 | 3
+Gallery > Bookmarks @1440x900 | button[title="Open full screen and swipe through every saved item"] | ▶ Swipe saved | 1
+Gallery > Bookmarks @1440x900 | button[title="Pick several and act on them at once"] | ☑ Select | 1
+Gallery > Bookmarks @1440x900 | input#upNew | or type a new name | 1
+Gallery > Bookmarks @1440x900 | landmark:#allBar | (container) | 1
+Gallery > Bookmarks @1440x900 | landmark:#diskChip | <size> free · <pct> used | 1
+Gallery > Bookmarks @1440x900 | landmark:#dropZone | (container) | 1
+Gallery > Bookmarks @1440x900 | landmark:#galleryPane | (container) | 1
+Gallery > Bookmarks @1440x900 | landmark:#profileGrid | (container) | 1
+Gallery > Bookmarks @1440x900 | landmark:.tabs | Download Gallery Shorts | 1
+Gallery > Bookmarks @1440x900 | landmark:h1 | HardlyWatching | 1
+Gallery > Bookmarks @1440x900 | landmark:header | HardlyWatching <size> free · <pct> used | 1
+Gallery > Bookmarks @1440x900 | select#upProfile | Which profile the files are added to | 1
+Gallery > Bookmarks @390x844 | button#pickFiles | Choose files | 1
+Gallery > Bookmarks @390x844 | button#pickFolder | Choose folder | 1
+Gallery > Bookmarks @390x844 | button#sortCountBtn | count ↓ | 1
+Gallery > Bookmarks @390x844 | button#sortNameBtn | A→Z | 1
+Gallery > Bookmarks @390x844 | button#staticChip | 🖼 Still videos | 1
+Gallery > Bookmarks @390x844 | button#tabGallery | Gallery | 1
+Gallery > Bookmarks @390x844 | button#tabQueue | Download | 1
+Gallery > Bookmarks @390x844 | button#tabShorts | Shorts | 1
+Gallery > Bookmarks @390x844 | button.fchip | All (3) | 1
+Gallery > Bookmarks @390x844 | button.fchip | Profiles (1) | 1
+Gallery > Bookmarks @390x844 | button.fchip | Studio refs (1) | 1
+Gallery > Bookmarks @390x844 | button.fchip | Uncategorised (1) | 1
+Gallery > Bookmarks @390x844 | button.fchip | Watch later (1) | 1
+Gallery > Bookmarks @390x844 | button.fchip | ↑ Oldest | 1
+Gallery > Bookmarks @390x844 | button.fchip | ↓ Newest | 1
+Gallery > Bookmarks @390x844 | button.fchip | ⇄ Random | 1
+Gallery > Bookmarks @390x844 | button.fchip | ♥ Liked | 1
+Gallery > Bookmarks @390x844 | button.fchip | ＋ Category | 1
+Gallery > Bookmarks @390x844 | button.fchip | 🔖 Bookmarks | 1
+Gallery > Bookmarks @390x844 | button.fchip | 🕒 Timeline | 1
+Gallery > Bookmarks @390x844 | button.fchip | 🗑 All Trash | 1
+Gallery > Bookmarks @390x844 | button[title="Add to liked"] | ♡ | 3
+Gallery > Bookmarks @390x844 | button[title="Bookmarked — tap to remove"] | 🔖 | 3
+Gallery > Bookmarks @390x844 | button[title="File this bookmark under a category"] | 🏷 | 3
+Gallery > Bookmarks @390x844 | button[title="Move to trash"] | 🗑 | 3
+Gallery > Bookmarks @390x844 | button[title="Open full screen and swipe through every saved item"] | ▶ Swipe saved | 1
+Gallery > Bookmarks @390x844 | button[title="Pick several and act on them at once"] | ☑ Select | 1
+Gallery > Bookmarks @390x844 | input#upNew | or type a new name | 1
+Gallery > Bookmarks @390x844 | landmark:#allBar | (container) | 1
+Gallery > Bookmarks @390x844 | landmark:#diskChip | <size> free · <pct> used | 1
+Gallery > Bookmarks @390x844 | landmark:#dropZone | (container) | 1
+Gallery > Bookmarks @390x844 | landmark:#galleryPane | (container) | 1
+Gallery > Bookmarks @390x844 | landmark:#profileGrid | (container) | 1
+Gallery > Bookmarks @390x844 | landmark:.tabs | Download Gallery Shorts | 1
+Gallery > Bookmarks @390x844 | landmark:h1 | HardlyWatching | 1
+Gallery > Bookmarks @390x844 | landmark:header | HardlyWatching <size> free · <pct> used | 1
+Gallery > Bookmarks @390x844 | select#upProfile | Which profile the files are added to | 1
+Gallery @1440x900 | button#pickFiles | Choose files | 1
+Gallery @1440x900 | button#pickFolder | Choose folder | 1
+Gallery @1440x900 | button#sortCountBtn | count ↓ | 1
+Gallery @1440x900 | button#sortNameBtn | A→Z | 1
+Gallery @1440x900 | button#staticChip | 🖼 Still videos | 1
+Gallery @1440x900 | button#tabGallery | Gallery | 1
+Gallery @1440x900 | button#tabQueue | Download | 1
+Gallery @1440x900 | button#tabShorts | Shorts | 1
+Gallery @1440x900 | button.fchip | Profiles (3) | 1
+Gallery @1440x900 | button.fchip | ♥ Liked | 1
+Gallery @1440x900 | button.fchip | 🔖 Bookmarks | 1
+Gallery @1440x900 | button.fchip | 🕒 Timeline | 1
+Gallery @1440x900 | button.fchip | 🗑 All Trash | 1
+Gallery @1440x900 | button[data-gden="l"] | 4 | 1
+Gallery @1440x900 | button[data-gden="s"] | 8 | 1
+Gallery @1440x900 | button[data-gview="card"] | Card | 1
+Gallery @1440x900 | button[data-gview="grid"] | Grid | 1
+Gallery @1440x900 | button[data-gview="list"] | List | 1
+Gallery @1440x900 | input#gSearch | Search profiles… | 1
+Gallery @1440x900 | input#upNew | or type a new name | 1
+Gallery @1440x900 | landmark:#allBar | (container) | 1
+Gallery @1440x900 | landmark:#diskChip | <size> free · <pct> used | 1
+Gallery @1440x900 | landmark:#dropZone | (container) | 1
+Gallery @1440x900 | landmark:#gDens | 8 4 | 1
+Gallery @1440x900 | landmark:#gSearchWrap | Card Grid List 8 4 | 1
+Gallery @1440x900 | landmark:#gViews | Card Grid List | 1
+Gallery @1440x900 | landmark:#galleryPane | (container) | 1
+Gallery @1440x900 | landmark:#profileGrid | (container) | 1
+Gallery @1440x900 | landmark:.tabs | Download Gallery Shorts | 1
+Gallery @1440x900 | landmark:h1 | HardlyWatching | 1
+Gallery @1440x900 | landmark:header | HardlyWatching <size> free · <pct> used | 1
+Gallery @1440x900 | select#upProfile | Which profile the files are added to | 1
+Gallery @390x844 | button#pickFiles | Choose files | 1
+Gallery @390x844 | button#pickFolder | Choose folder | 1
+Gallery @390x844 | button#sortCountBtn | count ↓ | 1
+Gallery @390x844 | button#sortNameBtn | A→Z | 1
+Gallery @390x844 | button#staticChip | 🖼 Still videos | 1
+Gallery @390x844 | button#tabGallery | Gallery | 1
+Gallery @390x844 | button#tabQueue | Download | 1
+Gallery @390x844 | button#tabShorts | Shorts | 1
+Gallery @390x844 | button.fchip | Profiles (3) | 1
+Gallery @390x844 | button.fchip | ♥ Liked | 1
+Gallery @390x844 | button.fchip | 🔖 Bookmarks | 1
+Gallery @390x844 | button.fchip | 🕒 Timeline | 1
+Gallery @390x844 | button.fchip | 🗑 All Trash | 1
+Gallery @390x844 | button[data-gden="l"] | 4 | 1
+Gallery @390x844 | button[data-gden="s"] | 8 | 1
+Gallery @390x844 | button[data-gview="card"] | Card | 1
+Gallery @390x844 | button[data-gview="grid"] | Grid | 1
+Gallery @390x844 | button[data-gview="list"] | List | 1
+Gallery @390x844 | input#gSearch | Search profiles… | 1
+Gallery @390x844 | input#upNew | or type a new name | 1
+Gallery @390x844 | landmark:#allBar | (container) | 1
+Gallery @390x844 | landmark:#diskChip | <size> free · <pct> used | 1
+Gallery @390x844 | landmark:#dropZone | (container) | 1
+Gallery @390x844 | landmark:#gDens | 8 4 | 1
+Gallery @390x844 | landmark:#gSearchWrap | Card Grid List 8 4 | 1
+Gallery @390x844 | landmark:#gViews | Card Grid List | 1
+Gallery @390x844 | landmark:#galleryPane | (container) | 1
+Gallery @390x844 | landmark:#profileGrid | (container) | 1
+Gallery @390x844 | landmark:.tabs | Download Gallery Shorts | 1
+Gallery @390x844 | landmark:h1 | HardlyWatching | 1
+Gallery @390x844 | landmark:header | HardlyWatching <size> free · <pct> used | 1
+Gallery @390x844 | select#upProfile | Which profile the files are added to | 1
+Shorts @1440x900 | a#shortsFull | Open full screen ↗ | 1
+Shorts @1440x900 | button#tabGallery | Gallery | 1
+Shorts @1440x900 | button#tabQueue | Download | 1
+Shorts @1440x900 | button#tabShorts | Shorts | 1
+Shorts @1440x900 | frame:button#bookBtn | Bookmark | 1
+Shorts @1440x900 | frame:button#dlBtn | Download | 1
+Shorts @1440x900 | frame:button#favBtn | Liked only | 1
+Shorts @1440x900 | frame:button#fsBtn | Fullscreen | 1
+Shorts @1440x900 | frame:button#lessBtn | Show less often from this profile | 1
+Shorts @1440x900 | frame:button#likeBtn | Like | 1
+Shorts @1440x900 | frame:button#moreBtn | Show more often from this profile | 1
+Shorts @1440x900 | frame:button#muteBtn | Unmute | 1
+Shorts @1440x900 | frame:button#skipBack | ↺5s | 1
+Shorts @1440x900 | frame:button#skipFwd | 5s↻ | 1
+Shorts @1440x900 | frame:button#trashBtn | Trash | 1
+Shorts @1440x900 | frame:button#tuneBtn | Feed tuning | 1
+Shorts @1440x900 | frame:button#uiToggle | Show or hide the controls | 1
+Shorts @1440x900 | frame:button#who | D @demo.coral.reef | 1
+Shorts @1440x900 | frame:input#scrub | Seek | 1
+Shorts @1440x900 | frame:landmark:#bottombar | D @demo.coral.reef instagram · <size> · shown <n>× · weight 1 | 1
+Shorts @1440x900 | frame:landmark:#count | 1 / 3 | 1
+Shorts @1440x900 | frame:landmark:#meta | instagram · <size> · shown <n>× · weight 1 | 1
+Shorts @1440x900 | frame:landmark:#rail | (container) | 1
+Shorts @1440x900 | frame:landmark:#topbar | 1 / 3 | 1
+Shorts @1440x900 | landmark:#diskChip | <size> free · <pct> used | 1
+Shorts @1440x900 | landmark:#shortsPane | (container) | 1
+Shorts @1440x900 | landmark:.shorts-head | (container) | 1
+Shorts @1440x900 | landmark:.tabs | Download Gallery Shorts | 1
+Shorts @1440x900 | landmark:h1 | HardlyWatching | 1
+Shorts @1440x900 | landmark:header | HardlyWatching <size> free · <pct> used | 1
+Shorts @390x844 | a#shortsFull | Open full screen ↗ | 1
+Shorts @390x844 | button#tabGallery | Gallery | 1
+Shorts @390x844 | button#tabQueue | Download | 1
+Shorts @390x844 | button#tabShorts | Shorts | 1
+Shorts @390x844 | frame:button#bookBtn | Bookmark | 1
+Shorts @390x844 | frame:button#dlBtn | Download | 1
+Shorts @390x844 | frame:button#favBtn | Liked only | 1
+Shorts @390x844 | frame:button#fsBtn | Fullscreen | 1
+Shorts @390x844 | frame:button#lessBtn | Show less often from this profile | 1
+Shorts @390x844 | frame:button#likeBtn | Like | 1
+Shorts @390x844 | frame:button#moreBtn | Show more often from this profile | 1
+Shorts @390x844 | frame:button#muteBtn | Unmute | 1
+Shorts @390x844 | frame:button#skipBack | ↺5s | 1
+Shorts @390x844 | frame:button#skipFwd | 5s↻ | 1
+Shorts @390x844 | frame:button#trashBtn | Trash | 1
+Shorts @390x844 | frame:button#tuneBtn | Feed tuning | 1
+Shorts @390x844 | frame:button#uiToggle | Show or hide the controls | 1
+Shorts @390x844 | frame:button#who | D @demo.coral.reef | 1
+Shorts @390x844 | frame:input#scrub | Seek | 1
+Shorts @390x844 | frame:landmark:#bottombar | D @demo.coral.reef instagram · <size> · shown <n>× · weight 1 | 1
+Shorts @390x844 | frame:landmark:#count | 1 / 3 | 1
+Shorts @390x844 | frame:landmark:#meta | instagram · <size> · shown <n>× · weight 1 | 1
+Shorts @390x844 | frame:landmark:#rail | (container) | 1
+Shorts @390x844 | frame:landmark:#topbar | 1 / 3 | 1
+Shorts @390x844 | landmark:#diskChip | <size> free · <pct> used | 1
+Shorts @390x844 | landmark:#shortsPane | (container) | 1
+Shorts @390x844 | landmark:.shorts-head | (container) | 1
+Shorts @390x844 | landmark:.tabs | Download Gallery Shorts | 1
+Shorts @390x844 | landmark:h1 | HardlyWatching | 1
+Shorts @390x844 | landmark:header | HardlyWatching <size> free · <pct> used | 1
