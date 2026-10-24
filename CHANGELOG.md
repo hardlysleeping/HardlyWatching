@@ -5,7 +5,13 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The Flatpak listens on 8777, not 8765.** The bundled shell attaches to
+  anything already answering on its default port, and a flatpak shares the host
+  network, so on 8765 it would have driven a separately running install instead
+  of its own copy. The flatpak now has its own port; queue, settings and gallery
+  cache were already separate.
 
 ## [0.3.1] — 2026-10-24
 

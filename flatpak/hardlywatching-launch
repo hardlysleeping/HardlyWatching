@@ -4,4 +4,9 @@
 # under /app, which the shell never looks at directly.
 export PATH=/app/bin:$PATH
 export HWA_SIDECAR=/app/lib/hardlywatching/hardlywatching-server
+# The shell attaches to whatever answers /api/health on its default URL, and the
+# flatpak shares the host's network namespace -- so on 8765 it would silently
+# drive a separately running install instead of its own copy. Its own port keeps
+# the two apart; the queue, settings and gallery cache are separate either way.
+export INSTA_PORT="${INSTA_PORT:-8777}"
 exec /app/bin/hardlywatching "$@"
