@@ -83,7 +83,109 @@ def _opt(flag: str, env: str, default: str) -> str:
 
 
 PORT = int(_opt("--port", "INSTA_PORT", "8765"))
-HOST = _opt("--host", "INSTA_HOST", "127.0.0.1")
+# All interfaces by default, so the phone toggle can switch access on without
+# restarting the server. Nothing is served to another machine until
+# Settings -> "Reachable from your phone" is on: see _lan_gate_allows().
+HOST = _opt("--host", "INSTA_HOST", "0.0.0.0")
+
+
+def _is_local_client(addr: str) -> bool:
+    """Whether a request came from this machine.
+
+    Loopback only. Unspecified addresses (``::``, ``0.0.0.0``) are what a
+    socket reports when the peer cannot be determined; treating those as local
+    would hand the app to whoever showed up, so they count as remote.
+    """
+    a = (addr or "").strip()
+    if a.startswith("::ffff:"):
+        a = a[7:]
+    return a.startswith("127.") or a == "::1"
+
+
+def _lan_gate_allows(addr: str, enabled: bool) -> bool:
+    """Whether this client may use the app.
+
+    Loopback always may: that is the window on the machine itself, and it must
+    keep working whatever the setting says -- otherwise turning the toggle off
+    would lock the owner out of their own app.
+    """
+    return bool(enabled) or _is_local_client(addr)
+
+
+def _lan_enabled() -> bool:
+    """The phone toggle, read defensively: no engine, no access.
+
+    Failing closed matters here -- this decides whether a stranger on the
+    network can use an app with no password.
+    """
+    try:
+        return bool(get_engine().settings.lan_access)
+    except Exception:
+        return False
+
+
+def lan_urls(port: int, host: str = "") -> list[str]:
+    """Addresses another device on this network could use, best first.
+
+    Only interfaces a phone could plausibly reach: docker bridges, veth pairs
+    and the rest of the container plumbing are skipped by interface name, and
+    link-local addresses are dropped. The interface holding the default route
+    comes first, because that is the one the phone is most likely on.
+    """
+    import socket
+    out: list[str] = []
+    skipped = ("lo", "docker", "br-", "veth", "virbr", "podman", "cni",
+               "flannel", "tun", "tap", "wg")
+    primary = ""
+    try:
+        # A UDP connect to a routable address reveals the interface the default
+        # route would use; no packet is sent. Works even with no DNS.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            primary = s.getsockname()[0]
+    except OSError:
+        pass
+
+    def add(ip: str) -> None:
+        url = f"http://{ip}:{port}"
+        if _is_local_client(ip) or ip.startswith("169.254.") or url in out:
+            return
+        out.append(url)
+
+    if primary and not _is_local_client(primary):
+        add(primary)
+    try:
+        import subprocess
+        text = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                              capture_output=True, text=True, timeout=3).stdout
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) < 4 or parts[1].rstrip(":").startswith(skipped):
+                continue
+            try:
+                add(parts[parts.index("inet") + 1].split("/")[0])
+            except (ValueError, IndexError):
+                continue
+    except Exception:
+        pass
+    if not out:
+        # No `ip` command (or nothing it liked): the hostname is the last
+        # resort, and the toggle still works off the address above.
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None,
+                                           socket.AF_INET):
+                add(info[4][0])
+        except OSError:
+            pass
+    # An explicit bind address is only worth showing if another machine can
+    # reach it: INSTA_HOST=127.0.0.1 is a deliberate loopback-only setup, and
+    # telling someone to type their own machine's loopback on a phone is worse
+    # than showing nothing.
+    if host and host not in ("0.0.0.0", "::") and not _is_local_client(host):
+        url = f"http://{host}:{port}"
+        if url not in out:
+            out.insert(0, url)
+    return out
 
 
 def find_free_port(start: int, host: str = "127.0.0.1") -> int:
@@ -1318,8 +1420,37 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- routes ----------
 
+    def _refuse_remote(self, path: str) -> None:
+        """Answer a request from another machine while the toggle is off.
+
+        Deliberately explicit rather than a bare 403: someone who typed this
+        address on a phone needs to know the app is running and which switch
+        turns it on, not that the server is broken.
+        """
+        if path.startswith("/api/"):
+            return self._json({"ok": False, "error": "lan_disabled",
+                               "message": "Phone access is off. Turn on "
+                                          "\"Reachable from your phone\" in "
+                                          "Settings on the computer."}, 403)
+        page = (
+            "<!doctype html><meta charset=utf-8><title>HardlyWatching</title>"
+            "<body style=\"font:16px system-ui;max-width:34em;margin:12vh auto;"
+            "padding:0 1.5em;line-height:1.5\">"
+            "<h1 style=\"font-size:1.2em\">HardlyWatching is running</h1>"
+            "<p>This device is not allowed to use it yet.</p>"
+            "<p>On the computer running it, open <b>Settings \u2192 Open on your "
+            "phone</b> and turn on <b>Reachable from your phone</b>.</p>")
+        body = page.encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
         p = urlparse(self.path).path
+        if not _lan_gate_allows(self.client_address[0], _lan_enabled()):
+            return self._refuse_remote(p)
         if p in ("/", "/index.html"):
             return self._serve_file(HERE / "index.html")
         if p in ("/shorts", "/shorts/"):
@@ -1637,6 +1768,15 @@ class Handler(BaseHTTPRequestHandler):
                 "keys": {"%s/%s" % (p["username"].lower(), p["items"][0]["file"]):
                          p.get("category") for p in allposts},
             })
+        if p == "/api/network":
+            # What a phone would type. Reported even when the toggle is off, so
+            # the computer can show the address before switching it on.
+            return self._json({
+                "enabled": _lan_enabled(),
+                "port": PORT,
+                "urls": lan_urls(PORT, HOST),
+                "loopback": f"http://127.0.0.1:{PORT}",
+            })
         if p == "/api/photos":
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -1793,6 +1933,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         p = urlparse(self.path).path
+        if not _lan_gate_allows(self.client_address[0], _lan_enabled()):
+            return self._refuse_remote(p)
 
         # Uploads are multipart/form-data and can be large, so they are handled
         # before the JSON body is read: _read_json() would try to parse the

@@ -1178,6 +1178,27 @@ some.profile
        need it when you move computers, not every day -- but it has to be
        findable without reading docs. The point it makes in one line: files live
        in the archive folders, the app's memory does not. -->
+  <details class="settings" id="lanCard">
+    <summary>Open on your phone <span class="hint" id="lanSummary"></span></summary>
+    <div class="hint" style="margin:0 0 10px">
+      The app runs on this computer. Turn this on to use it from a phone or
+      tablet on the same network at the address below — nothing to install, and
+      “Add to Home Screen” turns it into an app. Open this card on the phone
+      itself to install it. There is <b>no password</b>: anyone on this network
+      can use the app, including its settings, while it is on.
+    </div>
+    <label class="hint" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="lanToggle"> Reachable from your phone
+    </label>
+    <div class="foldpath" id="lanUrls">…</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="small" id="lanCopyBtn">Copy link</button>
+      <span class="hint" id="lanMsg"></span>
+    </div>
+    <div class="hint">The port is fixed at <b id="lanPort">8765</b>; if your router or
+      firewall blocks it, nothing here can open that for you.</div>
+  </details>
+
   <details class="settings" id="backupCard">
     <summary>Backup &amp; restore <span class="hint" id="bkSummary"></span></summary>
     <div class="hint" style="margin:0 0 10px">
@@ -1810,6 +1831,7 @@ const SPEC = [
   {group:"When the queue is empty"},
   {k:"autocheck", l:"Check for new posts automatically", d:"when nothing is queued, look for new posts on every archived profile", t:"bool", flag:"(app)"},
   {k:"autocheck_hours", l:"Only if idle for (hours)", d:"won't check more often than this. 0 = off", t:"num", flag:"(app)"},
+  {k:"hold_after_limit", l:"Stay paused after a rate limit", d:"when Instagram's cooldown ends, keep the queue paused until you press Resume. off = resume the moment the timer runs out", t:"bool", flag:"(app)"},
   {k:"max_connection_attempts", l:"Connection attempts", d:"retries per request", t:"num", flag:"--max-connection-attempts"},
   {k:"request_timeout", l:"Request timeout (s)", d:"per connection", t:"num", flag:"--request-timeout"},
   {k:"sanitize_paths", l:"Sanitize filenames", d:"safe on all systems", t:"bool", flag:"--sanitize-paths"},
@@ -2570,7 +2592,9 @@ function render(st){
   // exactly why a paused queue looked like a stuck one.
   const want = (typeof activePlatform === "string" && activePlatform) || "instagram";
   const wait = (st.waits && st.waits[want]) || st.wait || {};
-  const waiting = (!current.length && wait.remaining > 0);
+  // `held` is a rate-limit pause whose cooldown already elapsed and is waiting
+  // for a human: no timer to count down, and the hint has to say what to do.
+  const waiting = (!current.length && (wait.remaining > 0 || wait.held));
   if(current.length || waiting){
     nowSec.style.display = "block";
     if(waiting){
@@ -2578,8 +2602,10 @@ function render(st){
       nowSec.classList.toggle("rate-limited", wait.kind === "rate_limit");
       $("nowHint").innerHTML =
         `<span class="wait-kind">${esc(wait.label || "waiting")}</span>`
-        + `<span class="wait-timer" id="waitTimer"></span>`;
-      startWaitTimer(wait.until);
+        + (wait.held
+            ? `<span class="wait-timer">press Resume to start again</span>`
+            : `<span class="wait-timer" id="waitTimer"></span>`);
+      if(!wait.held) startWaitTimer(wait.until); else stopWaitTimer();
       const next = queued[0];
       $("waitNext").textContent = next ? `next: ${next.username}` : "";
     } else {
@@ -3592,7 +3618,7 @@ $("resetSettings").onclick = async () => {
     metadata_json:true,compress_json:false,comments:false,geotags:false,fast_update:true,
     latest_stamps:true,
     count:0,post_filter:"",storyitem_filter:"",sanitize_paths:true,resume:true,
-    max_connection_attempts:3,request_timeout:300,iphone:true,slide:"",between_profiles:240,autocheck:false,autocheck_hours:6};
+    max_connection_attempts:3,request_timeout:300,iphone:true,slide:"",between_profiles:240,autocheck:false,autocheck_hours:6,hold_after_limit:true};
   const r = await post("/api/settings",{settings:def});
   fillSettings(r.settings);
   toast("Defaults restored");
@@ -3727,6 +3753,55 @@ $("bkFile").onchange = async () => {
 };
 loadBackupInfo();
 $("backupCard").addEventListener("toggle", function(){ if(this.open) loadBackupInfo(); });
+
+// "Open on your phone": the address to type, and the switch that lets another
+// device in. The server reports both, so the card can show the URL before the
+// switch is on -- you need the address to go and type it.
+async function loadNetwork(){
+  let n;
+  try {
+    n = await (await fetch("/api/network")).json();
+  } catch(e){
+    $("lanUrls").textContent = "Could not ask the server.";
+    return;
+  }
+  $("lanToggle").checked = !!n.enabled;
+  $("lanPort").textContent = n.port;
+  const urls = (n.urls || []);
+  $("lanUrls").textContent = urls.length
+    ? urls.join("   ·   ")
+    : "No network address found — is this computer on Wi-Fi or Ethernet?";
+  $("lanSummary").textContent = n.enabled ? "on" : "off";
+  $("lanCopyBtn").disabled = !urls.length;
+  $("lanCopyBtn").dataset.url = urls[0] || "";
+}
+$("lanCard").addEventListener("toggle", function(){ if(this.open) loadNetwork(); });
+$("lanToggle").onchange = async function(){
+  const on = this.checked;
+  $("lanMsg").textContent = "Saving…";
+  try {
+    const r = await post("/api/settings", {settings:{lan_access:on}});
+    // /api/settings answers {"settings": ...}, not {"ok": true}: the echo is
+    // the proof it took, and it is also what the rest of the page reads.
+    if(!r || !r.settings) throw new Error((r && r.error) || "refused");
+    settings = r.settings;
+    $("lanMsg").textContent = on ? "On — open the address above on your phone." : "Off.";
+  } catch(e){
+    this.checked = !on;
+    $("lanMsg").textContent = "Could not save: " + e.message;
+  }
+  loadNetwork();
+};
+$("lanCopyBtn").onclick = async function(){
+  const url = this.dataset.url || "";
+  if(!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    $("lanMsg").textContent = "Copied " + url;
+  } catch(e){
+    $("lanMsg").textContent = url;   // clipboard blocked: at least show it
+  }
+};
 $("showAllSettingsBtn").onclick = () => setShowAllSettings(!showAllSettings);
 loadAutostart();
 // One header painter for the whole page. Leaving the Download tab's line to the

@@ -3170,6 +3170,19 @@ class Settings:
     autocheck: bool = False
     autocheck_hours: float = 6.0
 
+    # A 429 pause can either clear itself when Instagram's cooldown runs out or
+    # wait for a human. Waiting is the default: the cooldown is when requests
+    # stop being refused, not permission to start hammering again, and a queue
+    # that resumes by itself walks straight back into the same limit. Off means
+    # the old behaviour -- resume the moment the timer hits zero.
+    hold_after_limit: bool = True
+
+    # Whether other devices on this network may use the app (a phone, a tablet).
+    # The server always listens on all interfaces so this can be flipped without
+    # a restart, but every request from a non-local address is refused while it
+    # is off. There is no password, so "on" means "anyone on this network".
+    lan_access: bool = False
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -4292,6 +4305,30 @@ class Engine:
     def cooldown_remaining(self) -> int:
         return max(0, int(self.cooldown_until - time.time()))
 
+    def _release_limit_pause(self) -> bool:
+        """Drop a rate-limit pause whose cooldown has elapsed.
+
+        Returns True only when this call actually unpaused the queue. Three
+        things can hold it: the cooldown still has time left, the pause is the
+        user's (never touched here), or ``hold_after_limit`` is on -- in which
+        case the elapsed timer only means Instagram would accept requests
+        again. Resuming is then a decision, not a side effect of a clock.
+
+        Called from the worker's wait loop, so it must be safe to call once a
+        second and cheap.
+        """
+        if not (self.paused and self._limit_paused):
+            return False
+        if self.cooldown_remaining() > 0:
+            return False
+        if getattr(self.settings, "hold_after_limit", True):
+            return False
+        with self.lock:
+            self.paused = False
+            self._limit_paused = False
+        self.save_state()
+        return True
+
     def wait_reason(self, platform: str = "instagram") -> dict:
         """What (if anything) is holding one platform's worker up.
 
@@ -4320,6 +4357,13 @@ class Engine:
                     return {"kind": "rate_limit", "remaining": cd,
                             "total": cd, "until": self.cooldown_until,
                             "label": "rate limited"}
+                # The cooldown is over but the queue is still paused because
+                # resuming is the user's call. Say so: a bare "paused" here
+                # looks like a stuck app, and a 0s countdown looks like a bug.
+                if getattr(self.settings, "hold_after_limit", True):
+                    return {"kind": "rate_limit", "remaining": 0, "total": 0,
+                            "until": 0, "held": True,
+                            "label": "rate limit over"}
             return {"kind": "paused", "remaining": 0, "total": 0,
                     "until": 0, "label": "paused"}
         if ig:
@@ -5171,13 +5215,10 @@ class Engine:
                 # the two must be handled together or the worker sleeps forever
                 # in the pause loop and never reaches the cooldown countdown.
                 while not self.stop_requested:
-                    # A 429 pause clears itself when its cooldown elapses; a
-                    # pause the user asked for never does.
-                    if self.paused and self._limit_paused and self.cooldown_remaining() <= 0:
-                        with self.lock:
-                            self.paused = False
-                            self._limit_paused = False
-                        self.save_state()
+                    # A 429 pause may clear itself when its cooldown elapses --
+                    # unless the user asked to be the one who decides. A pause
+                    # they pressed never clears here at all.
+                    self._release_limit_pause()
                     if self.paused:
                         self.save_state()  # keep the UI countdown fresh
                         time.sleep(1.0)
@@ -5710,7 +5751,9 @@ class Engine:
                 tripped = self.consecutive_limits >= RATE_LIMIT_TRIP
                 if tripped:
                     self.paused = True
-                    self._limit_paused = True  # auto-clears when cooldown ends
+                    # May clear itself when the cooldown ends, or wait for the
+                    # user when hold_after_limit is on (see _release_limit_pause).
+                    self._limit_paused = True
             self._set(job, status="retrying",
                       message=note or
                       f"rate limited — cooling down {max(1, round(backoff / 60))} min "
