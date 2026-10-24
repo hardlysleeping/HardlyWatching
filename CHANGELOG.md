@@ -7,6 +7,70 @@ versioning is [SemVer](https://semver.org/).
 
 Nothing yet.
 
+## [0.3.0] — 2026-10-24
+
+The web app is the same app. This is the release that makes it installable:
+a window, its own server inside, and installers you can hand to another
+computer.
+
+### Added
+
+- **A desktop app.** A Tauri 2 window (`src-tauri/`) that shows the server's own
+  UI — no second frontend, no second download engine. On start it either
+  attaches to a server that is already running or spawns the one bundled inside
+  the app; on close it stops only a server it spawned itself (SIGTERM, then
+  SIGKILL, with `PR_SET_PDEATHSIG` as a backstop), so a server you started by
+  hand keeps running.
+- **No system Python needed.** The backend ships as a PyInstaller onedir tree
+  (`packaging/sidecar/`) with `ffmpeg`, `ffprobe`, `yt-dlp` and
+  **instaloader 4.15.4** inside it. `bin/instaloader` runs instaloader through
+  the same frozen interpreter, so Instagram downloads work on a machine that
+  has never had Python installed.
+- **Installers.** A `.deb` and an `.AppImage`, both built in a container
+  (`src-tauri/build-in-container.sh`) because an immutable Fedora host has no
+  GTK/WebKit `-devel` packages. The AppImage is packed with `appimagetool`
+  because linuxdeploy cannot handle the hashed private libraries PyInstaller
+  emits.
+- **Backup and restore, in Settings.** One zip with the queue, download
+  settings, hidden and excluded items, bookmarks, likes and the people you
+  imported — the things an archive cannot rebuild — plus an optional instaloader
+  session. The gallery cache, thumbnails and avatars are deliberately left out:
+  they are keyed by inode and rebuild themselves. Restore validates the whole
+  zip before writing, keeps a pre-restore copy, remaps the archive root onto the
+  machine it lands on, reloads the engine in place, comes back **paused**, and
+  refuses while jobs are running. One automatic backup a day, seven kept.
+- **`INSTA_DATA=/some/folder`** puts the state, database, caches, thumbnails,
+  avatars, backups and the login in one directory, so the app's memory travels
+  with a folder. Unset, every path stays where it was and all the existing
+  `INSTA_*` overrides still win.
+- **One instance, on purpose.** A second launch attaches to the running server
+  instead of starting a rival queue (`--attach`, `--force`, `--no-browser`), and
+  `/api/version` reports the same number as the installed app.
+
+### Changed
+
+- The version is one file: `VERSION` feeds the server, `tauri.conf.json` and
+  `Cargo.toml`, and four tests fail the build if they disagree.
+- New documentation: `docs/desktop-shell.md`, `docs/sidecar.md`,
+  `docs/backup.md`, `docs/ci.md`, `docs/upstream-sync.md`.
+- Tests: a sandbox harness (throwaway `HOME`, stub downloaders, a free port) and
+  63 `unittest` cases, a UI baseline (DOM landmarks plus screenshots) and a CI
+  workflow with a local twin script, so a red run can be reproduced here.
+
+### Known gaps
+
+- The bundled `ffmpeg` is dynamically linked and wants FFmpeg 8.x sonames
+  (`libavcodec.so.62`, …). Without them, video thumbnails and previews fail
+  while everything else keeps working.
+- The bundled backend needs glibc 2.38 or newer; Ubuntu 22.04 will not start it.
+- The AppImage's *window* needs GTK 3 and WebKitGTK on the host. The server
+  inside it does not, so a machine without those can still run the backend and
+  use the browser UI.
+- There is no authentication on the HTTP API: it belongs on loopback or a
+  private network, not on the open internet.
+- macOS and Windows builds are written but have not been run, and the phone app
+  is still the browser's install-to-home-screen.
+
 ## [0.2.0] — 2026-10-23
 
 ### Added
