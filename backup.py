@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import tempfile
@@ -470,8 +471,11 @@ def auto_backup(keep: int = DEFAULT_KEEP, include_session: bool = True) -> dict:
     """Write one dated backup and prune the old ones. Safe to call repeatedly."""
     d = backups_dir()
     d.mkdir(parents=True, exist_ok=True)
+    # Second resolution is not enough: the startup backup and a pressed button
+    # can land in the same second, and the second write would silently replace
+    # the first instead of adding to the seven that are kept.
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    dest = d / f"{AUTO_PREFIX}{stamp}.zip"
+    dest = d / f"{AUTO_PREFIX}{stamp}-{secrets.token_hex(2)}.zip"
     manifest = export_zip(dest, include_session=include_session)
     kept, removed = [], []
     for old in sorted(d.glob(AUTO_PREFIX + "*.zip"), reverse=True)[max(1, int(keep)):]:

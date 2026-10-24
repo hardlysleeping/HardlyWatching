@@ -229,7 +229,12 @@ class AutoBackupTest(unittest.TestCase):
             self.assertEqual(first.status, 200, first.body[:400])
             body = first.json()
             self.assertTrue(body["ok"])
-            self.assertEqual(len(body["backups"]), n0 + 1)
+            # >= because the startup backup runs in a background thread and may
+            # land during this call; what must hold is that this one exists, by
+            # its own name, and that nothing was overwritten.
+            self.assertGreaterEqual(len(body["backups"]), n0 + 1)
+            self.assertIn(body["backup"]["name"],
+                          [b["name"] for b in body["backups"]])
             path = Path(body["backup"]["path"])
             self.assertTrue(path.is_file())
             self.assertTrue(path.name.startswith("hw-backup-"))
