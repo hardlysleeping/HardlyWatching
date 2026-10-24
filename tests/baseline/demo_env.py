@@ -34,8 +34,10 @@ PERSONAS = [
 QUEUED = [("demo.quiet.harbor", "instagram"), ("demo.tin.robot", "tiktok")]
 FINISHED_AT = 1761000000.0  # fixed epoch: cards show a stable date
 
-STUB = Path("/home/bazzite/.hermes/skills/software-development/"
-            "insta-downloader-ui/scripts/demo-instaloader-stub.py")
+# The downloader stub lives next to this file so the capture runs from any checkout;
+# DEMO_STUB overrides it with another copy of the same script.
+STUB = Path(os.environ.get("DEMO_STUB")
+            or Path(__file__).resolve().parent / "demo-instaloader-stub.py")
 
 
 def env() -> dict:

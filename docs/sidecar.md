@@ -70,7 +70,7 @@ shared libraries in `_internal/`, so none of them come from the host.
 
 | tool | copy taken from | version | note |
 |---|---|---|---|
-| `yt-dlp` | `/home/bazzite/Shutter Encoder/Library/yt-dlp_linux` | 2026.06.09 | the official **standalone** yt-dlp build (carries its own Python). Copied, not downloaded. |
+| `yt-dlp` | a local `yt-dlp_linux` standalone build (`YTDLP_BIN=…`) | 2026.06.09 | the official **standalone** build (carries its own Python). Copied, not downloaded. |
 | `ffmpeg` | `/usr/bin/ffmpeg` | 8.1.3 | the host's binary — **dynamically linked**, see the limits below |
 | `ffprobe` | `/usr/bin/ffprobe` | 8.1.3 | same |
 

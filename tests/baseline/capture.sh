@@ -12,9 +12,9 @@ cd "$(dirname "$0")/../.."
 
 if [ -x .venv/bin/python3 ]; then
   PY=.venv/bin/python3
-elif [ -x /home/bazzite/apps/HardlyWatchingApp/.venv/bin/python3 ]; then
-  # This box keeps the project venv outside the worktree (docs/agent-rules.md).
-  PY=/home/bazzite/apps/HardlyWatchingApp/.venv/bin/python3
+elif [ -x ../.venv/bin/python3 ]; then
+  # A worktree of this checkout shares the checkout's venv.
+  PY=../.venv/bin/python3
 else
   PY=$(command -v python3)
 fi

@@ -123,7 +123,6 @@ is_elf() { [ -f "$1" ] && [ "$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')" = "7
 YTDLP=""
 for cand in \
   "${YTDLP_BIN:-}" \
-  "/home/bazzite/Shutter Encoder/Library/yt-dlp_linux" \
   "$(command -v yt-dlp 2>/dev/null || true)" \
   "/usr/local/bin/yt-dlp" \
   "/usr/bin/yt-dlp"

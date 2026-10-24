@@ -11,7 +11,7 @@ Two files matter:
 | `test_api_smoke.py` | 29 `unittest` cases over the routes the web UI calls, plus one that tests the harness's own port handling |
 
 No pytest, no plugins, nothing to install: stdlib `unittest` only, because the
-project's venv (`/home/bazzite/apps/HardlyWatchingApp/.venv`) has Pillow and
+project's venv (`.venv`) has Pillow and
 pillow-heif and must not be added to.
 
 ## Run it
@@ -19,20 +19,20 @@ pillow-heif and must not be added to.
 From the repo root:
 
 ```sh
-/home/bazzite/apps/HardlyWatchingApp/.venv/bin/python3 -m unittest discover -s tests -v
+.venv/bin/python3 -m unittest discover -s tests -v
 ```
 
 One class, or one test:
 
 ```sh
-/home/bazzite/apps/HardlyWatchingApp/.venv/bin/python3 -m unittest tests.test_api_smoke.GalleryRouteTests -v
-/home/bazzite/apps/HardlyWatchingApp/.venv/bin/python3 -m unittest tests.test_api_smoke.WriteRouteTests.test_pause_then_resume -v
+.venv/bin/python3 -m unittest tests.test_api_smoke.GalleryRouteTests -v
+.venv/bin/python3 -m unittest tests.test_api_smoke.WriteRouteTests.test_pause_then_resume -v
 ```
 
 A one-shot proof that the sandbox itself works (this is the M0.1 check):
 
 ```sh
-/home/bazzite/apps/HardlyWatchingApp/.venv/bin/python3 -m tests.sandbox --check
+.venv/bin/python3 -m tests.sandbox --check
 # OK port=8899 state=/tmp/hwa-sandbox-xxxxxxxx/state.json
 ```
 

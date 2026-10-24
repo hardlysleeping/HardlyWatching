@@ -11,7 +11,7 @@ the background, and you can reopen this panel any time.
 Draws with GTK4 when PyGObject is there, otherwise with Qt when PySide6 is in
 the project's venv, otherwise with a plain terminal prompt. Qt is installed
 into the venv because an immutable distro cannot be given PyGObject without
-layering packages and rebooting -- Bazzite's system python has neither, so the
+layering packages and rebooting -- an immutable host's system python has neither, so the
 window used to fall back to a terminal prompt.
 """
 

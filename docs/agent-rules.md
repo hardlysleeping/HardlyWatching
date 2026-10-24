@@ -24,7 +24,7 @@ If a task appears to need any of the above, stop and report it — do not improv
 
 One `git worktree` per task, on its own branch, so parallel work cannot collide:
 
-    /home/bazzite/.hermes/worktrees/hwa/<task-name>     branch: task/<task-name>
+    ../worktrees/hwa/<task-name>     branch: task/<task-name>
 
 Rules:
 
@@ -33,8 +33,8 @@ Rules:
   of editing it — another task owns it and the parent merges.
 - Commit on your branch as you go. **Do not push** and do not touch other branches. The parent
   reviews and merges.
-- Python for tests: `/home/bazzite/apps/HardlyWatchingApp/.venv/bin/python3` (has Pillow and
-  pillow-heif). Do not `pip install` into it, and never install into the live checkout's venv.
+- Python for tests: the checkout's own `.venv/bin/python3` (has Pillow and pillow-heif).
+  Do not `pip install` into it, and never install into the live checkout's venv.
 
 ## Sandbox only — no writes to real state
 

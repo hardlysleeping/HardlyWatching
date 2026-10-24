@@ -2,7 +2,7 @@
 # Build the HardlyWatching desktop shell in a throwaway container.
 #
 # Why: the Tauri/Linux build needs the WebKitGTK + GTK + libsoup *development*
-# headers. Bazzite is an immutable Fedora desktop with no -devel packages and no
+# headers. An immutable Fedora desktop has no -devel packages and no
 # rpm-ostree layering allowed, so the build runs in a container instead of on the
 # host. Nothing is installed outside podman's storage.
 #

@@ -140,7 +140,7 @@ npm install -g @tauri-apps/cli                    # then use: npx tauri ... / ta
 ### Tauri system dependencies (Linux)
 
 `cargo build` needs the WebKitGTK/GTK development headers, which are **not** installed on this
-machine (Bazzite, an immutable Fedora desktop, has no `-devel` packages and must not have them
+machine (an immutable Fedora desktop has no `-devel` packages and must not have them
 layered with `rpm-ostree`). The exact package names for a Fedora-family build image:
 
 ```
@@ -162,7 +162,7 @@ see "State of desktop bundling on this machine" below for what actually ran.
 
 | Step | Result |
 |---|---|
-| `cargo build` on the host | **fails**: `libdbus-sys` panics, no `dbus-1.pc` — the -devel packages do not exist on Bazzite and must not be layered |
+| `cargo build` on the host | **fails**: `libdbus-sys` panics, no `dbus-1.pc` — those -devel packages do not exist on an immutable host and must not be layered |
 | `src-tauri/build-in-container.sh build` | **succeeds**, `Finished dev profile in 1m 48s`, binary at `src-tauri/target/debug/hardlywatching` (199 MB debug build) |
 | Headless run, no `DISPLAY`/`WAYLAND_DISPLAY` | prints `server url`, `url source`, `is listening`, then `not opening a window`; exit 0 |
 | Windowed run against a sandbox on 8899 | window `main` 1280x860 created; screenshot capture is refused by GNOME (`Screenshot is not allowed`), so rendering was proven by traffic instead |
