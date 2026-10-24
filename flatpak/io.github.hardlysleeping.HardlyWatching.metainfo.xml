@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.hardlysleeping.HardlyWatching</id>
+  <name>HardlyWatching</name>
+  <summary>Download queue and viewer for Instagram and TikTok</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <description>
+    <p>
+      Queues profiles, downloads their posts, stories, highlights and reels into
+      a local archive, and shows that archive as a gallery and a shorts feed.
+      One copy of the logic serves both the desktop window and the browser.
+    </p>
+    <p>
+      Downloads are rate-limited on purpose and pause when the site says to come
+      back later. Everything stays on the machine: the app has no server of its
+      own and no account anywhere.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.hardlysleeping.HardlyWatching.desktop</launchable>
+  <url type="homepage">https://github.com/hardlysleeping/HardlyWatching</url>
+  <url type="vcs-browser">https://github.com/hardlysleeping/HardlyWatching</url>
+  <categories>
+    <category>Network</category>
+    <category>Graphics</category>
+  </categories>
+  <releases>
+    <release version="0.3.0" date="2026-10-24"/>
+  </releases>
+</component>

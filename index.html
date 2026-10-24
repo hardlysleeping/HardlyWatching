@@ -172,16 +172,50 @@
   .section-head .hint{margin-left:auto}
   .list{display:flex;flex-direction:column;gap:9px}
 
+  /* ---------- options dialog ---------- */
+  /* The four occasional panels live here instead of in the page. A dialog and
+     not a tab in the flow: the page is about the queue, and these are things
+     you open, change, and close. */
+  .dlg{border:1px solid var(--line);border-radius:16px;background:var(--panel);
+    color:var(--text);padding:0;width:min(920px,94vw);max-height:88vh;
+    box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  .dlg::backdrop{background:rgba(0,0,0,.62)}
+  .dlg-head{display:flex;align-items:center;gap:8px;padding:12px 16px;
+    border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .dlg-tabs{display:flex;gap:6px;flex-wrap:wrap}
+  .dlgtab{background:transparent;border:1px solid var(--line);color:var(--muted);
+    font-size:13px;padding:6px 11px;border-radius:999px;cursor:pointer}
+  .dlgtab:hover{color:var(--text);border-color:var(--line-2)}
+  .dlgtab.active{background:var(--panel-3);color:var(--text);border-color:var(--accent)}
+  .dlg-body{padding:2px 18px 20px;overflow:auto;max-height:calc(88vh - 62px)}
+  /* Inside the dialog these are the contents, not cards on a page: no frame,
+     no outer margin, and the summary is the panel's title. */
+  .dlg .settings{background:transparent;border:0;border-radius:0;padding:0;margin:0;
+    overflow:visible}
+  .dlg .settings>summary{padding:14px 0 10px;font-size:13px;cursor:default}
+  .dlg .settings>summary::before{content:none}
+  .dlg .settings[hidden]{display:none}
+
   /* ---------- two-column queue layout ---------- */
   .layout{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);
     gap:0 26px;align-items:start}
   .layout .span2{grid-column:1/-1}
   .col{min-width:0}
-  /* "Needs attention" sits inside the left column already, so it needs no
-     extra top margin beyond the usual section spacing. */
-  .col-left > #failSection > .section-head{margin-top:24px}
-  .col-left > .section-head:first-child,
-  .col-right > #doneSection > .section-head{margin-top:0}
+  /* Both columns start on the same line, so no section head may carry a top
+     margin: "Waiting" and "Finished" are both the first thing in their column
+     and used to start 24px apart, because the first-child rule below counted a
+     hidden "Needs attention" as the first child. The gap between stacked
+     sections is owned by the section above instead -- a hidden one takes its
+     margin with it. */
+  #nowSection > .section-head,
+  #failSection > .section-head,
+  #doneSection > .section-head,
+  .col-left > .section-head{margin-top:0}
+  #failSection{margin-bottom:24px}
+  /* The queue and the finished list are different lengths, so the gap above
+     them has to come from the layout, not from whichever head happens to be
+     first. */
+  .layout{margin-top:26px}
   /* Stack on narrow screens (phones, split windows). */
   @media (max-width:900px){
     .layout{grid-template-columns:minmax(0,1fr);gap:0}
@@ -1106,7 +1140,8 @@ some.profile
     </div>
     <div class="hint" id="ttResult" style="margin-top:9px"></div>
     <div class="hint" style="margin-top:7px">
-      New profiles use the settings below. Existing queue items keep their own settings.
+      New profiles use the download settings in <b>Options…</b>. Existing queue
+      items keep their own settings.
     </div>
   </div>
 
@@ -1114,6 +1149,11 @@ some.profile
   <div class="subtabs">
     <button class="subtab active" id="subIg">Instagram</button>
     <button class="subtab" id="subTt">TikTok</button>
+    <!-- One door for the occasional panels. They used to stack between this
+         row and the queue, which made the queue the fourth thing down the
+         page; the controls themselves are unchanged, only their address is. -->
+    <button class="small" id="optionsBtn" style="margin-left:auto"
+            title="Download settings, backup, phone access, excluded profiles">Options…</button>
   </div>
   <div id="ttPane" style="display:none">
       <div class="card">
@@ -1152,83 +1192,30 @@ some.profile
 
   </div><!-- /ttPane -->
 
-  <!-- Excluded covers BOTH platforms: it is about who you removed, not which
-       tool fetched them. Kept below the paste boxes so it is never in the way
-       of normal use, and each row says which platform it belongs to because
-       the same handle can be two different people. -->
-  <!-- One collapsed line, like Download settings. This is a recovery list you
-       touch rarely, so it should not occupy the tab: the count stays visible in
-       the summary and the rows appear only when opened. -->
-  <details class="settings" id="excludedCard">
-    <summary>Excluded <span class="hint" id="ttExcludedCount"></span>
-      <span class="hint" style="font-weight:400">— removed from the queue or
-      deleted; restorable</span></summary>
-    <p class="hint">
-      Pasting a profile or a following list again will <b>not</b> add these back.
-      Nothing is deleted — <b>Restore</b> returns them to the queue.
-    </p>
-    <div id="ttExcluded" class="hint">—</div>
-    <div class="hint" id="ttExcludedMsg" style="margin-top:6px;color:var(--ok)"></div>
-    <div class="row" id="ttExcludedActions" style="display:none">
-      <button class="small" id="ttRestoreAllBtn">Restore all</button>
-    </div>
-  </details>
+  
 
-  <!-- Backup & restore. Collapsed and under the download settings because you
-       need it when you move computers, not every day -- but it has to be
-       findable without reading docs. The point it makes in one line: files live
-       in the archive folders, the app's memory does not. -->
-  <details class="settings" id="lanCard">
-    <summary>Open on your phone <span class="hint" id="lanSummary"></span></summary>
-    <div class="hint" style="margin:0 0 10px">
-      The app runs on this computer. Turn this on to use it from a phone or
-      tablet on the same network at the address below — nothing to install, and
-      “Add to Home Screen” turns it into an app. Open this card on the phone
-      itself to install it. There is <b>no password</b>: anyone on this network
-      can use the app, including its settings, while it is on.
-    </div>
-    <label class="hint" style="display:flex;align-items:center;gap:8px">
-      <input type="checkbox" id="lanToggle"> Reachable from your phone
-    </label>
-    <div class="foldpath" id="lanUrls">…</div>
-    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="small" id="lanCopyBtn">Copy link</button>
-      <span class="hint" id="lanMsg"></span>
-    </div>
-    <div class="hint">The port is fixed at <b id="lanPort">8765</b>; if your router or
-      firewall blocks it, nothing here can open that for you.</div>
-  </details>
+  
 
-  <details class="settings" id="backupCard">
-    <summary>Backup &amp; restore <span class="hint" id="bkSummary"></span></summary>
-    <div class="hint" style="margin:0 0 10px">
-      Your <b>files</b> are in the archive folders — point a new copy of the app at
-      them and the gallery and shorts rebuild themselves. What cannot rebuild is the
-      app's memory: the <b>queue</b>, download settings, hidden items, bookmarks and
-      the <b>list of people</b> you imported. That is what this zip holds. One
-      automatic backup is kept per day; the newest 7 stay.
-    </div>
-    <div class="foldcard">
-      <div class="foldcard-head"><b>App data</b><span class="hint">this machine</span></div>
-      <div class="foldpath" id="bkStatePath">…</div>
-      <div class="foldpath" id="bkProfilesPath">…</div>
-      <div class="hint" id="bkPortable"></div>
-    </div>
-    <div class="row" style="gap:8px;flex-wrap:wrap;padding:2px 0">
-      <button class="small" id="bkNowBtn">Back up now</button>
-      <button class="small" id="bkExportBtn">Export a copy…</button>
-      <button class="small" id="bkRestoreBtn">Restore from backup…</button>
-      <input type="file" id="bkFile" accept=".zip,application/zip" style="display:none">
-      <label class="hint" style="display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="bkSession" checked>
-        include Instagram login
-      </label>
-    </div>
-    <div class="hint" id="bkMsg"></div>
-    <div id="bkList" class="hint">—</div>
-  </details>
+  
 
-  <details class="settings" id="settingsBox">
+  
+
+  <!-- The occasional panels: download settings, backup, phone access, excluded
+       profiles. All four are the very same <details> elements, with the same
+       ids and the same handlers -- this dialog only decides which one you see,
+       so nothing about them had to be rewritten to get them off the page. -->
+  <dialog class="dlg" id="optionsDlg">
+    <div class="dlg-head">
+      <div class="dlg-tabs" role="tablist">
+        <button class="dlgtab active" data-opt="settingsBox" role="tab">Download settings</button>
+        <button class="dlgtab" data-opt="backupCard" role="tab">Backup &amp; restore</button>
+        <button class="dlgtab" data-opt="lanCard" role="tab">Open on your phone</button>
+        <button class="dlgtab" data-opt="excludedCard" role="tab">Excluded</button>
+      </div>
+      <button class="small" id="optionsClose" style="margin-left:auto">Close</button>
+    </div>
+    <div class="dlg-body">
+<details class="settings" id="settingsBox">
     <summary>Download settings <span class="hint" id="setSummary"></span></summary>
     <div class="row" style="padding:12px 0 2px;gap:8px">
       <input type="text" id="setSearch" class="txtin" style="max-width:260px"
@@ -1293,6 +1280,70 @@ some.profile
       No settings match that filter.
     </div>
   </details>
+<details class="settings" id="backupCard">
+    <summary>Backup &amp; restore <span class="hint" id="bkSummary"></span></summary>
+    <div class="hint" style="margin:0 0 10px">
+      Your <b>files</b> are in the archive folders — point a new copy of the app at
+      them and the gallery and shorts rebuild themselves. What cannot rebuild is the
+      app's memory: the <b>queue</b>, download settings, hidden items, bookmarks and
+      the <b>list of people</b> you imported. That is what this zip holds. One
+      automatic backup is kept per day; the newest 7 stay.
+    </div>
+    <div class="foldcard">
+      <div class="foldcard-head"><b>App data</b><span class="hint">this machine</span></div>
+      <div class="foldpath" id="bkStatePath">…</div>
+      <div class="foldpath" id="bkProfilesPath">…</div>
+      <div class="hint" id="bkPortable"></div>
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;padding:2px 0">
+      <button class="small" id="bkNowBtn">Back up now</button>
+      <button class="small" id="bkExportBtn">Export a copy…</button>
+      <button class="small" id="bkRestoreBtn">Restore from backup…</button>
+      <input type="file" id="bkFile" accept=".zip,application/zip" style="display:none">
+      <label class="hint" style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="bkSession" checked>
+        include Instagram login
+      </label>
+    </div>
+    <div class="hint" id="bkMsg"></div>
+    <div id="bkList" class="hint">—</div>
+  </details>
+<details class="settings" id="lanCard">
+    <summary>Open on your phone <span class="hint" id="lanSummary"></span></summary>
+    <div class="hint" style="margin:0 0 10px">
+      The app runs on this computer. Turn this on to use it from a phone or
+      tablet on the same network at the address below — nothing to install, and
+      “Add to Home Screen” turns it into an app. Open this card on the phone
+      itself to install it. There is <b>no password</b>: anyone on this network
+      can use the app, including its settings, while it is on.
+    </div>
+    <label class="hint" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="lanToggle"> Reachable from your phone
+    </label>
+    <div class="foldpath" id="lanUrls">…</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="small" id="lanCopyBtn">Copy link</button>
+      <span class="hint" id="lanMsg"></span>
+    </div>
+    <div class="hint">The port is fixed at <b id="lanPort">8765</b>; if your router or
+      firewall blocks it, nothing here can open that for you.</div>
+  </details>
+<details class="settings" id="excludedCard">
+    <summary>Excluded <span class="hint" id="ttExcludedCount"></span>
+      <span class="hint" style="font-weight:400">— removed from the queue or
+      deleted; restorable</span></summary>
+    <p class="hint">
+      Pasting a profile or a following list again will <b>not</b> add these back.
+      Nothing is deleted — <b>Restore</b> returns them to the queue.
+    </p>
+    <div id="ttExcluded" class="hint">—</div>
+    <div class="hint" id="ttExcludedMsg" style="margin-top:6px;color:var(--ok)"></div>
+    <div class="row" id="ttExcludedActions" style="display:none">
+      <button class="small" id="ttRestoreAllBtn">Restore all</button>
+    </div>
+  </details>
+    </div>
+  </dialog>
 
     <div class="layout">
       <!-- Downloading now: pinned full-width above both columns -->
@@ -3752,6 +3803,53 @@ $("bkFile").onchange = async () => {
   loadBackupInfo();
 };
 loadBackupInfo();
+/* ---------- options: one dialog, four panels ---------- */
+/* The four <details> panels used to sit in the page between the paste box and
+   the queue. They are the same elements with the same ids and the same
+   handlers; this only decides which one is shown, so nothing inside them had
+   to change. */
+const OPT_TABS = ["settingsBox", "backupCard", "lanCard", "excludedCard"];
+function showOptTab(id){
+  if(!OPT_TABS.includes(id)) id = OPT_TABS[0];
+  for(const pid of OPT_TABS){
+    const el = $(pid);
+    if(!el) continue;
+    const on = pid === id;
+    el.hidden = !on;
+    if(on) el.open = true;     // a closed panel would hide its own contents
+  }
+  document.querySelectorAll("#optionsDlg .dlgtab").forEach(function(b){
+    const on = b.dataset.opt === id;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  // Setting .open from script does not fire "toggle", so the lazy loaders that
+  // the toggle listeners call are called here too.
+  if(id === "backupCard") loadBackupInfo();
+  if(id === "lanCard") loadNetwork();
+  if(id === "excludedCard") loadExcluded();
+}
+// Only the first panel is live until the dialog is used, so opening the dialog
+// does not fire three requests nobody asked for.
+OPT_TABS.forEach(function(pid){
+  const el = $(pid);
+  if(el) el.hidden = pid !== OPT_TABS[0];
+});
+if($("optionsBtn")) $("optionsBtn").onclick = function(){
+  const d = $("optionsDlg");
+  if(!d.open) d.showModal();
+  showOptTab(OPT_TABS.find(function(pid){ return $(pid) && !$(pid).hidden; }) || OPT_TABS[0]);
+};
+if($("optionsClose")) $("optionsClose").onclick = function(){ $("optionsDlg").close(); };
+document.querySelectorAll("#optionsDlg .dlgtab").forEach(function(b){
+  b.onclick = function(){ showOptTab(b.dataset.opt); };
+});
+// Clicking the backdrop closes; nothing inside the dialog bubbles to here
+// unless it is the dialog element itself.
+if($("optionsDlg")) $("optionsDlg").addEventListener("click", function(e){
+  if(e.target === this) this.close();
+});
+
 $("backupCard").addEventListener("toggle", function(){ if(this.open) loadBackupInfo(); });
 
 // "Open on your phone": the address to type, and the switch that lets another

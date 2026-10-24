@@ -1,0 +1,8 @@
+#!/bin/sh
+# The server is plain standard-library Python (instaloader, yt-dlp and ffmpeg
+# are subprocesses, not imports), so "the sidecar" here is this interpreter
+# plus the source tree -- no PyInstaller freeze, and nothing to keep in step
+# with the app's own code.
+export PATH=/app/bin:$PATH
+export PYTHONPATH=/app/lib/python3.13/site-packages
+exec /usr/bin/python3 /app/share/hardlywatching/server.py "$@"

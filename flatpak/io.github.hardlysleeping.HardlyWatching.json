@@ -1,0 +1,81 @@
+{
+  "id": "io.github.hardlysleeping.HardlyWatching",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "49",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "hardlywatching-launch",
+  "finish-args": [
+    "--share=network",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--filesystem=host",
+    "--talk-name=org.freedesktop.portal.Desktop",
+    "--talk-name=org.freedesktop.Notifications",
+    "--env=PYTHONUNBUFFERED=1"
+  ],
+  "build-options": {
+    "build-args": [
+      "--share=network"
+    ],
+    "env": {
+      "PATH": "/usr/lib/sdk/rust-stable/bin:/app/bin:/usr/bin:/bin",
+      "CARGO_HOME": "/run/build/cargo",
+      "CARGO_NET_RETRY": "3",
+      "PYTHONPATH": "/app/lib/python3.13/site-packages"
+    }
+  },
+  "modules": [
+    {
+      "name": "ffmpeg-static",
+      "buildsystem": "simple",
+      "build-commands": [
+        "tar -xf ffmpeg-static.tar.xz",
+        "install -Dm755 ffmpeg-*-amd64-static/ffmpeg /app/bin/ffmpeg",
+        "install -Dm755 ffmpeg-*-amd64-static/ffprobe /app/bin/ffprobe",
+        "/app/bin/ffmpeg -version | head -1"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+          "sha256": "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67",
+          "dest-filename": "ffmpeg-static.tar.xz"
+        }
+      ]
+    },
+    {
+      "name": "hardlywatching",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -d /app/share/hardlywatching /app/lib/hardlywatching /app/share/applications /app/share/icons/hicolor/512x512/apps /app/share/metainfo",
+        "install -m644 server.py engine.py backup.py shorts.py profile_db.py tiktok_engine.py tiktok_handles.py index.html shorts.html app.webmanifest shorts.webmanifest VERSION /app/share/hardlywatching/",
+        "install -m644 icon-192.png icon-512.png icon-512-maskable.png apple-touch-icon.png favicon.ico /app/share/hardlywatching/",
+        "install -Dm644 icon-512.png /app/share/icons/hicolor/512x512/apps/io.github.hardlysleeping.HardlyWatching.png",
+        "install -Dm644 io.github.hardlysleeping.HardlyWatching.desktop /app/share/applications/io.github.hardlysleeping.HardlyWatching.desktop",
+        "install -Dm644 io.github.hardlysleeping.HardlyWatching.metainfo.xml /app/share/metainfo/io.github.hardlysleeping.HardlyWatching.metainfo.xml",
+        "install -Dm755 hardlywatching-server /app/lib/hardlywatching/hardlywatching-server",
+        "install -Dm755 hardlywatching-launch /app/bin/hardlywatching-launch",
+        "/usr/bin/python3 -m pip install --no-cache-dir --no-warn-script-location --prefix=/app 'pillow>=10.4,<12' instaloader yt-dlp",
+        "PYTHONPATH=/app/lib/python3.13/site-packages /usr/bin/python3 -c 'import PIL, instaloader, yt_dlp; print(\"deps\", PIL.__version__, instaloader.__version__, yt_dlp.version.__version__)'",
+        "cd src-tauri && cargo build --release",
+        "install -Dm755 src-tauri/target/release/hardlywatching /app/bin/hardlywatching",
+        "strip /app/bin/hardlywatching || true"
+      ],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/hardlysleeping/HardlyWatching.git",
+          "tag": "v0.3.0"
+        },
+        {
+          "type": "dir",
+          "path": "."
+        }
+      ]
+    }
+  ]
+}

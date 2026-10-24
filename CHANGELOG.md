@@ -5,7 +5,20 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **The occasional panels moved behind one Options button.** Download settings,
+  backup, phone access and the excluded list used to stack between the paste box
+  and the queue, which pushed the queue itself down and made the top of the page
+  a wall of collapsed cards. They are the same `<details>` elements with the same
+  ids, now switched inside a dialog from a tab strip in it. Settings that belong
+  to adding to the queue are one click away instead of in the flow.
+- **The queue columns line up.** "Waiting" and "Finished" both sat 24px down
+  from where they should have been — the first-child rule counted a hidden
+  "Needs attention" as the first child — so the two headings started at different
+  heights. Section heads are now flush with the layout, and the gap between
+  stacked sections is owned by the section above it, which a hidden section takes
+  with it.
 
 ## [0.3.0] — 2026-10-24
 

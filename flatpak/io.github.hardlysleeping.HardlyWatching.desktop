@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=HardlyWatching
+Comment=Download queue and viewer for Instagram and TikTok
+Exec=hardlywatching-launch
+Icon=io.github.hardlysleeping.HardlyWatching
+Terminal=false
+Type=Application
+Categories=Network;Graphics;
+Keywords=instagram;tiktok;download;gallery;
+StartupNotify=true
+StartupWMClass=HardlyWatching
