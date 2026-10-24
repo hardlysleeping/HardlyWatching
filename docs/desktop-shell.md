@@ -296,6 +296,20 @@ the server exited.
   `no DISPLAY/WAYLAND_DISPLAY -- not opening a window`, exit **0** — and never spawns, because a
   headless start must not leave a server running.
 
+### One version number
+
+`VERSION` at the repo root is the only one a human edits (and `scripts/sync-upstream.sh`
+sets it from the upstream tag). Two build-time copies follow it automatically:
+
+| copy | why it exists | who keeps it in step |
+|---|---|---|
+| `src-tauri/tauri.conf.json` `version` | names the DEB/AppImage and is shown in the app | `build-in-container.sh` rewrites it before a build; `scripts/sync-upstream.sh` rewrites it when it bumps `VERSION` |
+| `src-tauri/Cargo.toml` `version` | crate metadata only; nothing reads it for the bundle | `build-in-container.sh` rewrites it before a build |
+
+`tests/test_release_version.py` fails if any of the three disagree, or if `bundle.targets` is
+`"all"` again (see the AppImage note). Before that test existed, a 0.2.0 server shipped inside a DEB
+called `HardlyWatching_0.1.0_amd64.deb`.
+
 ### Building the bundles
 
 ```bash
