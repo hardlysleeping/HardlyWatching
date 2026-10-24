@@ -198,7 +198,8 @@ nothing else is already running.
 /usr/bin/hardlywatching                                   the shell                          4.6 MB
    <server root>/hardlywatching-server                    frozen entry point                 4.7 MB
    <server root>/_internal/                               CPython 3.14, Pillow, pillow-heif   85 MB
-   <server root>/bin/                                     yt-dlp, ffmpeg, ffprobe             39 MB
+   <server root>/bin/                                     yt-dlp, ffmpeg, ffprobe,
+                                                          instaloader (wrapper)             40 MB
 ```
 
 `<server root>` is `usr/lib/HardlyWatching/sidecar` in both bundles — the .deb installs it there,
@@ -230,22 +231,22 @@ Both shapes were built from the same spec and measured on this machine (2026-10-
 
 | shape | files | on disk | cold start -> `/api/health` 200 | ships yt-dlp/ffmpeg |
 |---|---|---|---|---|
-| **onedir, `bundle.resources` (shipped)** | 132 files, 14 dirs | 128 MB (85 `_internal`, 39 `bin/`, 4.7 exe) | **0.08 s / 0.08 s / 0.09 s** (`--attach` with no instance: 0.09 s) | yes, `sidecar/bin/` |
+| **onedir, `bundle.resources` (shipped)** | 132 files, 14 dirs | 128 MB (85 `_internal`, 40 `bin/`, 4.7 exe) | **0.08 s / 0.08 s / 0.09 s** (`--attach` with no instance: 0.09 s) | yes, `sidecar/bin/` |
 | onefile, `bundle.externalBin` (rejected) | 1 | 32 MB | 0.31 s / 0.32 s / 0.31 s, **plus ~85 MB unpacked into `$TMPDIR` on every launch** | no |
 
 The onefile variant is still buildable for comparison (`HWA_ONEFILE=1`, see
 `packaging/sidecar/hardlywatching.spec`), but it lost on four counts:
 
 1. **It cannot carry the external tools.** `entry.py` puts `<bundle>/bin` first on `PATH` so
-   `engine.py` finds the bundled `yt-dlp`/`ffmpeg`/`ffprobe` by bare name. A onefile payload has no
+   `engine.py` finds the bundled `yt-dlp`/`ffmpeg`/`ffprobe`/`instaloader` by bare name. A onefile payload has no
    `<bundle>/bin` to put them in, so they would have to ship as separate resources *and* the bundle
    would need a new search path. Onedir already does this correctly, verified with `--self-check`.
 2. **It pays on every launch, not once.** 0.31 s versus 0.08 s here, because each start unpacks the
    whole runtime into `$TMPDIR`; that also needs a writable *and executable* temp dir, which a
    hardened box with `noexec /tmp` does not have.
 3. 128 MB installed versus 32 MB is the honest cost of (1). Compression narrows it: the .deb is
-   76,281,736 bytes (72.75 MiB, `Installed-Size: 136430` KB) and the AppImage is 73,464,312 bytes
-   (70.06 MiB).
+   76,476,478 bytes (72.93 MiB, `Installed-Size: 136626` KB) and the AppImage is 73,669,112 bytes
+   (70.25 MiB) -- both include the bundled instaloader as of 2026-10-23.
 4. Both layouts install into `usr/bin` plus one `HardlyWatching` directory, so the .deb's file list
    stays one clean subtree that `apt remove` deletes whole.
 
@@ -356,7 +357,7 @@ the reason above — use the script.
 |---|---|
 | `build-in-container.sh deb` | `Finished 1 bundle at: .../bundle/deb/HardlyWatching_0.1.0_amd64.deb (72.75 MiB)`, exit 0 |
 | `build-in-container.sh appimage` | `...HardlyWatching_0.1.0_amd64.AppImage (71M, 73464312 bytes)`, exit 0 |
-| `.deb` payload | 165 members, `usr/bin/hardlywatching` + `usr/lib/HardlyWatching/sidecar/{hardlywatching-server,bin/yt-dlp,bin/ffmpeg,bin/ffprobe}` all `-rwxr-xr-x` |
+| `.deb` payload | 166 members, `usr/bin/hardlywatching` + `usr/lib/HardlyWatching/sidecar/{hardlywatching-server,bin/yt-dlp,bin/ffmpeg,bin/ffprobe,bin/instaloader}` all `-rwxr-xr-x` |
 | `.deb` installed and run (temp HOME, temp `INSTA_*`, port 8899, `HW_SERVER_URL` unset) | spawned `usr/lib/HardlyWatching/sidecar/hardlywatching-server --no-browser --port 8899` as a child, `GET /api/health` -> `200`, window created |
 | AppImage run (same isolation) | found the server at `$APPDIR/usr/lib/HardlyWatching/sidecar`, spawned it, `200`, window created |
 | attach (`HW_SERVER_URL=http://127.0.0.1:8899`, sandbox server already there) | log: `url source = env HW_SERVER_URL`, `window 'main' ... loading`, 0 sidecar processes started, sandbox server still answering after the app exited |

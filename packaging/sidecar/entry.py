@@ -27,6 +27,7 @@ Extra flags this file adds (the app's own flags pass straight through):
     --no-browser        never open a tab (also INSTA_NO_BROWSER=1)
     --self-check        print what the bundle resolved, exit 0/1, serve nothing
     --version           print the sidecar version
+    --run-instaloader A...  run instaloader's CLI with A... (used by bin/instaloader)
     -h/--help           this text
 
 Run ``hardlywatching-server --self-check`` first when something looks wrong:
@@ -44,7 +45,7 @@ from pathlib import Path
 
 # Bumped by hand when the bundle layout (not the app) changes. Reported by
 # --version and used by the desktop shell to refuse a mismatched pair.
-SIDECAR_VERSION = "0.1.0"
+SIDECAR_VERSION = "0.2.0"
 
 USAGE = """\
 hardlywatching-server -- HardlyWatching, frozen (no Python install needed)
@@ -62,9 +63,11 @@ Environment (same variables the Python app reads):
   INSTA_PORT, INSTA_HOST, INSTA_STATE, INSTA_CACHE_DB, INSTA_OUTPUT,
   INSTA_THUMBS, INSTA_AVATARS
 
-The bundle carries its own CPython, Pillow, pillow-heif, yt-dlp, ffmpeg and
-ffprobe. It does NOT carry instaloader; the app offers to install it with pipx
-on first run if it is missing.
+The bundle carries its own CPython, Pillow, pillow-heif, instaloader, yt-dlp,
+ffmpeg and ffprobe. ``bin/instaloader`` is a two-line wrapper around
+``--run-instaloader``, which calls instaloader's own CLI from inside this frozen
+interpreter -- engine.py looks for a program by that name, so a bundled library
+alone would not be found.
 """
 
 
@@ -260,6 +263,12 @@ def self_check(server) -> int:
         print(f"  pillow-heif                     {getattr(pillow_heif, '__version__', '?')}")
     except Exception as e:  # pillow-heif is optional for this app
         print(f"  pillow-heif                     absent ({e.__class__.__name__})")
+    try:
+        import instaloader
+        print(f"  instaloader                     {instaloader.__version__} (bundled)")
+    except Exception as e:
+        print(f"  instaloader                     NOT bundled: {e}")
+        ok = False
     print(f"port / host     : {server.PORT} / {server.HOST}")
     print(f"output root     : {server.get_engine().output_root}")
     print("RESULT          : " + ("ok" if ok else "problems found"))
@@ -283,9 +292,55 @@ def _line_buffer_output() -> None:
             pass
 
 
+# --------------------------------------------------------------------------
+# This bundle is also the `instaloader` program
+# --------------------------------------------------------------------------
+
+def run_instaloader(rest: list[str]) -> int:
+    """Run instaloader's own CLI inside this frozen interpreter.
+
+    engine.py resolves a program with ``shutil.which("instaloader")`` and runs
+    it, so a bundled *library* on its own would be invisible to the app.
+    ``bin/instaloader`` execs this binary with ``--run-instaloader`` and the
+    arguments untouched, which keeps both the exit code and the stdout/stderr
+    the app parses.
+
+    This has to happen before ``server`` is imported: server.py parses
+    ``sys.argv`` at import time and instaloader's flags are not server flags.
+    """
+    try:
+        from instaloader.__main__ import main as instaloader_main
+    except Exception as exc:  # pragma: no cover - would mean a broken bundle
+        print(f"sidecar: instaloader is not in this bundle: {exc}", file=sys.stderr)
+        return 127
+
+    saved = sys.argv
+    sys.argv = ["instaloader"] + rest
+    try:
+        instaloader_main()
+    except SystemExit as exc:      # instaloader exits with an ExitCode enum
+        code = exc.code
+        if code is None:
+            return 0
+        try:
+            return int(code)
+        except (TypeError, ValueError):
+            return 1
+    finally:
+        sys.argv = saved
+    return 0
+
+
 def main() -> int:
     _line_buffer_output()
-    opts = parse_args(sys.argv[1:])
+
+    # Checked before parse_args: instaloader has its own --version, --help and
+    # positional targets that must reach it unchanged.
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--run-instaloader":
+        return run_instaloader(argv[1:])
+
+    opts = parse_args(argv)
 
     if opts["help"]:
         print(USAGE, end="")

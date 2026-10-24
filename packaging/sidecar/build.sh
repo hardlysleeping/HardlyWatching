@@ -68,6 +68,22 @@ else
     || warn "pillow-heif install failed: HEIC photos will not thumbnail in the bundle"
 fi
 
+# instaloader is bundled as a library, and re-exposed as the program the app
+# shells out to (see the wrapper written in step 3). It is pure Python with one
+# dependency (requests), so this is a few MB, not another runtime.
+IL_OK=0
+if "$VENV_PY" -c "import instaloader" >/dev/null 2>&1; then
+  IL_OK=1
+  say "instaloader $( "$VENV_PY" -c 'import instaloader; print(instaloader.__version__)' ) present"
+else
+  say "installing instaloader into .venv-build"
+  if "$VENV_PY" -m pip install --disable-pip-version-check --quiet instaloader; then
+    IL_OK=1
+  else
+    warn "instaloader install failed: Instagram downloads will not work in this bundle"
+  fi
+fi
+
 say "pyinstaller $( "$VENV_PY" -c 'import PyInstaller; print(PyInstaller.__version__)' )"
 
 # ---------------------------------------------------------------------------
@@ -143,6 +159,28 @@ copy_tool() {
     "$BIN/$name" "$src" "$link" "$ver" "$sha" "$desc" >>"$PROV"
   say "bundled $name <- $src"
 }
+
+# --- instaloader: not a copy of anything. This wrapper re-enters the bundle's
+# --- own binary, so the bundled instaloader package runs on the bundled
+# --- CPython. engine.py runs whatever `instaloader` resolves to, so the name
+# --- and the argv passthrough are the whole contract (exit code included).
+if [ "$IL_OK" = 1 ]; then
+  cat >"$BIN/instaloader" <<'SH'
+#!/bin/sh
+# instaloader, from the HardlyWatching bundle. Not a separate install: this
+# hands the arguments to the bundle's own interpreter (--run-instaloader), so
+# Instagram downloads work on a machine with no Python and no pipx.
+here=$(dirname "$(readlink -f "$0")")
+exec "$here/../hardlywatching-server" --run-instaloader "$@"
+SH
+  chmod 0755 "$BIN/instaloader"
+  printf '%s\n  source : written by packaging/sidecar/build.sh (not copied)\n  version: %s (bundled library)\n  note   : %s\n\n' \
+    "$BIN/instaloader" \
+    "$( "$VENV_PY" -c 'import instaloader; print(instaloader.__version__)' )" \
+    "Shell wrapper -> ../hardlywatching-server --run-instaloader. Runs instaloader inside the frozen interpreter." \
+    >>"$PROV"
+  say "wrote bin/instaloader -> hardlywatching-server --run-instaloader"
+fi
 
 copy_tool "$YTDLP" "yt-dlp" \
   "Standalone PyInstaller build of yt-dlp (its own python inside). Runs on any glibc x86_64 host."

@@ -226,13 +226,26 @@ Honest list, worst first.
    one. Escape hatch: delete `dist/sidecar/bin/ffmpeg` (and `ffprobe`) and the app falls back
    to whatever `ffmpeg` the host has.
 
-2. **instaloader is not bundled.** The app is a front end for it, and it is a Python package,
-   so the bundle cannot carry it as a file the way it carries `yt-dlp`. Started without one it
-   prints the "instaloader is not installed" block and the UI still serves, but **nothing
-   Instagram-side will download**. The app offers `pipx install instaloader` on first run
-   (interactive only; a sidecar spawned by the desktop shell is not a TTY and just prints the
-   instructions). Bundling it means a second PyInstaller exe in the same COLLECT — the obvious
-   next task, not done here.
+2. **instaloader is bundled, as a library plus a two-line wrapper** (it used to be absent
+   altogether, so the UI served and nothing Instagram-side downloaded). The app never imports
+   instaloader: `engine.py` resolves a *program* with `shutil.which("instaloader")` and runs it,
+   so a bundled package on its own would be invisible. `entry.py` grew `--run-instaloader`, which
+   calls instaloader's own CLI (`instaloader.__main__:main`) inside the frozen interpreter, and
+   `build.sh` writes `bin/instaloader`:
+
+       here=$(dirname "$(readlink -f "$0")")
+       exec "$here/../hardlywatching-server" --run-instaloader "$@"
+
+   `bin/` is already prepended to `PATH`, so that is the program the app finds. No second
+   PyInstaller exe, no venv to manage, and `argv`, stdout/stderr and the exit code pass straight
+   through: `bin/instaloader --version` prints `4.15.4`. Cost: about 1.5 MB, 129 MB installed.
+
+   Verified against the live service on 2026-10-23 under `env -i` with no Python on `PATH`: one
+   `--count 1 --no-pictures` run resolved a profile, wrote its profile picture and `*.json.xz`
+   metadata into the target directory, then stopped on Instagram's own `429 - Too Many Requests`
+   with its "retrying in 664 seconds" notice. That is the app's normal rate-limit behaviour, not a
+   bundle failure -- HTTP, TLS and `requests` all work inside the freeze. Anything needing a login
+   still needs the cookies the app already manages.
 
 3. **Linux x86_64 only.** The bundle embeds CPython 3.14.7 and glibc symbol versions up to
    **GLIBC_2.38**; it will not start on Ubuntu 22.04 (2.35) or any rpm/deb older than
