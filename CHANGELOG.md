@@ -43,6 +43,18 @@ computer.
   avatars, backups and the login in one directory, so the app's memory travels
   with a folder. Unset, every path stays where it was and all the existing
   `INSTA_*` overrides still win.
+- **Phone access, with a switch.** The server listens on every interface so the
+  switch can work without a restart; a request from another machine is refused
+  — a small page telling you where the switch is, or a 403 for the API — until
+  Settings → *Open on your phone* → **Reachable from your phone** is on. That
+  card also shows the address to type on the phone (your LAN address, plus any
+  tailnet address, with docker bridges filtered out) and copies it. There is no
+  password: on means anyone on this network can use the app.
+- **A rate-limit pause waits for you.** A 429 used to resume the queue the
+  second Instagram's cooldown ran out, which walked straight back into the same
+  limit. The pause now stays, the banner says *rate limit over — press Resume*,
+  and the setting `hold_after_limit` (on by default) is what says so; turning it
+  off restores resuming at zero.
 - **One instance, on purpose.** A second launch attaches to the running server
   instead of starting a rival queue (`--attach`, `--force`, `--no-browser`), and
   `/api/version` reports the same number as the installed app.
@@ -66,8 +78,9 @@ computer.
 - The AppImage's *window* needs GTK 3 and WebKitGTK on the host. The server
   inside it does not, so a machine without those can still run the backend and
   use the browser UI.
-- There is no authentication on the HTTP API: it belongs on loopback or a
-  private network, not on the open internet.
+- There is no authentication on the HTTP API. The phone switch is the only
+  control, so "reachable from your phone" means reachable by everyone on that
+  network — keep it off on shared Wi-Fi.
 - macOS and Windows builds are written but have not been run, and the phone app
   is still the browser's install-to-home-screen.
 
