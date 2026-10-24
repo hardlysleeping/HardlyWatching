@@ -88,10 +88,38 @@ copy everywhere:
 Step 1 is the point of no return, so it happens when the app is proven, not before. Until then the
 live app is upstream's, untouched, and this fork follows it.
 
+## The schedule
+
+A systemd user timer runs the sync every three hours, at boot too, and survives reboots:
+
+```
+~/.config/systemd/user/hwa-upstream-sync.timer    OnCalendar=*-*-* 00/3:17:00, Persistent=true
+~/.config/systemd/user/hwa-upstream-sync.service  runs ~/.hermes/scripts/hwa-sync.sh
+~/.local/state/hardlywatching-app-sync.log        every run: one line, or the failure
+```
+
+```bash
+systemctl --user list-timers hwa-upstream-sync.timer   # when it next runs
+systemctl --user start hwa-upstream-sync.service       # run it now
+tail -5 ~/.local/state/hardlywatching-app-sync.log     # what happened
+```
+
+The log shows one heartbeat line per run (`up to date (<sha>)`) and the full output of any run that
+did something. A refused or failed sync also raises a desktop notification, because a fork that
+quietly stops tracking upstream is worse than one that says so.
+
+Why a timer and not a Hermes cron job: the job is a shell script, not something that needs a model,
+so it should not depend on the gateway being up (and it cost nothing to remove that dependency).
+Why merge and not rebase: the fork is published, and rebasing app commits onto new upstream would
+rewrite published history for no gain — a merge commit per upstream release is honest about what
+happened.
+
 ## What is not automated
 
-- Nothing runs `sync-upstream.sh` for you on a machine you are not using; a scheduled job does (see
-  below). A sync that finds a conflict stops and waits for a human — by design.
-- The GitHub Actions workflow in the fork does not sync. It would need a token with read access to
-  a private sibling repository, which is a credential to leak for very little; the local script
-  already has ssh access.
+- A conflict stops the sync and waits for a human, by design. Nothing guesses at your README.
+- The GitHub Actions workflow in the fork does not sync. It would need a token with read access to a
+  private sibling repository, which is a credential to leak for very little; the local script already
+  has ssh access.
+- The gate is the test suite: it covers the routes the desktop shell depends on (`/api/health`,
+  `/api/version`, `/api/state`) and the lock behaviour. It cannot tell you that a reshuffled README
+  now hides the paragraph the shell's docs point at — that is a read, not a test.
