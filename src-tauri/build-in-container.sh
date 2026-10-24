@@ -76,8 +76,8 @@ with open(path) as fh:
     conf = json.load(fh)
 conf["version"] = want
 with open(path, "w") as fh:
-json.dump(conf, fh, indent=2)
-fh.write("\n")
+    json.dump(conf, fh, indent=2)
+    fh.write("\n")
 PY
 fi
 # Crate metadata, for tidiness: nothing reads it, but a stale one is a lie in `cargo tree`.
