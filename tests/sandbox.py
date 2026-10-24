@@ -478,6 +478,23 @@ class Sandbox:
     def post(self, path: str, body=None, timeout: float = 30.0) -> Response:
         return self.request("POST", path, body if body is not None else {}, timeout=timeout)
 
+    def post_raw(self, path: str, data: bytes, content_type: str = "application/zip",
+                 timeout: float = 60.0) -> Response:
+        """POST bytes exactly as given -- for the backup zip, which is not JSON."""
+        url = self.base_url + path
+        req = urllib.request.Request(url, data=data, method="POST",
+                                     headers={"Content-Type": content_type,
+                                              "Content-Length": str(len(data))})
+        try:
+            with self._opener.open(req, timeout=timeout) as resp:
+                return Response(resp.status, dict(resp.headers), resp.read(), url)
+        except urllib.error.HTTPError as e:
+            try:
+                payload = e.read()
+            finally:
+                e.close()
+            return Response(e.code, dict(e.headers or {}), payload, url)
+
 
 def _check() -> int:
     """`python -m tests.sandbox --check`: prove the sandbox works, then clean up."""

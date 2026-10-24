@@ -1174,6 +1174,39 @@ some.profile
     </div>
   </details>
 
+  <!-- Backup & restore. Collapsed and under the download settings because you
+       need it when you move computers, not every day -- but it has to be
+       findable without reading docs. The point it makes in one line: files live
+       in the archive folders, the app's memory does not. -->
+  <details class="settings" id="backupCard">
+    <summary>Backup &amp; restore <span class="hint" id="bkSummary"></span></summary>
+    <div class="hint" style="margin:0 0 10px">
+      Your <b>files</b> are in the archive folders — point a new copy of the app at
+      them and the gallery and shorts rebuild themselves. What cannot rebuild is the
+      app's memory: the <b>queue</b>, download settings, hidden items, bookmarks and
+      the <b>list of people</b> you imported. That is what this zip holds. One
+      automatic backup is kept per day; the newest 7 stay.
+    </div>
+    <div class="foldcard">
+      <div class="foldcard-head"><b>App data</b><span class="hint">this machine</span></div>
+      <div class="foldpath" id="bkStatePath">…</div>
+      <div class="foldpath" id="bkProfilesPath">…</div>
+      <div class="hint" id="bkPortable"></div>
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;padding:2px 0">
+      <button class="small" id="bkNowBtn">Back up now</button>
+      <button class="small" id="bkExportBtn">Export a copy…</button>
+      <button class="small" id="bkRestoreBtn">Restore from backup…</button>
+      <input type="file" id="bkFile" accept=".zip,application/zip" style="display:none">
+      <label class="hint" style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="bkSession" checked>
+        include Instagram login
+      </label>
+    </div>
+    <div class="hint" id="bkMsg"></div>
+    <div id="bkList" class="hint">—</div>
+  </details>
+
   <details class="settings" id="settingsBox">
     <summary>Download settings <span class="hint" id="setSummary"></span></summary>
     <div class="row" style="padding:12px 0 2px;gap:8px">
@@ -3578,6 +3611,122 @@ buildSettings();
 applySettingsPlatform("ig");
 setShowAllSettings(showAllSettings);   // paint the toggle from the saved value
 
+/* ---------- backup & restore ---------- */
+
+// Two facts the panel has to make obvious, because the rest is guesswork
+// otherwise: the archive already holds your files, and a restore replaces the
+// queue that is currently on screen.
+let bkInfo = null;
+
+function bkSay(msg, bad){
+  const el = $("bkMsg");
+  if(!el) return;
+  el.textContent = msg || "";
+  el.style.color = bad ? "var(--err)" : "var(--ok)";
+}
+
+async function loadBackupInfo(){
+  let info;
+  try{
+    info = await (await fetch("/api/backup/info")).json();
+  }catch(e){ info = null; }
+  if(!info || !info.ok){
+    $("bkList").textContent = "Backup list unavailable.";
+    return;
+  }
+  bkInfo = info;
+  const p = info.paths || {}, sz = info.sizes || {};
+  $("bkStatePath").innerHTML = "<b>Queue &amp; settings</b> · " + esc(p.state) + " · " + fmtBytes(sz.state);
+  $("bkProfilesPath").innerHTML = "<b>People, bookmarks, likes</b> · " + esc(p.profiles) + " · " + fmtBytes(sz.profiles);
+  $("bkPortable").textContent = info.portable
+    ? "One folder holds all of it (" + p.data_dir + "), login and caches included."
+    : "These two files are the app's memory. Launch with INSTA_DATA=/some/folder to keep them, the caches and the login together in one place.";
+  const list = info.backups || [];
+  $("bkSummary").textContent = list.length
+    ? "— " + list.length + " saved, newest " + list[0].ago
+    : "— none yet";
+  if(!list.length){
+    $("bkList").textContent = "No automatic backups yet — one is written the first time the app runs each day.";
+    return;
+  }
+  $("bkList").innerHTML = list.map(b =>
+    '<div class="row" style="gap:8px;padding:3px 0;align-items:center">' +
+      '<span style="min-width:110px">' + esc(b.ago) + "</span>" +
+      '<span class="hint" style="flex:1">' + esc(b.name) + " · " + fmtBytes(b.bytes) +
+        (b.session ? " · with login" : "") + "</span>" +
+      '<button class="small" data-bkdl="' + esc(b.name) + '">Download</button>' +
+    "</div>").join("");
+  $("bkList").querySelectorAll("[data-bkdl]").forEach(btn => {
+    btn.onclick = () => {
+      location.href = "/api/backup/download?name=" + encodeURIComponent(btn.dataset.bkdl);
+    };
+  });
+}
+
+$("bkNowBtn").onclick = async () => {
+  const btn = $("bkNowBtn");
+  btn.disabled = true;
+  bkSay("Writing a backup…");
+  try{
+    const r = await post("/api/backup/auto", {keep: 7, session: $("bkSession").checked});
+    if(r.ok){
+      bkSay("Saved " + (r.backup ? r.backup.path.split(/[\\/]/).pop() : "backup") +
+            " · " + fmtBytes(r.backup ? r.backup.bytes : 0));
+    } else bkSay(r.error || "Could not write a backup", true);
+  }catch(e){ bkSay("Could not write a backup", true); }
+  btn.disabled = false;
+  loadBackupInfo();
+};
+
+$("bkExportBtn").onclick = () => {
+  // A download, not a fetch: the browser picks the destination, and this works
+  // the same in the desktop shell and in a phone browser.
+  location.href = "/api/backup/export?session=" + ($("bkSession").checked ? "1" : "0");
+  bkSay("Exported — check your downloads.");
+};
+
+$("bkRestoreBtn").onclick = () => $("bkFile").click();
+
+$("bkFile").onchange = async () => {
+  const file = $("bkFile").files && $("bkFile").files[0];
+  $("bkFile").value = "";
+  if(!file) return;
+  const ok = confirm(
+    "Restore from " + file.name + "?\n\n" +
+    "This replaces the queue, download settings and the list of people saved in " +
+    "the app right now. Your files in the archive folders are not touched, and " +
+    "the current state is backed up first, so this can be undone.");
+  if(!ok) return;
+  bkSay("Restoring…");
+  $("bkRestoreBtn").disabled = true;
+  try{
+    const r = await fetch("/api/backup/import?parts=state,profiles,session",
+                          {method: "POST", headers: {"Content-Type": "application/zip"},
+                           body: file});
+    const data = await r.json().catch(() => ({ok: false, error: "Server sent no answer."}));
+    if(data.ok){
+      const bits = [];
+      if(data.restored) {
+        if(data.restored.state) bits.push("queue & settings");
+        if(data.restored.profiles) bits.push("people & bookmarks");
+        if(data.restored.session) bits.push("login");
+      }
+      bkSay("Restored " + (bits.join(", ") || "nothing") +
+            (data.root_changed ? " — archive path updated to " + data.archive_root : "") +
+            ". Downloads stay paused until you resume.");
+      // Everything on screen came from the old state.
+      if(typeof tick === "function") tick();
+      if(typeof loadExcluded === "function") loadExcluded();
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      bkSay(data.error || "Restore failed", true);
+    }
+  }catch(e){ bkSay("Restore failed: " + e, true); }
+  $("bkRestoreBtn").disabled = false;
+  loadBackupInfo();
+};
+loadBackupInfo();
+$("backupCard").addEventListener("toggle", function(){ if(this.open) loadBackupInfo(); });
 $("showAllSettingsBtn").onclick = () => setShowAllSettings(!showAllSettings);
 loadAutostart();
 // One header painter for the whole page. Leaving the Download tab's line to the

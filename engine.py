@@ -87,12 +87,68 @@ def cache_dir() -> Path:
     return Path(base) / "hardlywatching"
 
 
+def data_dir() -> Path | None:
+    """One folder for everything this app remembers, when INSTA_DATA is set.
+
+    Unset (the default) keeps the platform-correct split: config next to the
+    other apps' config, caches in the cache folder. Set it and state.json,
+    profiles.db, gallery-cache.db, thumbs, avatars and the instaloader session
+    all live under one directory -- which is what makes the whole app portable:
+    copy that folder and the archive to another machine and nothing is left
+    behind. Every one of those paths still has its own INSTA_* override, so this
+    only moves the defaults.
+    """
+    raw = (os.environ.get("INSTA_DATA") or "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+def data_path(name: str, default: Path) -> Path:
+    """``name`` under INSTA_DATA when it is set, otherwise ``default``."""
+    data = data_dir()
+    return (data / name) if data is not None else default
+
+
+def state_path() -> Path:
+    if os.environ.get("INSTA_STATE"):
+        return Path(os.environ["INSTA_STATE"])
+    data = data_dir()
+    if data is not None:
+        return data / "state.json"
+    return config_dir() / "hardlywatching" / "state.json"
+
+
+def profiles_path() -> Path:
+    """The intent database: profiles, bookmarks, likes, shorts weights."""
+    if os.environ.get("INSTA_PROFILES_DB"):
+        return Path(os.environ["INSTA_PROFILES_DB"])
+    data = data_dir()
+    if data is not None:
+        return data / "profiles.db"
+    return config_dir() / "hardlywatching" / "profiles.db"
+
+
+def cache_db_path() -> Path:
+    if os.environ.get("INSTA_CACHE_DB"):
+        return Path(os.environ["INSTA_CACHE_DB"])
+    data = data_dir()
+    if data is not None:
+        return data / "gallery-cache.db"
+    return config_dir() / "hardlywatching" / "gallery-cache.db"
+
+
 def instaloader_config_dir() -> Path:
     """Where instaloader keeps its sessions and stamps.
 
     Mirrors instaloader's own rule so we look in the right place on every OS:
-    %LOCALAPPDATA%\\Instaloader on Windows, ~/.config/instaloader elsewhere.
+    %LOCALAPPDATA%\\Instaloader on Windows, ~/.config/instaloader elsewhere --
+    unless INSTA_DATA is set, in which case the session travels with the rest of
+    the app's data instead of hiding in the config folder.
     """
+    data = data_dir()
+    if data is not None:
+        return data / "instaloader"
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "Instaloader"
@@ -100,8 +156,7 @@ def instaloader_config_dir() -> Path:
 
 
 OUTPUT_ROOT = Path(os.environ.get("INSTA_OUTPUT", Path.home() / "instagram"))
-STATE_FILE = Path(os.environ.get(
-    "INSTA_STATE", config_dir() / "hardlywatching" / "state.json"))
+STATE_FILE = state_path()
 INSTALOADER = shutil.which("instaloader") or str(Path.home() / ".local/bin/instaloader")
 
 
@@ -721,8 +776,7 @@ UPLOAD_EXTS = GALLERY_EXTS
 _MEDIA_CACHE: dict[str, tuple[tuple, list[str]]] = {}
 _MEDIA_CACHE_MAX = 512
 
-CACHE_DB = Path(os.environ.get(
-    "INSTA_CACHE_DB", config_dir() / "hardlywatching" / "gallery-cache.db"))
+CACHE_DB = cache_db_path()
 
 
 # Bumped whenever the way a folder's files become posts changes. Cached posts
@@ -2661,12 +2715,13 @@ def set_output_root(self, path: str, migrate: bool = False) -> tuple[bool, str]:
 THUMB_MAX = 320          # px on the long edge; the grid shows them ~190px
 THUMB_VIDEO_AT = 1.0     # seconds into a clip for its poster frame
 THUMB_CACHE = Path(os.environ.get(
-    "INSTA_THUMBS", cache_dir() / "thumbs"))
+    "INSTA_THUMBS", data_path("thumbs", cache_dir() / "thumbs")))
 
 # Profile pictures fetched from the site, which the archive does not carry.
 # Kept in the cache rather than in the profile folder: everything in a profile
 # folder is scanned as media, so a picture put there appears as an extra post.
-AVATAR_CACHE = Path(os.environ.get("INSTA_AVATARS", cache_dir() / "avatars"))
+AVATAR_CACHE = Path(os.environ.get(
+    "INSTA_AVATARS", data_path("avatars", cache_dir() / "avatars")))
 
 # Hover-preview clips: a few silent seconds of the video, small enough to fetch
 # on hover. A 4 MB source becomes ~180 KB, so sweeping the cursor over a row of

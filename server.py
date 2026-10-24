@@ -289,6 +289,41 @@ def get_engine() -> Engine:
     return _engine
 
 
+def reload_engine() -> None:
+    """Rebuild the in-process engine from the files on disk.
+
+    Used after a restore has replaced state.json/profiles.db underneath a running
+    app. The old engine is stopped first (its workers are daemons that exit on
+    stop_requested) and its shared database connection is dropped, because a
+    connection opened before the swap would keep serving rows that are no longer
+    in the file.
+    """
+    global _engine
+    old, _engine = _engine, None
+    if old is not None:
+        try:
+            with old.lock:
+                old.stop_requested = True
+        except Exception:
+            pass
+        # Close the listing cache's handle so the file is not kept open by a
+        # dead engine. The cache is shared module state, so this is a no-op for
+        # the new engine, which reuses it.
+        try:
+            import gc
+            del old
+            gc.collect()
+        except Exception:
+            pass
+    try:
+        from profile_db import reset_shared
+        reset_shared()
+    except Exception:
+        pass
+    _engine = Engine()
+    _engine.start()
+
+
 # Local SQLite record of imported profiles. Created lazily and shared, so the
 # connection is not reopened per request.
 _profile_db_inst = None
@@ -913,6 +948,76 @@ class Handler(BaseHTTPRequestHandler):
     # you ever need to push something bigger.
     MAX_UPLOAD = int(os.environ.get("INSTA_MAX_UPLOAD", 512 * 1024 * 1024))
 
+    def _backup_import(self) -> None:
+        """Restore state.json / profiles.db from a backup zip in the body.
+
+        Refuses while anything is downloading: the workers write state.json as
+        they go, so a swap underneath them would be undone a second later or
+        corrupt the queue. The pre-restore files are themselves backed up first,
+        so a restore that turns out to be the wrong zip can be undone the same
+        way.
+        """
+        from urllib.parse import parse_qs
+        import backup as _b
+
+        q = parse_qs(urlparse(self.path).query)
+        root_arg = (q.get("root") or [""])[0].strip()
+        parts = {x.strip() for x in (q.get("parts") or ["state,profiles,session"])[0].split(",")
+                 if x.strip()}
+
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return self._json({"ok": False, "error": "Empty upload."}, 400)
+        if n > 128 * 1024 * 1024:
+            return self._json({"ok": False, "error": "That backup is larger than 128MB."}, 413)
+
+        fd, tmp_name = tempfile.mkstemp(prefix="hw-restore-", suffix=".zip")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                remaining = n
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+
+            eng = get_engine()
+            active = [j for j in list(eng.jobs.values())
+                      if getattr(j, "status", "") in ("queued", "running", "retrying")]
+            if active:
+                return self._json({"ok": False, "error":
+                                   f"{len(active)} job(s) are queued or running. Clear the "
+                                   "queue first — a restore overwrites it."}, 409)
+
+            # Keep what is being replaced, so this is reversible.
+            pre = None
+            try:
+                pre = _b.export_zip(_b.backups_dir() /
+                                    ("hw-prerestore-" + time.strftime("%Y%m%d-%H%M%S") + ".zip"),
+                                    include_session=False)
+            except FileNotFoundError:
+                pre = None
+
+            summary = _b.restore(tmp, archive_root=Path(root_arg) if root_arg else None,
+                                 wanted=parts)
+        except Exception as exc:
+            return self._json({"ok": False, "error": str(exc)}, 400)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+        reload_engine()
+        summary["pre_restore_backup"] = pre.get("path") if pre else ""
+        summary["paths"] = _b.paths()
+        return self._json(summary)
+
     def _upload(self) -> None:
         """Accept files from the browser and write them into a profile folder.
 
@@ -1352,6 +1457,74 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"version": app_version(), "pid": os.getpid(),
                                "port": port, "started": STARTED_AT,
                                "api": API_VERSION})
+        # ---------------- backup / restore ----------------
+        if p == "/api/backup/info":
+            # Everything the Backup card needs: where the files are on this
+            # machine, how big they are, and which automatic backups exist.
+            import backup as _b
+            info = _b.paths()
+            sizes = {}
+            for key in ("state", "profiles"):
+                try:
+                    sizes[key] = Path(info[key]).stat().st_size
+                except OSError:
+                    sizes[key] = 0
+            age = _b.last_backup_age()
+            return self._json({
+                "ok": True, "paths": info, "sizes": sizes,
+                "portable": bool(info.get("data_dir")),
+                "backups": _b.list_backups(),
+                "last_backup_age": age,
+                "counts": _b._counts(Path(info["profiles"]), None),
+            })
+
+        if p == "/api/backup/export":
+            # Downloads the portable zip. ?session=1 adds the instaloader
+            # session so the new machine does not have to log in again.
+            from urllib.parse import parse_qs
+            import backup as _b
+            q = parse_qs(urlparse(self.path).query)
+            want_session = (q.get("session") or ["0"])[0] in ("1", "true", "yes")
+            fd, tmp_name = tempfile.mkstemp(prefix="hw-backup-", suffix=".zip")
+            os.close(fd)
+            tmp = Path(tmp_name)
+            try:
+                manifest = _b.export_zip(tmp, include_session=want_session)
+                data = tmp.read_bytes()
+            except FileNotFoundError as exc:
+                return self._json({"ok": False, "error": str(exc)}, 409)
+            except Exception as exc:
+                return self._json({"ok": False, "error": f"backup failed: {exc}"}, 500)
+            finally:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            stamp = time.strftime("%Y-%m-%d")
+            name = f"hardlywatching-backup-{stamp}.zip"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("X-Backup-Bytes", str(len(data)))
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+
+        if p == "/api/backup/download":
+            # One of the automatic backups, by name (no paths from the client).
+            from urllib.parse import parse_qs
+            import backup as _b
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("name") or [""])[0]
+            item = next((b for b in _b.list_backups() if b["name"] == name), None)
+            if item is None:
+                return self.send_error(404)
+            return self._serve_file(Path(item["path"]))
+
         if p == "/api/job-log":
             # Full log for one job. The state poll carries logs only for
             # running/failed jobs, so an opened log panel fetches the rest here.
@@ -1627,7 +1800,24 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/upload":
             return self._upload()
 
+        # The backup zip is the raw request body (no multipart wrapper), so it
+        # is handled before the JSON reader, exactly like an upload.
+        if p == "/api/backup/import":
+            return self._backup_import()
+
         body = self._read_json()
+
+        if p == "/api/backup/auto":
+            # Write one dated backup now; the card shows the ones already there.
+            import backup as _b
+            try:
+                keep = int(body.get("keep") or _b.DEFAULT_KEEP)
+                manifest = _b.auto_backup(keep=keep,
+                                          include_session=bool(body.get("session", True)))
+            except Exception as exc:
+                return self._json({"ok": False, "error": str(exc)}, 500)
+            return self._json({"ok": True, "backup": manifest,
+                               "backups": _b.list_backups()})
 
         if p == "/api/profile-zip/start":
             # Kick off a build in the background and hand back its token; the
@@ -2573,6 +2763,16 @@ def main() -> int:
     # Clear interrupted-download leftovers from a previous run. Backgrounded so
     # housekeeping never delays the UI.
     eng.cleanup_partials_at_startup()
+    # One dated backup a day, in the background, keeping a week. This is the
+    # thing that makes "delete it and move to a new computer" recoverable even
+    # if nobody pressed Export: the zip is already there, next to the app's data.
+    def _auto_backup() -> None:
+        try:
+            import backup as _b
+            _b.auto_backup_if_due()
+        except Exception:
+            pass
+    threading.Thread(target=_auto_backup, daemon=True, name="backup").start()
     # Resume queued work -- only when actually run as the server. Importing
     # this module must never start a worker against the user's real queue.
     eng.kick_if_work()
