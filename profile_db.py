@@ -1013,6 +1013,18 @@ def _shared_db() -> "ProfileDB":
     """
     global _shared
     if _shared is None:
-        from engine import config_dir
-        _shared = ProfileDB(config_dir() / "hardlywatching" / "profiles.db")
+        from engine import profiles_path
+        _shared = ProfileDB(profiles_path())
     return _shared
+
+
+def reset_shared() -> None:
+    """Drop the shared connection so the next caller reopens the file.
+
+    Used after a restore replaces profiles.db underneath a running app: the old
+    connection would otherwise keep serving the rows from before the swap.
+    """
+    global _shared
+    old, _shared = _shared, None
+    if old is not None:
+        old.close()
