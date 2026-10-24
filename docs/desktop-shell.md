@@ -182,8 +182,190 @@ polling `/api/state` about every 1.2 s.
 
 ### Not done yet
 
-`cargo tauri build --bundles deb|appimage` has not run — the container build only produced a debug
-binary. Bundling, and wiring the Python sidecar in as an `externalBin` (spawn-or-attach), is card
-M2-WIRE on the kanban.
+`cargo tauri build --bundles deb|appimage` has not run in *that* session — the container build only
+produced a debug binary. Both bundles, and the Python sidecar wired in (spawn-or-attach), landed in
+M2-WIRE; see "The app ships its own server" below.
+
+## The app ships its own server (M2-WIRE)
+
+A packaged HardlyWatching needs **no system Python, no venv and no separate server**: the frozen
+backend from `packaging/sidecar/` is installed inside the package, and the shell starts it only when
+nothing else is already running.
+
+### Installed layout
+
+```
+/usr/bin/hardlywatching                                   the shell                          4.6 MB
+   <server root>/hardlywatching-server                    frozen entry point                 4.7 MB
+   <server root>/_internal/                               CPython 3.14, Pillow, pillow-heif   85 MB
+   <server root>/bin/                                     yt-dlp, ffmpeg, ffprobe             39 MB
+```
+
+`<server root>` is `usr/lib/HardlyWatching/sidecar` in both bundles — the .deb installs it there,
+and `pack-appimage.sh` puts the same directory inside the AppDir. `tauri.conf.json` states it once:
+
+```json
+"linux": { "deb": { "files": { "/usr/lib/HardlyWatching/sidecar": "../dist/sidecar" } } }
+```
+
+(The map reads destination-first, source-second; Tauri's own docs are easy to misread here. The
+AppImage does not use this key — see "Building the bundles".) Nothing is configured at runtime:
+`sidecar_bases()` in `main.rs` walks these candidates, first hit wins:
+
+| candidate | for |
+|---|---|
+| `$HWA_SIDECAR` | development and tests; **authoritative** when set, so "use this one" and "use none" both work |
+| `<exe dir>/sidecar/` | a tree staged next to the binary by hand (a plain `cargo build` no longer stages one) |
+| `<exe dir>/../lib/HardlyWatching/sidecar/` | the installed .deb (`/usr/bin/hardlywatching` -> `/usr/lib/...`) |
+| `<exe dir>/../share/HardlyWatching/sidecar/` | the AppImage / a prefix install |
+| `$APPDIR/usr/share/HardlyWatching/sidecar/`, `$APPDIR/usr/lib/HardlyWatching/sidecar/` | the AppImage |
+| `/usr/lib/HardlyWatching/sidecar/`, `/usr/share/HardlyWatching/sidecar/`, `/usr/lib/hardlywatching/`, `/usr/local/lib/HardlyWatching/sidecar/` | fixed installs |
+
+When none of them exists the shell prints every path it tried, so a broken package says where it
+looked instead of shrugging.
+
+### Why onedir, not a onefile externalBin
+
+Both shapes were built from the same spec and measured on this machine (2026-10-23):
+
+| shape | files | on disk | cold start -> `/api/health` 200 | ships yt-dlp/ffmpeg |
+|---|---|---|---|---|
+| **onedir, `bundle.resources` (shipped)** | 132 files, 14 dirs | 128 MB (85 `_internal`, 39 `bin/`, 4.7 exe) | **0.08 s / 0.08 s / 0.09 s** (`--attach` with no instance: 0.09 s) | yes, `sidecar/bin/` |
+| onefile, `bundle.externalBin` (rejected) | 1 | 32 MB | 0.31 s / 0.32 s / 0.31 s, **plus ~85 MB unpacked into `$TMPDIR` on every launch** | no |
+
+The onefile variant is still buildable for comparison (`HWA_ONEFILE=1`, see
+`packaging/sidecar/hardlywatching.spec`), but it lost on four counts:
+
+1. **It cannot carry the external tools.** `entry.py` puts `<bundle>/bin` first on `PATH` so
+   `engine.py` finds the bundled `yt-dlp`/`ffmpeg`/`ffprobe` by bare name. A onefile payload has no
+   `<bundle>/bin` to put them in, so they would have to ship as separate resources *and* the bundle
+   would need a new search path. Onedir already does this correctly, verified with `--self-check`.
+2. **It pays on every launch, not once.** 0.31 s versus 0.08 s here, because each start unpacks the
+   whole runtime into `$TMPDIR`; that also needs a writable *and executable* temp dir, which a
+   hardened box with `noexec /tmp` does not have.
+3. 128 MB installed versus 32 MB is the honest cost of (1). Compression narrows it: the .deb is
+   76,281,736 bytes (72.75 MiB, `Installed-Size: 136430` KB) and the AppImage is 73,464,312 bytes
+   (70.06 MiB).
+4. Both layouts install into `usr/bin` plus one `HardlyWatching` directory, so the .deb's file list
+   stays one clean subtree that `apt remove` deletes whole.
+
+### Spawn or attach
+
+`main()` decides **before** the GTK event loop exists (that is what keeps `--headless` honest), in
+this order:
+
+| # | condition | behaviour |
+|---|---|---|
+| 1 | `HW_SERVER_URL` set | attach; never spawns, never stops anything |
+| 2 | `serverUrl` in `app-config.json` | same |
+| 3 | `hardlywatching-server --attach` returns a URL | attach to the instance that owns the state-file lock, and leave it running |
+| 4 | `/api/health` answers on the default URL (`http://$INSTA_HOST:$INSTA_PORT`, 8765 by default) | attach, spawn nothing |
+| 5 | none of the above | spawn the bundled server `--no-browser --port <free>`, wait for `/api/health`, then load it |
+
+**Autostart parity.** `hardlywatching.service` (or `run.py`, or a terminal `server.py`) owns the
+lock, so steps 3 and 4 find it and the desktop app attaches to the running service instead of
+starting a second one — two servers on one state file would mean two queue workers on one archive.
+The app never stops a server it did not start: only the child from step 5 is terminated, and only
+after it answered `/api/health`. A test that sets `HW_SERVER_URL` is therefore guaranteed to leave
+whatever is on that port untouched.
+
+**Lifecycle of the child we do own** (`OwnedChild`):
+
+- `SIGTERM` first, so `server.py` removes its lock and closes the socket cleanly; `SIGKILL` after a
+  6 s grace period.
+- On window close (`RunEvent::Exit`), after `run()` returns, and from `Drop` as a backstop.
+- `PR_SET_PDEATHSIG=SIGTERM` (Linux) on the child, so even `SIGKILL`ing the shell cannot leave a
+  server behind holding the port or the lock.
+- A child that never answered `/api/health` is killed and reaped before the error page is shown.
+
+**Logging.** The child's stdout/stderr are piped into the app's log line by line, prefixed
+`hardlywatching[server]`. That needed one fix at the source: a frozen interpreter writing to a pipe
+is block-buffered, so `entry.py` reconfigures its own stdout/stderr to line buffering (`PYTHONUNBUFFERED`
+does not survive the PyInstaller bootloader). Without it the shell saw the server's banner only when
+the server exited.
+
+### When it goes wrong
+
+- No bundled server and nothing listening: a window titled
+  `HardlyWatching — could not start the server` showing a readable page (written to
+  `$XDG_CACHE_HOME/ing.hardlysleep.hardlywatching/startup-error.html`) that lists the paths tried and
+  the server's last output. Headless, the same message goes to stderr and the process exits **1**.
+- An attached server that is not listening yet: title says `server unreachable at <url>`, and the
+  existing 3 s retry loads the UI as soon as it answers.
+- Headless with a server available (or one it would have started): prints the resolved URL and
+  `no DISPLAY/WAYLAND_DISPLAY -- not opening a window`, exit **0** — and never spawns, because a
+  headless start must not leave a server running.
+
+### One version number
+
+`VERSION` at the repo root is the only one a human edits (and `scripts/sync-upstream.sh`
+sets it from the upstream tag). Two build-time copies follow it automatically:
+
+| copy | why it exists | who keeps it in step |
+|---|---|---|
+| `src-tauri/tauri.conf.json` `version` | names the DEB/AppImage and is shown in the app | `build-in-container.sh` rewrites it before a build; `scripts/sync-upstream.sh` rewrites it when it bumps `VERSION` |
+| `src-tauri/Cargo.toml` `version` | crate metadata only; nothing reads it for the bundle | `build-in-container.sh` rewrites it before a build |
+
+`tests/test_release_version.py` fails if any of the three disagree, or if `bundle.targets` is
+`"all"` again (see the AppImage note). Before that test existed, a 0.2.0 server shipped inside a DEB
+called `HardlyWatching_0.1.0_amd64.deb`.
+
+### Building the bundles
+
+```bash
+src-tauri/build-in-container.sh deb        # -> src-tauri/target/release/bundle/deb/*.deb
+src-tauri/build-in-container.sh appimage   # -> src-tauri/target/release/bundle/appimage/*.AppImage
+```
+
+Both targets build `dist/sidecar` on the host first if it is missing (that is
+`packaging/sidecar/build.sh`; `HWA_SKIP_SIDECAR=1` disables the convenience). stdout of every build
+is kept in `.build-logs/` (git-ignored) for audit.
+
+**Why the AppImage is not built by `cargo tauri build --bundles appimage`.** Tauri's AppImage step
+runs `linuxdeploy`, which deploys the dependencies of every ELF it finds in the AppDir. The frozen
+server is a tree of ELFs whose shared libraries PyInstaller renames with a hash
+(`libheif-c26addd2.so.1.23.2`, `libavif-8a7f9d56.so.16.4.2`, …); those only resolve through the
+bootloader's own `LD_LIBRARY_PATH` at run time, so the build stops at
+`ERROR: Could not find dependency: libheif-c26addd2.so.1.23.2`. Everything tried, and what happened:
+
+| attempt | result |
+|---|---|
+| put the tree in `usr/lib` | fails on the first hashed library (`libavif`) |
+| move the tree to `usr/share` | fails the same way — linuxdeploy scans the whole AppDir |
+| `LD_LIBRARY_PATH=<tree>/_internal` | resolves the hashed names, then linuxdeploy deploys a second 85 MB copy and still stops on `bin/ffmpeg`'s `libavdevice.so.62` |
+| `patchelf --set-rpath $ORIGIN` on the frozen libs | modifies files PyInstaller generates; not shipped that way |
+| `--exclude-library 'lib*-????????.so*'` | clears one hashed name per run, and Tauri offers no way to pass extra linuxdeploy arguments |
+| `bundle.resources` + `--config` override | `--config` merges instead of replacing, so the tree is still copied |
+
+So `src-tauri/pack-appimage.sh` packages the AppDir with `appimagetool` directly: `cargo build
+--release`, the tree, a desktop file, an icon, `AppRun` -> `usr/bin/hardlywatching`. Nothing is
+patched or rewritten afterwards, and the payload is byte-identical to the .deb's. What is given up:
+linuxdeploy's library deployment, i.e. GTK 3 and WebKitGTK 4.1 come from the host — which is what
+Tauri documents for AppImages anyway (WebKitGTK is not relocatable, and `linuxdeploy-plugin-gtk` only
+copies gdk-pixbuf loaders and a theme). Both bundles run on the same machines for that reason.
+
+`src-tauri/build-in-container.sh appimage` is therefore not a `cargo tauri build` call; `deb` and
+`build` are unchanged. A plain `cargo tauri build` (all targets) still fails on the AppImage half for
+the reason above — use the script.
 
 
+
+### What was actually run for this card (2026-10-23, this machine)
+
+| check | result |
+|---|---|
+| `build-in-container.sh deb` | `Finished 1 bundle at: .../bundle/deb/HardlyWatching_0.1.0_amd64.deb (72.75 MiB)`, exit 0 |
+| `build-in-container.sh appimage` | `...HardlyWatching_0.1.0_amd64.AppImage (71M, 73464312 bytes)`, exit 0 |
+| `.deb` payload | 165 members, `usr/bin/hardlywatching` + `usr/lib/HardlyWatching/sidecar/{hardlywatching-server,bin/yt-dlp,bin/ffmpeg,bin/ffprobe}` all `-rwxr-xr-x` |
+| `.deb` installed and run (temp HOME, temp `INSTA_*`, port 8899, `HW_SERVER_URL` unset) | spawned `usr/lib/HardlyWatching/sidecar/hardlywatching-server --no-browser --port 8899` as a child, `GET /api/health` -> `200`, window created |
+| AppImage run (same isolation) | found the server at `$APPDIR/usr/lib/HardlyWatching/sidecar`, spawned it, `200`, window created |
+| attach (`HW_SERVER_URL=http://127.0.0.1:8899`, sandbox server already there) | log: `url source = env HW_SERVER_URL`, `window 'main' ... loading`, 0 sidecar processes started, sandbox server still answering after the app exited |
+| window close (wmctrl) on the spawned server | `stopping the server we started (... SIGTERM)`, `server pid ... exited (exit status: 0)`, no `hardlywatching-server` left, port 8899 free |
+| `SIGTERM` to the app (deb, self-spawned server) | child gone via `PR_SET_PDEATHSIG`, port 8899 free, no lock left |
+| headless, nothing running | `server url = http://127.0.0.1:8899/`, `no DISPLAY/WAYLAND_DISPLAY -- not opening a window`, exit 0, no server started |
+| `DISPLAY` set but unusable (no X authority) | `FATAL could not open a window: Failed to initialize gtk backend!`, `the server is running at ... -- open it in a browser, or check DISPLAY/WAYLAND_DISPLAY and XAUTHORITY`, exit 2, spawned server stopped |
+| `scripts/ci-local.sh` | `PASS: Ran 46 tests in 5.526s (compile check + unittest discover, Python 3.14.7)` |
+
+The windowed runs used the live `DISPLAY=:0` (XWayland) of this desktop, since `xvfb-run`, `Xvfb` and
+`weston` are not installed here; each run used a throwaway `HOME`, throwaway `INSTA_*` paths, port
+8899, a stub `instaloader` first on `PATH`, and never touched port 8765 or `hardlywatching.service`.

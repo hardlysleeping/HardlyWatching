@@ -266,7 +266,25 @@ def self_check(server) -> int:
     return 0 if ok else 1
 
 
+def _line_buffer_output() -> None:
+    """Make our own logs reach the pipe as they are written.
+
+    A frozen interpreter writing to a pipe is block-buffered, and this process is
+    normally started by the desktop shell with stdout/stderr on pipes. Without
+    this the shell would see the whole banner only when the server stops, which
+    is exactly when it is useless -- and "already running at <url>" would never
+    arrive in time. PYTHONUNBUFFERED does not survive the bootloader, so ask the
+    streams directly.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True, write_through=True)
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> int:
+    _line_buffer_output()
     opts = parse_args(sys.argv[1:])
 
     if opts["help"]:
@@ -318,10 +336,11 @@ def main() -> int:
     _install_sigterm_shutdown()
 
     try:
-        server.main()
+        rc = server.main()
     except KeyboardInterrupt:
         print("\nstopped.", file=sys.stderr)
-    return 0
+        rc = 0
+    return rc
 
 
 if __name__ == "__main__":
