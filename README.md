@@ -72,7 +72,9 @@ can start logins and delete files. Do not expose it to the internet.
 ## Screenshots
 
 **Queue** — paste profiles, add them, start. Instagram and TikTok download in
-parallel, one profile each, with the waiting and finished lists side by side.
+parallel, one profile each, with the waiting and finished lists side by side. The
+two lists line up on the same row, and the occasional panels live behind
+**Options…** rather than stacked under the paste box.
 
 ![The queue screen: profiles waiting and finished, with the page and search controls](docs/queue.png)
 
@@ -122,6 +124,25 @@ marked, plus grabbing a login out of your browser.
 
 ![The sessions panel: saved sessions with Use buttons, one marked in use](docs/sessions-panel.png)
 
+**Options** — download settings, backup and restore, phone access and the
+excluded list were four collapsed panels between the paste box and the queue.
+They are one button and a tab strip now, so the queue is what the page shows.
+
+![The Options dialog on its Download settings tab](docs/options.png)
+
+**Backup & restore** — export everything the app *remembers* into one zip, and
+restore it on any copy of the app, here or on another machine. The archive
+folders are not in the zip; the gallery and shorts already rebuild from them.
+
+![Options, the Backup & restore tab, with saved backups and an export button](docs/options-backup.png)
+
+**On a phone** — the same app at phone width. The phone card in Options has the
+switch, the address to type and a copy button.
+
+![The queue on a 390px-wide screen](docs/queue-phone.png)
+
+![Options, phone access, with the switch on and the address to type](docs/options-phone.png)
+
 ---
 
 ## Install and run
@@ -169,6 +190,29 @@ version, its process id, the port it holds, when it started and the API number:
 {"version": "0.2.0", "pid": 124968, "port": 8899, "started": "2026-10-23T16:09:57-07:00", "api": 1}
 ```
 
+### Install a release build
+
+Every [release](https://github.com/hardlysleeping/HardlyWatching/releases) has
+Linux x86_64 binaries, built from the tag. They are the same app as
+`python3 run.py` — one web UI, one queue, one engine — just packaged.
+
+| | how | where its files go |
+|---|---|---|
+| **Flatpak** | [Install](https://hardlysleeping.github.io/HardlyWatching/hardlywatching.flatpakref) — opens your software installer, or `flatpak install https://hardlysleeping.github.io/HardlyWatching/hardlywatching.flatpakref` | `~/.var/app/io.github.hardlysleeping.HardlyWatching`; port 8777 |
+| **AppImage** | `chmod +x HardlyWatching_*_amd64.AppImage` and run it | same as `run.py` |
+| **DEB** | `sudo apt install ./HardlyWatching_*_amd64.deb`, then launch from the menu | same as `run.py` |
+
+The flatpak carries its own Python, ffmpeg, instaloader and yt-dlp, keeps its own
+queue and cache, and listens on **8777** so it cannot collide with an install
+already running on 8765. It needs the `org.gnome.Platform//49` runtime from
+Flathub, which the installer fetches; updates arrive with `flatpak update`. The
+AppImage and DEB use your system's WebKitGTK, GTK3 and ffmpeg, so they want a
+glibc 2.38+ distribution (Fedora 39+, Ubuntu 24.04+).
+
+A release build keeps its state where that build expects it. Nothing follows the
+source tree around: to move a queue from one copy to another, export from
+**Options… → Backup & restore** and restore the zip on the other side.
+
 ### Other ways to start it
 
 ```bash
@@ -211,21 +255,32 @@ either you get a plain terminal prompt with the same commands (`start`, `stop`,
 
 ### Reach it from your phone
 
-It listens on `127.0.0.1` by default. To use it from another device on your own
-network or over Tailscale:
+**Options… → Open on your phone** is the whole switch. Turn it on and the card
+shows the address to type into the phone — the machine's LAN address, and the
+Tailscale one if you have it — plus a copy button. Open that address on the phone
+and the browser's *Add to Home Screen* puts a shortcut there; `/shorts` on its
+own is the phone-shaped feed.
+
+The switch is a gate, not a password. While it is on, anything that can reach the
+port can use the whole app: the queue, download settings, backup export, file
+deletion. Turn it off when you are not using it, and do not put the port on the
+internet. The socket is open on all interfaces so the address in the card works,
+but requests from other machines are refused with a short explanation unless the
+switch is on.
+
+Off, requests from other machines are refused. The server binds every interface
+either way, because a loopback-only socket cannot answer the phone at all; the
+switch is what decides. If you would rather not have the socket open, or you are
+starting it from a script, the same thing is an environment variable:
 
 ```bash
-INSTA_HOST=0.0.0.0 python3 run.py
+INSTA_HOST=127.0.0.1 python3 server.py   # loopback only: the phone can never reach it
+INSTA_HOST=0.0.0.0   python3 server.py   # all interfaces, still gated by the switch
 ```
 
-Then open `http://<machine-ip>:8765` — e.g. `http://100.x.y.z:8765` over
-Tailscale, or `http://192.168.1.50:8765` on the same wifi. On Windows,
-`set INSTA_HOST=0.0.0.0` first. For the systemd service, `systemctl --user edit
-hardlywatching` and add `Environment=INSTA_HOST=0.0.0.0` under `[Service]`.
-
-There is no authentication — see the warning at the top. The browser-login button
-opens a terminal on the *server* machine, so login only makes sense from the
-machine it runs on.
+The browser-login button opens a terminal on the *server* machine, so logging in
+only makes sense on the machine it runs on — from the phone, the app is a viewer
+and a queue.
 
 ### Autostart (Linux)
 
@@ -496,6 +551,34 @@ only serves a few vertical renditions and yt-dlp reports height as the **long**
 side, so 1080p means 1080x1920 — hence the familiar rungs of 540, 720 or 1080.
 
 ---
+
+## Backup and restore
+
+The archive is just folders: point any copy of the app at them and the gallery and
+shorts rebuild from the files. What does *not* come back that way is everything the
+app remembers **about** them — the queue and its order, download settings, hidden
+and excluded profiles, delete tombstones, bookmarks and their categories, likes,
+shorts history. That is what a backup is for.
+
+**Options… → Backup & restore:**
+
+- **Back up now** writes one into the app's own backups folder. It also does this
+  itself once a day; the newest seven are kept.
+- **Export a copy…** downloads the same thing as a zip: `state.json`,
+  `profiles.db`, and a manifest. Optionally the instaloader session too, so the
+  other machine does not have to spend a rate-limited login.
+- **Restore from backup…** takes a zip back in, here or on another copy of the
+  app (web, AppImage, DEB, flatpak — any of them).
+
+Restoring replaces the queue, settings and people list, **not** the archive
+folders: no media is moved, downloaded or deleted by a restore. The current state
+is snapshotted first, so it can be undone, a mismatched archive path is rewritten
+to the folder you are actually using, and the restored queue comes back paused —
+nothing starts downloading until you press Start.
+
+`gallery-cache.db` is deliberately not in the zip. It is a folder-listing cache
+keyed by mtime and inode, it rebuilds itself, and copying it would only carry
+stale rows.
 
 ## Settings worth knowing
 

@@ -5,6 +5,14 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A flatpak repository, so the app installs like an app.** The releases carried
+  a `.flatpak` file, which is a download with an install command; there is now a
+  signed repository at <https://hardlysleeping.github.io/HardlyWatching/> and a
+  `.flatpakref` that opens in a software installer from one click. `flatpak
+  update` works from then on.
+
 ### Fixed
 
 - **The Flatpak listens on 8777, not 8765.** The bundled shell attaches to
@@ -12,6 +20,10 @@ versioning is [SemVer](https://semver.org/).
   network, so on 8765 it would have driven a separately running install instead
   of its own copy. The flatpak now has its own port; queue, settings and gallery
   cache were already separate.
+- **The two queue headings' rows are the same height.** "Waiting" and "Finished"
+  started on the same line, but the finished head carries sort and Clear, so the
+  search boxes under them sat 8px apart. A common minimum height levels the rows
+  below the headings.
 
 ## [0.3.1] — 2026-10-24
 
