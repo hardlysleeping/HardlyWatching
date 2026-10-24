@@ -25,6 +25,11 @@
     <category>Graphics</category>
   </categories>
   <releases>
+    <release version="0.3.2" date="2026-10-24">
+      <description>
+        <p>Find byte-identical copies in the archive and move them to Trash.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-10-24"/>
   </releases>
 </component>
