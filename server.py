@@ -2827,8 +2827,30 @@ def main() -> int:
             srv.server_close()
         except Exception:
             pass
+        # Ask the workers to stop and give them a moment. They are daemon
+        # threads that may be inside sqlite or zlib right now; letting the
+        # interpreter tear those modules down underneath a live thread is what
+        # turns a Ctrl-C into a segfault (seen on CI, not on this box). main()
+        # returns, and __main__ leaves through os._exit for the same reason.
+        try:
+            eng.stop_requested = True
+            for t in threading.enumerate():
+                if t is not threading.current_thread() and t.daemon:
+                    t.join(timeout=2.0)
+        except Exception:
+            pass
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _code = main()
+    # Skip interpreter finalization: the lock is already removed and the state
+    # already saved, so there is nothing left that shutdown would do for us,
+    # and it is the part that can crash under a thread that has not noticed the
+    # stop flag yet.
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(_code or 0)
