@@ -1374,7 +1374,7 @@ some.profile
       <button class="small" id="dupStopBtn" style="display:none">Stop</button>
       <span class="hint" id="dupMsg"></span>
     </div>
-    <div id="dupList" class="hint" style="margin-top:8px">—</div>
+    <div id="dupList" class="hint" style="margin-top:8px">Not scanned yet.</div>
     <div class="row" id="dupActions" style="display:none;gap:8px;align-items:center;margin-top:8px">
       <button class="small" id="dupTrashBtn">Move selected to Trash</button>
       <span class="hint" id="dupTrashMsg"></span>
@@ -4037,6 +4037,14 @@ async function loadDupes(){
   dupRender(st);
   if(st.running) dupPoll();
 }
+// The tab strip calls showOptTab, which calls loadDupes, but a report that
+// already exists should still paint the first time the panel is opened even if
+// that path is interrupted, so the tab also loads it directly (the request is a
+// read, and cheap).
+(function(){
+  const tab = document.querySelector('.dlgtab[data-opt="dupesCard"]');
+  if(tab) tab.addEventListener("click", function(){ loadDupes(); });
+})();
 $("dupScanBtn").onclick = async function(){
   DUP.sel.clear();
   if(DUP.report && DUP.report.groups) DUP.report.groups.forEach(function(g){ g.seen = false; });
