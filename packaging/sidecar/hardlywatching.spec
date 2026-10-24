@@ -107,6 +107,17 @@ try:
 except Exception as exc:  # pragma: no cover
     print(f"WARNING: pillow-heif not bundled ({exc}); HEIC photos will not thumbnail")
 
+# instaloader: engine.py shells out to a program literally named
+# ``instaloader`` (it resolves it with shutil.which), so bundling the library is
+# only half the job -- build.sh drops a ``bin/instaloader`` wrapper that
+# re-enters this same frozen binary with ``--run-instaloader``. The package has
+# to be inside the bundle for that wrapper to have anything to run: it has one
+# dependency (requests, already here via yt-dlp) and no data files.
+try:
+    hiddenimports += collect_submodules("instaloader")
+except Exception as exc:  # pragma: no cover
+    print(f"WARNING: instaloader not bundled ({exc}); Instagram downloads will fail")
+
 # ---------------------------------------------------------------------------
 # Analysis / bundle
 # ---------------------------------------------------------------------------
