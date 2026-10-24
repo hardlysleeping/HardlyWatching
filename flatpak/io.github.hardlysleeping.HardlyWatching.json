@@ -52,7 +52,7 @@
       "buildsystem": "simple",
       "build-commands": [
         "install -d /app/share/hardlywatching /app/lib/hardlywatching /app/share/applications /app/share/icons/hicolor/512x512/apps /app/share/metainfo",
-        "install -m644 server.py engine.py backup.py shorts.py profile_db.py tiktok_engine.py tiktok_handles.py index.html shorts.html app.webmanifest shorts.webmanifest VERSION /app/share/hardlywatching/",
+        "install -m644 server.py engine.py backup.py dupes.py shorts.py profile_db.py tiktok_engine.py tiktok_handles.py index.html shorts.html app.webmanifest shorts.webmanifest VERSION /app/share/hardlywatching/",
         "install -m644 icon-192.png icon-512.png icon-512-maskable.png apple-touch-icon.png favicon.ico /app/share/hardlywatching/",
         "install -Dm644 icon-512.png /app/share/icons/hicolor/512x512/apps/io.github.hardlysleeping.HardlyWatching.png",
         "install -Dm644 io.github.hardlysleeping.HardlyWatching.desktop /app/share/applications/io.github.hardlysleeping.HardlyWatching.desktop",
