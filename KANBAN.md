@@ -51,6 +51,10 @@ code, they are not on the MVP path because neither can be built or verified on t
 | FORK | — | New private repo + local copy with full history and the uncommitted checkpoint | `hardlysleeping/HardlyWatchingApp`, commit `7419341` |
 | PLAN | — | Plan v1 + backlog | plan path above, `BACKLOG.md` `7c69c7b` |
 | RULES | — | Guardrails for work in this repo (protected paths, sandbox env, done criteria) | `docs/agent-rules.md` |
+| PUBLISH | — | The app published in the regular repo, internal board/rules excluded | `hardlysleeping/HardlyWatching` master `48c2801`, CI green `40058852153` |
+| RELEASE-030 | 38–40 | 0.3.0 cut by hand: changelog, tag, AppImage + DEB attached | release `v0.3.0`; assets `uploaded`, 34,232,824 B / 36,995,800 B; download 200 via curl; CI on the tag green `40067374194` |
+| PHONE | — | Settings → Open on your phone: LAN/tailnet URL, copy, live switch; server gates non-loopback requests | `/api/network`, `_lan_gate_allows`; 79 tests; LAN 403 → on → 200 verified from 10.0.0.10 |
+| LIMIT-HOLD | — | A 429 pause stays paused after the cooldown; banner says so; `hold_after_limit` | `_release_limit_pause`, `tests/test_rate_limit_hold.py` |
 | M0-TESTS | 1–2 | Sandbox harness + 29-case API smoke suite | merged `ab57e33`; re-run by parent on merged master: **46 tests OK**; sandbox proves isolation (temp HOME, stub downloaders, port ≥8899) |
 | M1-LOCK | 6, 7, 8, 23 | Instance lock, `--attach`, `--no-browser`, `/api/version` | merged; 17 lock tests OK; manual on master: second start exits 0 with "already running at http://127.0.0.1:8899", `--attach` 0, `/api/version` 0.1.0, one listener, clean stop |
 | M2-SCAFFOLD | 9–10 | Tauri 2 shell, built in a Fedora container, window proven to render | host `cargo build` fails (no `dbus-1.pc` on immutable Bazzite); `build-in-container.sh build` → Finished dev in 1m48s; windowed run: window `main` 1280x860, and a logging proxy recorded `GET /` (369,713 B) + 13× `/api/state` + `/api/gallery` + `/api/autostart` + `POST /api/excluded` in 12 s. Repro in `docs/desktop-shell.md` |
