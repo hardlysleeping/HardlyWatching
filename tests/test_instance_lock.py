@@ -28,7 +28,13 @@ REPO = Path(__file__).resolve().parent.parent
 SERVER = REPO / "server.py"
 PY = sys.executable
 HOST = "127.0.0.1"
-EXPECTED_VERSION = "0.1.0"
+# Read the version instead of hard-coding it: it is bumped on every release (and by
+# scripts/sync-upstream.sh from the upstream tag), and a literal here turns each bump
+# into four red tests that say nothing about the lock.
+try:
+    EXPECTED_VERSION = (REPO / "VERSION").read_text(encoding="utf-8").strip() or "dev"
+except OSError:
+    EXPECTED_VERSION = "dev"
 
 # A pid that cannot exist: /proc/sys/kernel/pid_max is the exclusive upper bound.
 DEAD_PID = 999999
