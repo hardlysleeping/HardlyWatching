@@ -5,6 +5,8 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-10-24
+
 ### Added
 
 - **Duplicate finder (Options → Duplicates).** A joint post on Instagram is
