@@ -5,6 +5,13 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.1] — 2026-10-24
+
+Layout only: the app did everything, but the page had grown a stack of
+collapsed panels between the paste box and the queue.
+
 ### Changed
 
 - **The occasional panels moved behind one Options button.** Download settings,
