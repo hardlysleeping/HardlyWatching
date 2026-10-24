@@ -449,8 +449,10 @@ class VersionTests(ServerCase):
         copy = self.tmp / "tree"
         copy.mkdir()
         shutil.copy2(SERVER, copy / "server.py")
+        # dupes.py is imported by server.py at module level, so a copy without
+        # it fails to start at all -- same list as the other optional modules.
         for extra in ("engine.py", "shorts.py", "profile_db.py", "tiktok_engine.py",
-                      "index.html", "shorts.html"):
+                      "dupes.py", "index.html", "shorts.html"):
             src = REPO / extra
             if src.exists():
                 shutil.copy2(src, copy / extra)

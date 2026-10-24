@@ -552,6 +552,28 @@ side, so 1080p means 1080x1920 — hence the familiar rungs of 540, 720 or 1080.
 
 ---
 
+## Duplicate files
+
+An Instagram joint post is served from every collaborator's profile, so the same
+carousel lands in two folders. Nothing else in the app notices — the gallery is
+per profile by design — so the copies sit there and the archive is quietly
+larger than it needs to be.
+
+**Options → Duplicates → Scan for duplicates** compares files by content: size
+first, then a SHA-256 of every file whose size occurs more than once, which on a
+large archive is a small fraction of them. The comparison is *within one
+platform*, because the same picture on Instagram and TikTok is not a duplicate,
+and it skips 0-byte placeholders (what a deleted post leaves behind), sidecars,
+thumbnail caches and backups.
+
+Each group lists its copies oldest first with the oldest marked **keep**. Every
+other copy is pre-selected; untick anything you would rather keep, then press
+**Move selected to Trash**. That moves files into the profile's own Trash
+section — the same place the gallery's trash button puts them — so nothing is
+deleted from disk and the gallery's Restore undoes it. Copies already in
+Favourites or Trash are listed but never offered, so tidying cannot undo a
+deliberate decision.
+
 ## Backup and restore
 
 The archive is just folders: point any copy of the app at them and the gallery and

@@ -128,6 +128,14 @@
   textarea:focus{outline:none;border-color:var(--accent)}
   .row{display:flex;gap:9px;align-items:center;margin-top:11px;flex-wrap:wrap}
   .hint{color:var(--muted);font-size:12.5px}
+  /* Duplicates: one card per group of byte-identical files. */
+  .dupgroup{border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+    margin:0 0 8px;background:var(--panel-2)}
+  .duphead{font-size:12px;color:var(--muted);margin-bottom:5px}
+  .duprow{display:flex;gap:8px;align-items:center;font-size:13px;padding:2px 0;
+    line-height:1.35;word-break:break-word}
+  .duprow.keep{opacity:.75}
+  .duprow input{flex:none;margin:0}
   .err-box{margin-top:12px;padding:10px 13px;border-radius:10px;background:#2a161a;
     border:1px solid #4a2028;color:#fca5a5;font-size:13px;display:none}
   .ok-box{margin-top:12px;padding:10px 13px;border-radius:10px;background:#122a1e;
@@ -1217,6 +1225,7 @@ some.profile
         <button class="dlgtab" data-opt="backupCard" role="tab">Backup &amp; restore</button>
         <button class="dlgtab" data-opt="lanCard" role="tab">Open on your phone</button>
         <button class="dlgtab" data-opt="excludedCard" role="tab">Excluded</button>
+        <button class="dlgtab" data-opt="dupesCard" role="tab">Duplicates</button>
       </div>
       <button class="small" id="optionsClose" style="margin-left:auto">Close</button>
     </div>
@@ -1346,6 +1355,29 @@ some.profile
     <div class="hint" id="ttExcludedMsg" style="margin-top:6px;color:var(--ok)"></div>
     <div class="row" id="ttExcludedActions" style="display:none">
       <button class="small" id="ttRestoreAllBtn">Restore all</button>
+    </div>
+  </details>
+<details class="settings" id="dupesCard">
+    <summary>Duplicates <span class="hint" id="dupSummary"></span>
+      <span class="hint" style="font-weight:400">— same bytes, two folders</span></summary>
+    <div class="hint" style="margin:0 0 10px">
+      A joint post on Instagram is served from <b>every</b> collaborator's
+      profile, so the same carousel is downloaded into two folders. This compares
+      files by content — size first, then a checksum — <b>within one platform</b>
+      (the same picture on Instagram and TikTok is not a duplicate) and lists the
+      identical ones. Scanning only reads files. Moving is what you press, and it
+      puts copies in that profile's <b>Trash</b> section, where the gallery's
+      Restore brings them back.
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="small" id="dupScanBtn">Scan for duplicates</button>
+      <button class="small" id="dupStopBtn" style="display:none">Stop</button>
+      <span class="hint" id="dupMsg"></span>
+    </div>
+    <div id="dupList" class="hint" style="margin-top:8px">—</div>
+    <div class="row" id="dupActions" style="display:none;gap:8px;align-items:center;margin-top:8px">
+      <button class="small" id="dupTrashBtn">Move selected to Trash</button>
+      <span class="hint" id="dupTrashMsg"></span>
     </div>
   </details>
     </div>
@@ -3814,7 +3846,7 @@ loadBackupInfo();
    the queue. They are the same elements with the same ids and the same
    handlers; this only decides which one is shown, so nothing inside them had
    to change. */
-const OPT_TABS = ["settingsBox", "backupCard", "lanCard", "excludedCard"];
+const OPT_TABS = ["settingsBox", "backupCard", "lanCard", "excludedCard", "dupesCard"];
 function showOptTab(id){
   if(!OPT_TABS.includes(id)) id = OPT_TABS[0];
   for(const pid of OPT_TABS){
@@ -3834,6 +3866,7 @@ function showOptTab(id){
   if(id === "backupCard") loadBackupInfo();
   if(id === "lanCard") loadNetwork();
   if(id === "excludedCard") loadExcluded();
+  if(id === "dupesCard") loadDupes();
 }
 // Only the first panel is live until the dialog is used, so opening the dialog
 // does not fire three requests nobody asked for.
@@ -3905,6 +3938,178 @@ $("lanCopyBtn").onclick = async function(){
   } catch(e){
     $("lanMsg").textContent = url;   // clipboard blocked: at least show it
   }
+};
+
+/* ---------- duplicates ----------
+   A joint post on Instagram is served from every collaborator's profile, so the
+   same bytes are downloaded into two folders. Nothing in the app noticed,
+   because the gallery is per profile by design. This panel lists the identical
+   files (same platform only) and offers one action: move the copies you tick
+   into that profile's Trash, where the gallery's Restore undoes it. */
+const DUP = {report: null, sel: new Set(), timer: null};
+function dupStopPolling(){ if(DUP.timer){ clearTimeout(DUP.timer); DUP.timer = null; } }
+function dupKey(g, i){ return g + ":" + i; }
+function dupLabel(f){
+  const where = f.section && f.section !== "main" ? " · " + f.section : "";
+  return esc(f.profile) + where + "  ·  " + esc(f.name);
+}
+function dupRender(st){
+  st = st || {};
+  const rep = st.report || {};
+  // A running scan answers with an empty report object, so keep whatever the
+  // last finished scan produced instead of replacing it with nothing.
+  if(rep.groups || !DUP.report) DUP.report = rep;
+  const groups = DUP.report.groups || [];
+  const n = (DUP.report && DUP.report.group_count) || 0;
+  $("dupScanBtn").disabled = !!st.running;
+  $("dupStopBtn").style.display = st.running ? "" : "none";
+  if(st.error){
+    $("dupMsg").textContent = "Scan failed: " + st.error;
+  } else if(st.running){
+    $("dupMsg").textContent = "Scanning — " + (st.scanned || 0).toLocaleString() +
+      " files looked at" + (st.hashed ? ", " + st.hashed.toLocaleString() + " checksummed" : "") + "…";
+  } else if(DUP.report.group_count !== undefined){
+    const checked = (DUP.report.scanned || 0).toLocaleString();
+    $("dupMsg").textContent = n
+      ? n.toLocaleString() + (n === 1 ? " group" : " groups") + " of identical files · " +
+        fmtBytes(DUP.report.wasted || 0) + " recoverable · " + checked + " files compared"
+      : "Nothing byte-identical in " + checked + " files.";
+    if(DUP.report.stopped) $("dupMsg").textContent += " (stopped early)";
+  } else {
+    $("dupMsg").textContent = "";
+  }
+  $("dupSummary").textContent = st.running ? "scanning…"
+    : (n ? n + (n === 1 ? " group" : " groups") : "");
+
+  if(!groups.length){
+    $("dupList").textContent = DUP.report.group_count === undefined
+      ? "Not scanned yet." : "—";
+    $("dupActions").style.display = "none";
+    return;
+  }
+  const html = groups.map(function(g, gi){
+    // Keep the oldest copy: it is the one that was there first, and the one a
+    // person is most likely to think of as the original.
+    const rows = g.files.map(function(f, fi){
+      const key = dupKey(gi, fi);
+      // A copy already in Trash is never pre-selected: it is set aside on
+      // purpose, and the gallery's own "empty trash" is what removes it.
+      if(fi === 0 || f.section !== "main") DUP.sel.delete(key);
+      else if(!g.seen){ DUP.sel.add(key); }         // default: every main copy but the first
+      const on = DUP.sel.has(key);
+      const keep = fi === 0 || f.section !== "main";
+      return '<label class="duprow' + (keep ? ' keep' : '') + '">' +
+        (keep ? '<span class="hint" style="width:13px">keep</span>'
+              : '<input type="checkbox" data-g="' + gi + '" data-i="' + fi + '"' +
+                (on ? ' checked' : '') + '>') +
+        '<span>' + dupLabel(f) + (f.section === "main" ? '' :
+          ' <span class="hint">(not in main — left alone)</span>') + '</span></label>';
+    }).join("");
+    g.seen = true;
+    const copyWord = g.files.length + " copies";
+    return '<div class="dupgroup"><div class="duphead">' + copyWord + ' · ' +
+      fmtBytes(g.size) + ' each · frees ' + fmtBytes(g.wasted) + ' · ' + g.kind + '</div>' +
+      rows + '</div>';
+  }).join("");
+  $("dupList").innerHTML = html;
+  $("dupActions").style.display = "";
+  dupCount();
+}
+function dupCount(){
+  const n = DUP.sel.size;
+  $("dupTrashBtn").textContent = n ? ("Move " + n + " to Trash") : "Move selected to Trash";
+  $("dupTrashBtn").disabled = !n;
+}
+function dupPoll(){
+  dupStopPolling();
+  DUP.timer = setTimeout(async function(){
+    let st;
+    try { st = await (await fetch("/api/dupes")).json(); }
+    catch(e){ $("dupMsg").textContent = "Lost contact with the server."; return; }
+    dupRender(st);
+    if(st.running) dupPoll();
+  }, 1200);
+}
+async function loadDupes(){
+  let st;
+  try { st = await (await fetch("/api/dupes")).json(); }
+  catch(e){ $("dupMsg").textContent = "Could not ask the server."; return; }
+  dupRender(st);
+  if(st.running) dupPoll();
+}
+$("dupScanBtn").onclick = async function(){
+  DUP.sel.clear();
+  if(DUP.report && DUP.report.groups) DUP.report.groups.forEach(function(g){ g.seen = false; });
+  $("dupTrashMsg").textContent = "";
+  try {
+    const r = await post("/api/dupes/scan", {});
+    if(!r || !r.ok) throw new Error((r && r.error) || "refused");
+    dupRender(r.state || {running: true, scanned: 0});
+    dupPoll();
+  } catch(e){
+    $("dupMsg").textContent = "Could not start: " + e.message;
+  }
+};
+$("dupStopBtn").onclick = async function(){
+  try { await post("/api/dupes/stop", {}); } catch(e){}
+  $("dupStopBtn").disabled = true;
+};
+$("dupList").addEventListener("change", function(e){
+  const t = e.target;
+  if(!t || t.type !== "checkbox") return;
+  const key = dupKey(t.dataset.g, t.dataset.i);
+  if(t.checked) DUP.sel.add(key); else DUP.sel.delete(key);
+  dupCount();
+});
+$("dupTrashBtn").onclick = async function(){
+  const groups = (DUP.report && DUP.report.groups) || [];
+  const items = [];
+  DUP.sel.forEach(function(key){
+    const parts = key.split(":");
+    const g = groups[+parts[0]], f = g && g.files[+parts[1]];
+    if(!f || f.section !== "main") return;
+    items.push({profile: f.profile, platform: f.platform,
+                file: f.name, section: f.section});
+  });
+  if(!items.length) return;
+  if(!confirm("Move " + items.length + " file" + (items.length === 1 ? "" : "s") +
+      " to Trash?\n\nThey go to each profile's Trash section and can be restored " +
+      "from the gallery. Nothing is deleted from disk.")) return;
+  this.disabled = true;
+  $("dupTrashMsg").textContent = "Moving…";
+  let r;
+  try { r = await post("/api/dupes/trash", {items: items}); }
+  catch(e){ r = {ok: false, error: e.message}; }
+  if(!r || !r.ok){
+    $("dupTrashMsg").textContent = "Failed: " + ((r && r.error) || "no answer");
+    this.disabled = false;
+    return;
+  }
+  // No rescan: the bytes on disk did not change, only their folder did. The
+  // moved copies stay in the report marked as trashed, because they are still
+  // byte-identical -- that is what lets the panel say "already set aside"
+  // instead of quietly forgetting them until the next scan.
+  const moved = new Set(items.map(function(it){ return it.profile + "|" + it.platform + "|" + it.file; }));
+  groups.forEach(function(g){
+    g.files.forEach(function(f){
+      if(moved.has(f.profile + "|" + f.platform + "|" + f.name)) f.section = "trash";
+    });
+    // Same rule the server reports with: only copies left in the main folder
+    // count as recoverable, since the ones just moved are already in Trash.
+    const inMain = g.files.filter(function(f){ return f.section === "main"; }).length;
+    g.wasted = g.size * Math.max(0, inMain - 1);
+  });
+  DUP.sel.clear();
+  const left = groups.filter(function(g){ return g.files.length > 1; });
+  DUP.report.groups = left;
+  DUP.report.group_count = left.length;
+  DUP.report.wasted = left.reduce(function(a, g){ return a + g.wasted; }, 0);
+  left.forEach(function(g){ g.seen = false; });
+  $("dupTrashMsg").textContent = "Moved " + r.done + " to Trash" +
+    (r.skipped ? " · " + r.skipped + " skipped" : "") +
+    (r.errors && r.errors.length ? " · " + r.errors[0] : "");
+  dupRender({});
+  toast("Moved " + r.done + " to Trash");
 };
 $("showAllSettingsBtn").onclick = () => setShowAllSettings(!showAllSettings);
 loadAutostart();

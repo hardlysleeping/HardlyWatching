@@ -7,6 +7,15 @@ versioning is [SemVer](https://semver.org/).
 
 ### Added
 
+- **Duplicate finder (Options → Duplicates).** A joint post on Instagram is
+  served from every collaborator's profile, so the same carousel is downloaded
+  into two folders and nothing in the app noticed — the gallery is per profile by
+  design. The panel compares files by content (size first, then a checksum)
+  *within one platform*, because the same picture on Instagram and TikTok is not
+  a duplicate, and lists the identical groups with the space they waste. Copies
+  in Favourites or Trash are shown but never offered. Scanning only reads;
+  removing is one explicit press and moves the chosen copies to that profile's
+  Trash, where the gallery's Restore brings them back. Nothing is unlinked.
 - **A flatpak repository, so the app installs like an app.** The releases carried
   a `.flatpak` file, which is a download with an install command; there is now a
   signed repository at <https://hardlysleeping.github.io/HardlyWatching/> and a

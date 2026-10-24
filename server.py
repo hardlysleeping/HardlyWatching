@@ -55,6 +55,7 @@ from urllib.parse import urlparse
 from engine import (Engine, STATE_FILE, UPLOAD_EXTS, cache_dir, clean_profile_name,
                     ensure_pillow_formats,
                     make_playable, make_preview, make_thumb, _cache, _media_cache_forget)
+import dupes
 
 HERE = Path(__file__).resolve().parent
 
@@ -389,6 +390,16 @@ def get_engine() -> Engine:
     if _engine is None:
         _engine = Engine()
     return _engine
+
+
+# One scan at a time, shared by every browser tab. Deliberately module-level:
+# the report should survive closing the dialog, and starting a second scan while
+# one is walking the disk would just make both slower.
+_dupe_scanner = dupes.Scanner()
+
+
+def dupes_scanner() -> "dupes.Scanner":
+    return _dupe_scanner
 
 
 def reload_engine() -> None:
@@ -1768,6 +1779,11 @@ class Handler(BaseHTTPRequestHandler):
                 "keys": {"%s/%s" % (p["username"].lower(), p["items"][0]["file"]):
                          p.get("category") for p in allposts},
             })
+        if p == "/api/dupes":
+            # Read-only report from the last scan, plus where it has got to.
+            # Nothing here changes a file; removal is a separate, explicit call.
+            return self._json(dupes_scanner().snapshot())
+
         if p == "/api/network":
             # What a phone would type. Reported even when the toggle is off, so
             # the computer can show the address before switching it on.
@@ -2663,6 +2679,59 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             return self._json({"ok": ok, "message": msg})
+
+        if p == "/api/dupes/scan":
+            # Starts a background walk. The response returns immediately: the
+            # archive here is ~159k files, and a request that hashed them all
+            # would outlive every browser timeout.
+            plat = str(body.get("platform") or "").lower()
+            if plat not in ("", "instagram", "tiktok"):
+                return self._json({"ok": False, "error": "bad platform"})
+            started = dupes_scanner().start(get_engine().roots, plat or None)
+            return self._json({"ok": True, "started": started,
+                               "state": dupes_scanner().snapshot()})
+
+        if p == "/api/dupes/stop":
+            dupes_scanner().stop()
+            return self._json({"ok": True})
+
+        if p == "/api/dupes/trash":
+            # The only removal path. It is the same move-to-trash the gallery
+            # uses, so every copy lands in that profile's Trash section and can
+            # be restored from there -- this never unlinks a file.
+            eng = get_engine()
+            items = body.get("items") or []
+            if not isinstance(items, list) or len(items) > 500:
+                return self._json({"ok": False, "error": "bad items"})
+            done, skipped, errors = 0, 0, []
+            for it in items:
+                if not isinstance(it, dict):
+                    skipped += 1
+                    continue
+                who = clean_profile_name(str(it.get("profile") or "")) or ""
+                name = str(it.get("file") or "").rsplit("/", 1)[-1]
+                plat = str(it.get("platform") or "instagram").lower()
+                # A name, never a path: move_media resolves it inside that
+                # profile's own folders, so a crafted item cannot reach outside
+                # the archive.
+                if not who or not name or plat not in ("instagram", "tiktok"):
+                    skipped += 1
+                    continue
+                if str(it.get("section") or "main") != "main":
+                    # Already in Trash (or Favourites): left alone, because
+                    # "tidy the copy" must never turn into deleting the one
+                    # someone put aside on purpose.
+                    skipped += 1
+                    continue
+                ok, msg = eng.move_media(who, name, "trash", plat)
+                if ok:
+                    done += 1
+                else:
+                    skipped += 1
+                    if msg and len(errors) < 5:
+                        errors.append(f"{who}/{name}: {msg}")
+            return self._json({"ok": True, "done": done, "skipped": skipped,
+                               "errors": errors})
 
         if p == "/api/clear-finished":
             return self._json({"removed": get_engine().clear_finished()})
