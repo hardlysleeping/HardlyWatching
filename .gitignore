@@ -39,3 +39,10 @@ src-tauri/gen/schemas/
 
 # scripts/ci-local.sh's throwaway venv (regenerable, rebuilds per run)
 .ci-venv/
+
+# stdout of the container bundle builds (src-tauri/build-in-container.sh);
+# kept locally so a bundle can be audited after the fact, never committed
+.build-logs/
+
+# the onefile comparison build (HWA_ONEFILE=1, see docs/desktop-shell.md)
+/dist-onefile/

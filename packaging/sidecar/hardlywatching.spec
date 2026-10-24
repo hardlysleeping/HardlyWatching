@@ -141,29 +141,57 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="hardlywatching-server",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=True,               # the sidecar talks on stdout; the shell pipes it
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
+# Two shapes, chosen by HWA_ONEFILE=1 in the environment (build.sh stays onedir):
+#   onedir  -- <dist>/<name>/hardlywatching-server + _internal/   (the shipped one)
+#   onefile -- a single self-extracting executable, for measurement only.
+# Measured on 2026-10-23: see docs/desktop-shell.md, "Why onedir, not onefile".
+ONEFILE = os.environ.get("HWA_ONEFILE") == "1"
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="sidecar",             # -> dist/sidecar/ (distpath comes from build.sh)
-)
+if ONEFILE:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name="hardlywatching-server",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        runtime_tmpdir=None,
+        console=True,           # the sidecar talks on stdout; the shell pipes it
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="hardlywatching-server",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=True,               # the sidecar talks on stdout; the shell pipes it
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+
+if not ONEFILE:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name="sidecar",             # -> dist/sidecar/ (distpath comes from build.sh)
+    )
