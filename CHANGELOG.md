@@ -5,6 +5,17 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-10-24
+
+### Fixed
+
+- **The Gallery tab did nothing from inside a profile.** It redrew the profile you
+  were already looking at, because `renderGallery()` reopens whatever `gProfile`
+  holds, so the only way back to the list was the profile view's own
+  *← All profiles* button. Pressing Gallery while a profile is open now clears it
+  and shows all profiles — the list is what the tab promises. Coming back to the
+  Gallery from another tab still returns to the profile you were viewing.
+
 ## [0.3.5] — 2026-10-24
 
 ### Fixed

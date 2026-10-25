@@ -25,6 +25,11 @@
     <category>Graphics</category>
   </categories>
   <releases>
+    <release version="0.3.6" date="2026-10-24">
+      <description>
+        <p>Pressing the Gallery tab while a profile is open goes back to all profiles instead of redrawing the same profile.</p>
+      </description>
+    </release>
     <release version="0.3.5" date="2026-10-24">
       <description>
         <p>Zoom now grows the viewer's frame instead of cropping the picture, and a missing TikTok picture is retried on the page as well as fetched in the background. 0.3.4 carried the count bar fix alone.</p>

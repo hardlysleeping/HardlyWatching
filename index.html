@@ -4333,7 +4333,18 @@ function showTab(which, only){
 }
 
 $("tabQueue").onclick = () => showTab("queue");
-$("tabGallery").onclick = () => showTab("gallery");
+$("tabGallery").onclick = () => {
+  // Pressing Gallery while a profile's photos are open means the Gallery, not
+  // that profile a second time: renderGallery() reopens whatever gProfile holds,
+  // so from inside a profile the tab looked dead -- it redrew the page you were
+  // already on. The list is what the tab promises, and the profile view keeps its
+  // own "← All profiles" button for the same move.
+  if(currentTab === "gallery" && gProfile){
+    gProfile = null;
+    gPlatform = "instagram";
+  }
+  showTab("gallery");
+};
 $("tabShorts").onclick = () => showTab("shorts");
 
 // ---- platform sub-tabs --------------------------------------------------
