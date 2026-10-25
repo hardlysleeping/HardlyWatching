@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -400,6 +401,58 @@ _dupe_scanner = dupes.Scanner()
 
 def dupes_scanner() -> "dupes.Scanner":
     return _dupe_scanner
+
+
+# --- TikTok profile pictures, fetched for a profile that has none ------------
+#
+# The picture is cached per install, under
+# $XDG_CACHE_HOME/hardlywatching/avatars/tiktok/<handle>.jpg, and it used to be
+# fetched only when THAT install downloaded that profile (engine.py asks for it
+# at download start). So a second install -- the flatpak next to a system
+# checkout, a new machine, a restored archive -- showed every archived TikTok
+# profile with no face, while the install that did the downloading showed them
+# all. Nothing was broken; the cache simply lives outside the archive.
+#
+# So a miss on /api/profile-pic now queues the handle, and one worker fetches
+# them one at a time. Paced on purpose: a gallery load asks for hundreds of
+# pictures within a second or two, and a burst of requests at tiktok.com is how
+# an address earns a block.
+_avatar_q: "queue.Queue[str]" = queue.Queue()
+_avatar_next: dict[str, float] = {}      # handle -> earliest next attempt
+_avatar_lock = threading.Lock()
+_AVATAR_RETRY_S = 6 * 3600               # a failed handle is left alone for 6h
+_AVATAR_GAP_S = 0.8                     # between fetches, see above
+
+
+def _avatar_worker() -> None:
+    while True:
+        handle = _avatar_q.get()
+        try:
+            eng = get_engine()
+            if eng.tiktok_avatar(handle) is None:
+                eng.tiktok_avatar(handle, fetch=True)
+        except Exception:
+            pass
+        finally:
+            _avatar_q.task_done()
+        time.sleep(_AVATAR_GAP_S)
+
+
+def queue_tiktok_avatar(handle: str) -> None:
+    """Ask for one TikTok profile picture in the background, once per cooldown."""
+    h = (handle or "").strip().lower()
+    if not h:
+        return
+    now = time.time()
+    with _avatar_lock:
+        if _avatar_next.get(h, 0.0) > now:
+            return                      # asked for recently; leave it alone
+        _avatar_next[h] = now + _AVATAR_RETRY_S
+        start = not any(t.name == "tiktok-avatars" for t in threading.enumerate())
+        if start:
+            threading.Thread(target=_avatar_worker, name="tiktok-avatars",
+                             daemon=True).start()
+        _avatar_q.put(h)
 
 
 def reload_engine() -> None:
@@ -1551,6 +1604,11 @@ class Handler(BaseHTTPRequestHandler):
                 hit_tt = eng.tiktok_avatar(name)
                 if hit_tt is not None:
                     return self._serve_file(hit_tt)
+                # Nothing cached on this install. The fallbacks below will show
+                # whatever can be found now; the real picture is fetched in the
+                # background and arrives on the next ask (the page re-asks after
+                # a while rather than remembering "no face" forever).
+                queue_tiktok_avatar(name)
 
             folders = []
             for want in (plat, "instagram" if plat != "instagram" else "tiktok"):

@@ -5,6 +5,39 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-10-24
+
+### Fixed
+
+- **The TikTok count bar, properly this time.** 0.3.3 let the row wrap, which
+  stopped `all` falling off the card but left a ragged two- or three-line block
+  with a different height on every card. It is now two fixed rows: *grab newest*
+  and the number on one line, then `−15 −5 +5 +15 +25 all` in six equal columns
+  that divide whatever width the card has. Equal fractions cannot overflow, so
+  `all` is on the card at every window width, and every card is the same height.
+- **Wheel-zoom cropped the picture instead of enlarging the frame.** The viewer
+  capped the picture at 76vh inside a 1000px-wide box, so past plain fit every
+  step of zoom pushed more of the image under the stage's edge — zooming in
+  showed *less*. Zooming now opens the frame to the window and lets the picture
+  fill the stage, so the whole frame grows; returning to 100% closes it again and
+  clears the pan offset rather than leaving the picture off-centre.
+- **TikTok profile pictures were missing on any install that had not done the
+  downloading.** The picture cache lives per install, outside the archive, and
+  was only filled when that install downloaded a profile. A second install (the
+  flatpak beside a system checkout, a new machine) showed faces for Instagram and
+  none for TikTok. A picture request with nothing cached now queues the handle,
+  and one background worker fetches them one at a time, 0.8s apart — a gallery
+  load asks for hundreds of pictures at once and a burst at tiktok.com is how an
+  address earns a block. The page also stops remembering "no picture" forever: a
+  miss is retried after 90 seconds, so a picture that arrives later appears
+  without a reload.
+
+### Known gaps
+
+- The count bar and the frame still reflow at very narrow card widths (below
+  ~200px) because six columns of two-digit numbers cannot be narrower than the
+  digits; the buttons shrink evenly instead of clipping, which is the trade.
+
 ## [0.3.3] — 2026-10-24
 
 ### Fixed

@@ -25,6 +25,11 @@
     <category>Graphics</category>
   </categories>
   <releases>
+    <release version="0.3.4" date="2026-10-24">
+      <description>
+        <p>The TikTok count bar is two tidy rows with "all" always on the card, the viewer's frame grows when you zoom, and a missing TikTok picture is fetched when a profile asks for it.</p>
+      </description>
+    </release>
     <release version="0.3.3" date="2026-10-24">
       <description>
         <p>The TikTok count bar wraps instead of clipping its "all" button off the card.</p>

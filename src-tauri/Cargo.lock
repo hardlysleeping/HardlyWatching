@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "hardlywatching"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "libc",
  "serde_json",
