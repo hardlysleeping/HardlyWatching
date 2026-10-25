@@ -25,9 +25,14 @@
     <category>Graphics</category>
   </categories>
   <releases>
+    <release version="0.3.5" date="2026-10-24">
+      <description>
+        <p>Zoom now grows the viewer's frame instead of cropping the picture, and a missing TikTok picture is retried on the page as well as fetched in the background. 0.3.4 carried the count bar fix alone.</p>
+      </description>
+    </release>
     <release version="0.3.4" date="2026-10-24">
       <description>
-        <p>The TikTok count bar is two tidy rows with "all" always on the card, the viewer's frame grows when you zoom, and a missing TikTok picture is fetched when a profile asks for it.</p>
+        <p>The TikTok count bar is two tidy rows with "all" always on the card.</p>
       </description>
     </release>
     <release version="0.3.3" date="2026-10-24">

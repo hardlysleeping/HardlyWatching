@@ -5,6 +5,21 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.5] — 2026-10-24
+
+### Fixed
+
+- **0.3.4 shipped the count bar and nothing else.** The zoom fix and the page-side
+  retry for a missing profile picture were written after the tree had been copied
+  into the app repo, so the bundles carried one of the three fixes. This release
+  carries all of them; the count bar is unchanged from 0.3.4.
+- **Wheel-zoom cropped the picture instead of enlarging the frame**, as described
+  in 0.3.4 — the frame now opens to the window while zoomed and closes again at
+  100%, with the pan offset cleared rather than leaving the picture off-centre.
+- **A missing profile picture was remembered for the whole session**, as described
+  in 0.3.4 — a miss is now retried after 90 seconds, so a picture that the
+  background fetcher saves later appears without a reload.
+
 ## [0.3.4] — 2026-10-24
 
 ### Fixed

@@ -906,6 +906,13 @@
     width:100%;height:100%;min-height:0}
   .vmedia img,.vmedia video{max-width:100%;max-height:76vh;object-fit:contain;
     display:block;transform-origin:center center;user-select:none;-webkit-user-drag:none}
+  /* Zooming is pointless if the frame stays the same size: the picture was
+     capped at 76vh inside a 1000px box, so every step past fit only pushed more
+     of it under the stage's edge -- you zoomed in and saw LESS. While zoomed the
+     box takes the window and the picture takes the stage. */
+  #vwrap.zoomed .vbox{max-width:calc(100vw - 28px)}
+  #vwrap.zoomed .vmedia img,
+  #vwrap.zoomed .vmedia video{max-height:100%}
   /* Wheel zoom: the picture is scaled, never cropped to a detail -- the whole
      frame grows or shrinks and only gets clipped by the stage at the far end.
      While it is bigger than the stage it can be dragged around. */
@@ -1778,7 +1785,13 @@ $("purgeRemoved").onclick = async () => {
 // re-renders every poll, and re-creating an <img> each time would restart the
 // load forever.
 const hasThumb = new Set();
-const noThumb = new Set();
+// A miss is not permanent any more: the server fetches a missing TikTok picture
+// in the background, so the "no face" verdict expires instead of being kept for
+// the life of the page -- otherwise a picture that arrives a minute later would
+// never show until a reload. Keyed to the moment the miss may be re-asked, which
+// also stops every re-render from firing another probe.
+const noThumb = new Map();
+const NO_THUMB_RETRY_MS = 90 * 1000;
 
 /* `platform` must be passed: the avatar is looked up in that platform's folder.
    Leaving it out sent TikTok profiles to the Instagram folder, so a handle
@@ -1793,12 +1806,13 @@ function thumbHtml(username, platform){
   // other platform's lookup is simply wrong.
   const key = plat + ":" + username;
   if(!hasThumb.has(key)){
-    // Probe once with a throwaway Image; cache the verdict so a profile without
-    // a picture never draws an empty circle.
-    if(!noThumb.has(key)){
+    // Probe with a throwaway Image and remember when to ask again, so a profile
+    // without a picture does not draw an empty circle and does not get probed on
+    // every single render.
+    if(Date.now() >= (noThumb.get(key) || 0)){
+      noThumb.set(key, Date.now() + NO_THUMB_RETRY_MS);
       const probe = new Image();
-      probe.onload = () => { hasThumb.add(key); tick(); };
-      probe.onerror = () => { noThumb.add(key); };
+      probe.onload = () => { hasThumb.add(key); noThumb.delete(key); tick(); };
       probe.src = src;
     }
     return "";
@@ -7786,6 +7800,8 @@ function vZoomReset(){
   clearTimeout(VZOOM.t);
   const el = vZoomEl();
   if(el) el.style.transform = "";
+  const host = document.getElementById("vwrap");
+  if(host) host.classList.remove("zoomed");       // frame back to its fit size
   const media = document.querySelector("#vwrap .vmedia");
   if(media) media.classList.remove("zoomed", "panning");
   const tag = document.querySelector("#vwrap .vzoomtag");
@@ -7799,10 +7815,25 @@ function vZoomAt(z2, clientX, clientY){
   const z1 = VZOOM.z;
   const z = Math.min(VZOOM.max, Math.max(VZOOM.min, z2));
   if(!isFinite(z) || Math.abs(z - z1) < 1e-4) return;
+  // Open the frame on the first step past fit and close it again at fit. The
+  // picture's own size changes when that happens, so the pan offset from the old
+  // geometry no longer means anything -- recentre and let this step anchor from
+  // the middle of the new frame.
+  const open = z > 1.001;
+  let anchored = true;
+  if(open !== host.classList.contains("zoomed")){
+    host.classList.toggle("zoomed", open);
+    VZOOM.x = 0; VZOOM.y = 0;
+    stage.getBoundingClientRect();          // force layout before measuring
+    // The picture's size changed under the cursor, so keeping the cursor's point
+    // fixed would mean inventing an offset for a frame that no longer exists.
+    // Growing and shrinking the frame recentres; panning starts from there.
+    anchored = false;
+  }
   // Keep whatever the cursor is over where it is, so zooming reads as the frame
   // growing around that point rather than the picture sliding away.
   let cx = 0, cy = 0;
-  if(typeof clientX === "number" && typeof clientY === "number"){
+  if(anchored && typeof clientX === "number" && typeof clientY === "number"){
     const r = stage.getBoundingClientRect();
     cx = clientX - (r.left + r.width / 2);
     cy = clientY - (r.top + r.height / 2);
