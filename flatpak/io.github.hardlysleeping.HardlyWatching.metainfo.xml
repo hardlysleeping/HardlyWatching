@@ -25,6 +25,11 @@
     <category>Graphics</category>
   </categories>
   <releases>
+    <release version="0.3.3" date="2026-10-24">
+      <description>
+        <p>The TikTok count bar wraps instead of clipping its "all" button off the card.</p>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-10-24">
       <description>
         <p>Find byte-identical copies in the archive and move them to Trash.</p>

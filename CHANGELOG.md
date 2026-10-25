@@ -5,6 +5,19 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-10-24
+
+### Fixed
+
+- **"all" was invisible on every finished TikTok card.** The count bar —
+  *grab newest*, the number, `−15 −5 +5 +15 +25`, *all* — is ~300px of controls,
+  and it was laid out as one line inside a horizontal scroller whose scrollbar was
+  hidden. In the finished column the card is ~218px, so the last control sat ~85px
+  past the card edge: `all` could not be seen or clicked, and nothing on screen
+  said there was anything more to reach. The bar wraps now, with the five steppers
+  kept together as one block, so `all` moves to its own line whole instead of being
+  cut off. Wide queue cards are unchanged (one line); finished cards are two.
+
 ## [0.3.2] — 2026-10-24
 
 ### Added

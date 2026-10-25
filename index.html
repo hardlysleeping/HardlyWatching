@@ -339,9 +339,14 @@
      action buttons for the card's right-hand column -- when the two shared a
      line the buttons jumped between rows and every card had a different
      height. */
-  .ttcount{display:flex;align-items:center;gap:3px;flex-wrap:nowrap;
-           margin-top:7px;overflow-x:auto;scrollbar-width:none}
-  .ttcount::-webkit-scrollbar{display:none}
+  /* Wraps: on a narrow card (the finished column) the row is wider than the
+     card, so a single line pushed the last control -- "all" -- off the end
+     where it was invisible and unclickable. */
+  .ttcount{display:flex;align-items:center;gap:2px;flex-wrap:wrap;row-gap:5px;
+           margin-top:7px}
+  /* The steppers wrap as one block, so "all" drops to the next line whole
+     rather than the row breaking in the middle of the +/- buttons. */
+  .ttcount .ttgrp{display:flex;align-items:center;gap:2px;flex:none}
   .ttcount .ttwhat{font-size:10.5px;color:var(--muted);text-transform:uppercase;
                    letter-spacing:.03em;margin-right:5px;white-space:nowrap;flex:none}
   /* Steppers are deliberately quiet: the number is the thing to read, and seven
@@ -354,7 +359,7 @@
   .ttcount button:disabled{opacity:.35}
   .ttcount .ttnout{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;
                    color:var(--text);padding:0 7px;white-space:nowrap;flex:none}
-  .ttcount .ttsep{width:1px;height:14px;background:var(--line-2);margin:0 4px;flex:none}
+  .ttcount .ttsep{width:1px;height:14px;background:var(--line-2);margin:0 2px;flex:none}
   .pill.running{color:var(--run);border-color:#2d4a7a}
   .pill.retrying{color:var(--warn);border-color:#5a4a1e}
   .pill.done{color:var(--ok);border-color:#1f5138}
@@ -3270,6 +3275,7 @@ function ttCountBar(j){
   return `<div class="ttcount" data-ttid="${esc(j.id)}" title="${tip}">
       <span class="ttwhat">grab newest</span>
       <span class="ttnout" title="${tip} — ${label}">${out}</span>
+      <span class="ttgrp">
       <span class="ttsep"></span>
       <button class="small" data-ttminus="-15" title="15 fewer" ${cur<=1?"disabled":""}>−15</button>
       <button class="small" data-ttminus="-5" title="5 fewer" ${cur<=1?"disabled":""}>−5</button>
@@ -3277,6 +3283,7 @@ function ttCountBar(j){
       <button class="small" data-ttadd="15" title="15 more">+15</button>
       <button class="small" data-ttadd="25" title="25 more">+25</button>
       <span class="ttsep"></span>
+      </span>
       <button class="small" data-ttall="1" title="Every video on the profile">all</button>
     </div>`;
 }
