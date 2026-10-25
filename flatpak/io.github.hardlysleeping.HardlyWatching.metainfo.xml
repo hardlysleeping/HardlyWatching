@@ -25,6 +25,11 @@
     <category>Graphics</category>
   </categories>
   <releases>
+    <release version="0.3.7" date="2026-10-25">
+      <description>
+        <p>A refused Instagram login is reported as a rejected session with a banner naming the account and a Switch session button, instead of being mistaken for a rate limit that never clears.</p>
+      </description>
+    </release>
     <release version="0.3.6" date="2026-10-24">
       <description>
         <p>Pressing the Gallery tab while a profile is open goes back to all profiles instead of redrawing the same profile.</p>

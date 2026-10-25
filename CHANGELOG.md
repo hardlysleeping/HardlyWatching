@@ -5,6 +5,24 @@ versioning is [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-10-25
+
+### Fixed
+
+- **A refused login no longer hides behind "rate limited".** Instagram answering
+  the session check with 401 was reported as a rate limit, so the queue went
+  behind a 15-minute cooldown, retried the same refused account, and repeated:
+  a real queue sat for nine hours downloading nothing while the app said it was
+  rate limited and the session dot said "logged in". The run now ends with its
+  own verdict — the account is named, no countdown is promised, and the queue
+  is parked until a different session is chosen.
+- **The header warns you.** A red banner names the refused account, says
+  waiting will not fix it, and carries a Switch session button; the sessions
+  list marks that row rejected, the status dot says "session rejected", and the
+  waiting row says the same instead of counting down.
+- Switching session, locking the refused account, Start and Resume all clear
+  the state, so downloads resume the moment a usable account is picked.
+
 ## [0.3.6] — 2026-10-24
 
 ### Fixed
