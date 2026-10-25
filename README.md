@@ -6,9 +6,26 @@ Paste the profiles you follow, let them download over days, and browse what you
 have collected in one place — grid, timeline, and a full-screen short-video feed
 for your phone. Both platforms share one queue and one gallery.
 
+## ➜ Install the Flatpak
+
+**[Click here to install it](https://hardlysleeping.github.io/HardlyWatching/hardlywatching.flatpakref)** —
+your software installer opens with the signed repository already added, and
+`flatpak update` keeps it current. From a terminal, the same thing:
+
+```bash
+flatpak install https://hardlysleeping.github.io/HardlyWatching/hardlywatching.flatpakref
+```
+
+It brings its own Python, ffmpeg, instaloader and yt-dlp, so there is nothing else
+to install. No Flatpak on your machine? There is an
+[**AppImage** and a **DEB**](https://github.com/hardlysleeping/HardlyWatching/releases)
+on the releases page, and from source it is `python3 run.py`. Each one's files,
+port and dependencies: [Install a release build](#install-a-release-build).
+
 > **⚠️ Use at your own risk.** Downloading at scale can get your IP blocked,
 > rate-limited, or your account banned. Read [Use at your own risk](#use-at-your-own-risk)
-> before you install anything — it is the first section on purpose.
+> before you install anything — it is short, and it is the part that can cost you an
+> account.
 
 > ### It is a web UI for **[instaloader](https://instaloader.github.io/)** and **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — it has no downloader of its own.
 >
