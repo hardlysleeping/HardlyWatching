@@ -3355,6 +3355,14 @@ class Engine:
         self._last_autocheck: float = 0.0
         self._autocheck_note: str = ""
         self._limit_paused: bool = False
+        # Instagram refused the ACCOUNT (401 on the login check), not the profile
+        # and not a throttle with a deadline. Waiting cannot clear it -- only a
+        # different session can. Kept as {username, at, reason} so the UI can
+        # name the account and offer the switch, instead of showing a countdown
+        # that never ends: a queue looping on 401s for nine hours looked exactly
+        # like "rate limited" before this existed.
+        self.session_rejected: dict = {}
+        self._session_rejected_reason: str = ""
         # While a worker sleeps out its gap, these hold that platform's wait
         # start and deadline (epoch seconds, 0 when not waiting). Keyed by
         # platform so an Instagram gap and a TikTok gap can run at once; the UI
@@ -3452,6 +3460,8 @@ class Engine:
             self.settings = Settings.from_dict(d.get("settings", {}))
             self.active_session = d.get("active_session") or None
             self.locked_sessions = [str(u) for u in (d.get("locked_sessions") or []) if u]
+            sr = d.get("session_rejected")
+            self.session_rejected = dict(sr) if isinstance(sr, dict) else {}
             self.cooldown_until = float(d.get("cooldown_until") or 0.0)
             self.consecutive_limits = int(d.get("consecutive_limits") or 0)
             if d.get("limit_paused"):
@@ -3466,6 +3476,10 @@ class Engine:
                     self.paused = True
                 if up.get("tiktok"):
                     self.tt_paused = True
+            # A rejected session parks the queue too, and it is not the user's
+            # pause (that one is stored separately), so it is restored here.
+            if self.session_rejected.get("username"):
+                self.paused = True
             self.removed = list(d.get("removed") or [])
             self.tombstones = list(d.get("tombstones") or [])
             try:
@@ -3510,6 +3524,9 @@ class Engine:
                     "settings": self.settings.to_dict(),
                     "active_session": self.active_session,
                     "locked_sessions": list(self.locked_sessions),
+                    # Persisted so a restart cannot hide a refused account and
+                    # quietly put the same 401 loop back to work.
+                    "session_rejected": dict(self.session_rejected),
                     "cooldown_until": self.cooldown_until,
                     "consecutive_limits": self.consecutive_limits,
                     "limit_paused": self._limit_paused,
@@ -3519,7 +3536,8 @@ class Engine:
                     # separately: "paused and not a rate-limit pause" IS a user
                     # pause, which is the same distinction `wait_reason` reports.
                     "user_paused": {
-                        "instagram": bool(self.paused and not self._limit_paused),
+                        "instagram": bool(self.paused and not self._limit_paused
+                                          and not self.session_rejected),
                         "tiktok": bool(self.tt_paused),
                     },
                     # When the automatic check last ran. Persisted so a restart
@@ -4263,6 +4281,11 @@ class Engine:
         if platform in ("instagram", "all"):
             self.paused = False
             self._limit_paused = False
+            # Pressing Resume is "try this account again now". Clear the
+            # recorded refusal so the next run tests the session for real: if
+            # it is still refused it comes straight back with a fresh time,
+            # rather than the banner describing a run that already happened.
+            self.session_rejected = {}
         if platform in ("tiktok", "all"):
             self.tt_paused = False
         # Save BEFORE kicking off: the paused state is persisted, so a resume
@@ -4286,6 +4309,9 @@ class Engine:
         else:
             self.paused = False
             self._limit_paused = False
+            # Start is also "try it again": re-test the session instead of
+            # inheriting a refusal that may already be stale.
+            self.session_rejected = {}
         # Pressing Start means "go now", so cut short any routine gap this
         # platform is sitting out. Without this the button did nothing at all
         # for up to four minutes, which reads as the app being stuck.
@@ -4336,6 +4362,8 @@ class Engine:
         which one it is:
           paused       -- user action; no deadline, waits for a human
           rate_limit   -- Instagram told us to back off; deadline is real
+          session      -- Instagram refused this account's login (401); no
+                          deadline, and no amount of waiting clears it
           pacing       -- the normal between-profiles gap; deadline is real
         Returns {} when that platform's worker is free to run.
 
@@ -4345,6 +4373,13 @@ class Engine:
         """
         now = time.time()
         ig = platform == "instagram"
+        if ig and self.session_rejected:
+            # Checked before the pause branch: this pause has no deadline, and
+            # a countdown here would promise a recovery that cannot happen.
+            return {"kind": "session", "remaining": 0, "total": 0,
+                    "until": 0, "held": True,
+                    "username": self.session_rejected.get("username") or "",
+                    "label": "session rejected"}
         if ig and self.paused:
             # A 429 sets paused *and* cooldown_until. If this pause came from a
             # rate limit, report that with its real deadline -- otherwise this
@@ -4439,6 +4474,12 @@ class Engine:
                 self.locked_sessions.append(safe)
             if (self.active_session or "").lower() == safe.lower():
                 self.active_session = None
+            # Locking the account Instagram refused is a valid answer to it:
+            # clear the rejection so the next session gets a fair run.
+            if (self.session_rejected.get("username") or "").lower() == safe.lower():
+                self.session_rejected = {}
+                if self.paused and not self._limit_paused:
+                    self.paused = False
         self.save_state()
         return True
 
@@ -4766,6 +4807,11 @@ class Engine:
             return False
         with self.lock:
             self.active_session = username
+            # Choosing a different account is the fix for a rejected one, so
+            # drop the rejection and the pause it set: the next job may go.
+            self.session_rejected = {}
+            if self.paused and not self._limit_paused:
+                self.paused = False
         self.save_state()
         return True
 
@@ -4918,6 +4964,23 @@ class Engine:
             # needs the metadata there.
             removed = [dict(r, tail=[]) for r in list(reversed(self.removed))[-100:]]
         sess = self.session_info()
+        # A file-based session check cannot see a refusal: the file parses, so
+        # `valid` stays true while Instagram answer 401 to every request it
+        # carries. The last run's rejection is the only honest source for that,
+        # so it overrides the verdict here -- otherwise the UI says "logged in"
+        # about an account that cannot download anything.
+        with self.lock:
+            rejected = dict(self.session_rejected)
+        rej_user = (rejected.get("username") or "")
+        rej_why = ""
+        sess_rows = sess["sessions"]
+        if rej_user:
+            rej_why = (f"Instagram is refusing this account ({rej_user}) — it "
+                       f"answered the login check with 401. Downloads are stopped "
+                       f"until you switch to another session. "
+                       f"{rejected.get('reason') or ''}").strip()
+            sess_rows = [{**s, "rejected": (s["username"] or "").lower() == rej_user.lower()}
+                          for s in sess_rows]
         return {
             # Per platform now, because both can be downloading at once. The
             # flat keys that follow are kept for older callers.
@@ -4949,9 +5012,12 @@ class Engine:
             "instaloader": INSTALOADER,
             "session_present": sess["present"] and sess["valid"],
             "session_username": sess["username"] if sess["valid"] else None,
-            "session_ok": sess["valid"],
-            "session_problem": sess["problem"],
-            "sessions": sess["sessions"],
+            "session_ok": sess["valid"] and not rej_user,
+            "session_problem": rej_why or sess["problem"],
+            # What the last run actually got: {"username", "at", "reason"} when
+            # Instagram refused the account, {} when it did not.
+            "session_rejected": rejected,
+            "sessions": sess_rows,
             "active_session": self.active_session,
             "locked_sessions": list(self.locked_sessions),
             "settings": self.settings.to_dict(),
@@ -5623,6 +5689,9 @@ class Engine:
                     return
                 self._set(job, status="cancelled", finished_at=time.time(), message="cancelled")
                 return
+            if outcome == "session_rejected":
+                self._note_session_rejected(job)
+                return
             if outcome in ("ok", "ok_warned"):
                 with self.lock:
                     self.consecutive_limits = 0
@@ -5884,8 +5953,43 @@ class Engine:
         cmd.append(job.username)
         return cmd
 
+    def _note_session_rejected(self, job: Job) -> None:
+        """Instagram refused this ACCOUNT: stop, name it, and don't wait.
+
+        Not a throttle. The same saved session gets the same 401 however long
+        the queue sleeps, so there is no cooldown to set -- a countdown here
+        would promise a recovery that cannot come from waiting. Record which
+        account was refused, put the job back in the queue (it keeps its
+        attempt budget for the run after a switch), and park the queue with a
+        reason the UI can act on: switch session.
+        """
+        user = self.session_username() or (self.active_session or "")
+        if not user:
+            # Fall back to the newest session file: better to name a likely
+            # account than to show an anonymous "rejected".
+            try:
+                names = [s["username"] for s in list_sessions()]
+                user = names[0] if names else ""
+            except Exception:
+                user = ""
+        reason = (getattr(self, "_session_rejected_reason", "") or
+                  "Instagram refused the login check (401) for this account.")
+        with self.lock:
+            self.session_rejected = {"username": user, "at": time.time(),
+                                     "reason": reason}
+            self.cooldown_until = 0.0
+            self._limit_paused = False
+            self.consecutive_limits = 0
+            self.paused = True
+        self._set(job, status="queued", started_at=None, attempts=0,
+                  message=f"session rejected — switch away from {user or 'this account'}")
+        self._log(job, f"! Instagram rejected the session for {user or 'this account'} "
+                       f"(401). Downloads are stopped until a different session is "
+                       f"chosen: Sessions → Use on another account.")
+        self.save_state()
+
     def _exec(self, job: Job, cmd: list[str], target_dir: Path) -> str:
-        """Run instaloader, stream output. Returns 'ok' | 'retryable' | 'fatal'."""
+        """Run instaloader, stream output. Returns the run's verdict."""
         fatal_hit = False
         blocked_hint = False
         retry_hit = False
@@ -5965,17 +6069,19 @@ class Engine:
             return "ok"
 
         # instaloader could not verify the saved session, so it asked for a
-        # password and died on an empty stdin. Nothing is wrong with the profile
-        # or the archive: Instagram answered the session check with 401 "please
-        # wait a few minutes", which is a throttle. Back off like a rate limit
-        # rather than failing the job, burning an attempt, or retrying at once.
+        # password and died on an empty stdin. Instagram answered the session
+        # check with 401 "please wait a few minutes", which is the account being
+        # refused, not a per-profile throttle. It used to be reported as a rate
+        # limit and retried behind a 15-minute cooldown, which repeated forever:
+        # the same saved session gets the same 401, so the queue sat idle while
+        # the UI said "rate limited". Say "session rejected" and let the user
+        # switch accounts.
         if session_hit:
             self._set(job, error="")
-            self._retry_note = (
-                "Instagram rejected the session check (401) — cooling down. "
-                "If this keeps happening, switch to another saved session."
-            )
-            return "retryable"
+            self._session_rejected_reason = (
+                last_err.strip() if last_err else
+                "Instagram refused the login check (401) for this account.")
+            return "session_rejected"
 
         # A Python crash must never be mistaken for a rate limit: retrying the
         # same arguments would crash identically and falsely burn a cooldown.

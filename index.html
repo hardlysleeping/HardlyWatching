@@ -307,6 +307,11 @@
   #nowSection.rate-limited .wait-kind{color:var(--warn)}
   #nowSection.rate-limited .wait-timer{color:var(--warn)}
   #nowSection.rate-limited{border-left:3px solid var(--warn);padding-left:12px}
+  /* A refused session: the same shape as a rate limit, in the error colour,
+     because there is no timer to wait out. */
+  #nowSection.session-stop .wait-kind{color:var(--err)}
+  #nowSection.session-stop .wait-timer{color:var(--err)}
+  #nowSection.session-stop{border-left:3px solid var(--err);padding-left:12px}
   /* A finished card must never read like a stuck or failed one. */
   .card .done-tally{color:var(--ok);font-weight:600}
   .card.done{opacity:.82}
@@ -401,6 +406,8 @@
   .banner{display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:11px;
     background:#1c1416;border:1px solid #5a2b2b;color:#fca5a5;font-size:13.5px;margin:14px 0}
   .banner.warn{background:#241c0f;border-color:#5a4a1e;color:#fcd34d}
+  /* A refusal is not a warning with a timer: it is a stop until someone acts. */
+  .banner.stop{background:#241012;border-color:#5a2b2b;color:#fca5a5}
   /* Above the viewer (70) as well as the page: a like or a trash raised from
      the full-screen viewer reported its result to a toast that was drawn
      underneath it, so the action looked like it had done nothing. Below the
@@ -1514,24 +1521,32 @@ function renderSessions(sessions, active, ok, username){
   el.innerHTML = sessions.map(s=>{
     const isActive = ok && s.username===username;
     const isLocked = !!s.locked;
-    const badge = isLocked
+    // Checked first: a rejected session parses fine, so the file-based `valid`
+    // is true and the row would otherwise read "ready" while Instagram refuses
+    // every request it carries.
+    const isRejected = !!s.rejected;
+    const badge = isRejected
+      ? '<span class="pill failed" title="Instagram answered the login check with 401 for this account">rejected</span>'
+      : isLocked
       ? '<span class="pill failed" title="Not used for downloads until you unlock it">locked</span>'
       : s.valid
         ? '<span class="pill done">ready</span>'
         : '<span class="pill failed" title="'+esc(s.problem||"")+'">incomplete</span>';
     const when = s.mtime ? new Date(s.mtime*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "";
-    const meta = isLocked
+    const meta = isRejected
+      ? "Instagram refused this account's login (401) — downloads stopped. Use another account."
+      : isLocked
       ? "locked — not used for downloads. Unlock to use it again."
       : esc(s.problem||"session ok");
     return `<div class="card" style="padding:10px 12px">
-      <div class="num-badge">${isActive?"✓":""}</div>
+      <div class="num-badge">${isActive&&!isRejected?"✓":""}</div>
       <div>
         <div class="top"><span class="name">${esc(s.username)}</span>${badge}
-          ${isActive?'<span class="pill running">in use</span>':""}</div>
+          ${isActive&&!isRejected?'<span class="pill running">in use</span>':""}</div>
         <div class="meta">${meta}${when?" · saved "+esc(when):""}</div>
       </div>
       <div class="actions">
-        <button class="small" data-usesess="${esc(s.username)}" ${(isActive||isLocked)?"disabled":"title=\"Use this account for downloads\""}>Use</button>
+        <button class="small" data-usesess="${esc(s.username)}" ${(!isLocked && !(isActive && !isRejected))?'title="Use this account for downloads"':"disabled"}>Use</button>
         ${isLocked
           ? `<button class="small" data-unlocksess="${esc(s.username)}" title="Allow this account to be used again">Unlock</button>`
           : `<button class="small" data-locksess="${esc(s.username)}" title="Stop using this account for downloads (stays locked across restarts)">Lock</button>`}
@@ -1713,12 +1728,26 @@ function renderBrowsers(list){
   });
 }
 
+// Opens the sessions panel (and never closes it), so a banner button can point
+// at it without depending on the toggle's current state.
+function openSessionsPanel(){
+  const p = $("sessPanel");
+  p.style.display = "block";
+  loadSessions(); paintSessionPanel();
+}
+
 $("sessBtn").onclick = () => {
   const p = $("sessPanel");
   const show = p.style.display === "none";
   p.style.display = show ? "block" : "none";
   if(show){ loadSessions(); paintSessionPanel(); }
 };
+// The "Switch session" button lives inside a banner the poll repaints, so it is
+// wired by delegation -- a handler bound to the button itself is thrown away
+// with the next repaint and the button goes dead.
+$("sessBox").addEventListener("click", e => {
+  if(e.target.closest("#sessFixBtn")) openSessionsPanel();
+});
 $("sessPanelClose").onclick = () => { $("sessPanel").style.display = "none"; };
 $("grabBtn").onclick = async () => {
   const b = $("grabBtn"); b.disabled=true; b.textContent="Looking…";
@@ -2364,9 +2393,16 @@ function paintRunButton(st){
     run.title = title || label;
   };
   if(paused){
-    setRun("play", cd > 0 ? "Resume (cooling down)" : "Resume this queue",
-      cd > 0 ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
-             : "Resume this queue", cd > 0);
+    // A rejected session is a pause the user cannot clear by pressing Resume:
+    // say which account and what the fix is, instead of "resume this queue".
+    const rj = st.session_rejected || {};
+    const sessStop = !!rj.username && !tt;
+    setRun("play",
+      sessStop ? "Session rejected" : (cd > 0 ? "Resume (cooling down)" : "Resume this queue"),
+      sessStop ? `Instagram refused the login for ${rj.username} — switch session in Sessions`
+               : (cd > 0 ? `Instagram limited us; safe again in ${Math.ceil(cd/60)} min`
+                         : "Resume this queue"),
+      cd > 0);
   } else if(cur || pacing){
     setRun("pause", "Pause",
       cur ? "Pause — stops the profile downloading now"
@@ -2576,10 +2612,15 @@ function render(st){
   // The dot reports the Instagram session, which TikTok does not use. On the
   // TikTok tab it says so plainly instead of implying a problem.
   const dot=$("sessDot"), txt=$("sessTxt");
+  // A refused session outranks everything on this dot: the file is fine, the
+  // account is not, and saying "logged in" there is what let a whole night go
+  // by with nothing downloading.
+  const rej = st.session_rejected || {};
   if(activePlatform === "tiktok"){
     dot.className = "dot on";
     txt.textContent = "no login needed";
-  } else if(st.session_ok){ dot.className="dot on"; txt.textContent="logged in as "+st.session_username; }
+  } else if(rej.username){ dot.className="dot off"; txt.textContent="session rejected — "+rej.username; }
+  else if(st.session_ok){ dot.className="dot on"; txt.textContent="logged in as "+st.session_username; }
   else if(st.session_present){ dot.className="dot off"; txt.textContent="session invalid — see warning below"; }
   else { dot.className="dot off"; txt.textContent="not logged in"; }
 
@@ -2587,7 +2628,18 @@ function render(st){
   const sb = $("sessBox");
   // Only Instagram needs a login. yt-dlp fetches public TikTok profiles without
   // one, so a missing session is not a problem worth flagging on that tab.
-  if(!st.session_ok && st.session_problem && activePlatform === "instagram"){
+  if(rej.username && activePlatform === "instagram"){
+    const when = rej.at ? new Date(rej.at*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "";
+    sb.className = "banner stop";
+    sb.innerHTML =
+      `<b>Instagram is rejecting the session for ${esc(rej.username)}</b> — it answered`
+      + ` the login check with 401. Downloads are stopped and will NOT restart by waiting:`
+      + ` the queue is parked until a different account is chosen.`
+      + (when?` <span class="hint">last checked ${esc(when)}</span>`:"")
+      + ` <button class="small primary" id="sessFixBtn" style="margin-left:auto">Switch session</button>`;
+    sb.style.display = "block";
+  } else if(!st.session_ok && st.session_problem && activePlatform === "instagram"){
+    sb.className = "banner";
     sb.innerHTML = `<b>Instagram login problem.</b> ${esc(st.session_problem)}`;
     sb.style.display = "block";
   } else {
@@ -2707,25 +2759,31 @@ function render(st){
     nowSec.style.display = "block";
     if(waiting){
       nowSec.classList.add("waiting");
+      // A rejected session is not a countdown: it is a stop that clears only
+      // when the account is switched, so it gets the error colour and says so.
+      const isSess = wait.kind === "session";
       nowSec.classList.toggle("rate-limited", wait.kind === "rate_limit");
+      nowSec.classList.toggle("session-stop", isSess);
       $("nowHint").innerHTML =
         `<span class="wait-kind">${esc(wait.label || "waiting")}</span>`
-        + (wait.held
+        + (isSess
+            ? `<span class="wait-timer">switch account in Sessions — waiting will not fix this</span>`
+            : wait.held
             ? `<span class="wait-timer">press Resume to start again</span>`
             : `<span class="wait-timer" id="waitTimer"></span>`);
-      if(!wait.held) startWaitTimer(wait.until); else stopWaitTimer();
+      if(isSess || wait.held) stopWaitTimer(); else startWaitTimer(wait.until);
       const next = queued[0];
       $("waitNext").textContent = next ? `next: ${next.username}` : "";
     } else {
       stopWaitTimer();
-      nowSec.classList.remove("waiting", "rate-limited");
+      nowSec.classList.remove("waiting", "rate-limited", "session-stop");
       $("waitNext").textContent = "";
       $("nowHint").textContent = "working";
     }
     setListHtml("nowList", current.map(j=>cardHtml(j, "", 1)).join(""));
   } else {
     stopWaitTimer();
-    nowSec.classList.remove("waiting", "rate-limited");
+    nowSec.classList.remove("waiting", "rate-limited", "session-stop");
     nowSec.style.display = "none";
     setListHtml("nowList", "");
   }
