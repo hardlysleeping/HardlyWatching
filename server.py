@@ -3063,7 +3063,14 @@ class Handler(BaseHTTPRequestHandler):
                     workers = int(body.get("workers") or 4)
                 except (TypeError, ValueError):
                     workers = 4
-                return self._json(eng.people_scan_start(workers))
+                # `profile` scans that one folder only -- the button inside a
+                # profile. Same worker, same progress, same resume.
+                only = None
+                name = str(body.get("profile") or "").strip()
+                if name:
+                    only = [(name, str(body.get("platform") or "instagram").strip()
+                             or "instagram")]
+                return self._json(eng.people_scan_start(workers, only))
             return self._json(eng.people_scan_status())
 
         if p == "/api/session/select":

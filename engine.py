@@ -2949,6 +2949,27 @@ def people_scan_stopped(self) -> bool:
     return bool(self._people_scan.get("stop"))
 
 
+_PEOPLE_TOTALS = {"at": 0.0, "value": {"checked": 0, "with_people": 0}}
+
+
+def _people_totals() -> dict:
+    """Archive-wide verdict counts, cached for a few seconds.
+
+    The poll runs every 1.2s; a COUNT over the people table on every poll is
+    waste, and the number only moves while the pass is running anyway.
+    """
+    now = time.time()
+    if now - _PEOPLE_TOTALS["at"] < 5.0:
+        return dict(_PEOPLE_TOTALS["value"])
+    try:
+        value = _pdb._shared_db().people_stats()
+    except Exception:
+        value = {"checked": 0, "with_people": 0}
+    _PEOPLE_TOTALS["at"] = now
+    _PEOPLE_TOTALS["value"] = dict(value)
+    return dict(value)
+
+
 def people_scan_status(self) -> dict:
     """Everything the UI needs to draw the scan: running, progress, totals."""
     st = dict(self._people_scan)
@@ -2961,17 +2982,23 @@ def people_scan_status(self) -> dict:
     return st
 
 
-def _people_worker(self, workers: int = 4) -> None:
+def _people_worker(self, workers: int = 4, only=None) -> None:
     """Walk the archive one profile at a time, classifying pictures.
 
     Resumable by construction rather than by bookkeeping: a profile whose
     pictures are all answered produces an empty to-do list and is skipped in
     milliseconds, so after an interruption the pass runs through the finished
     ones and continues at the first unfinished picture.
+
+    `only` restricts the pass to the folders given as [(username, platform)] --
+    that is the "scan this one profile" button. The whole-archive pass is the
+    same worker with `only` left out, so there is one implementation of the
+    walk, the stop and the resume.
     """
     st = self._people_scan
     try:
-        profiles = self._profile_folders()
+        profiles = (list(only) if only else
+                    [(u, p, f) for u, p, f in self._profile_folders()])
         st["profiles_total"] = len(profiles)
         st["profiles_done"] = 0
         for username, platform, _folder in profiles:
@@ -2996,8 +3023,13 @@ def _people_worker(self, workers: int = 4) -> None:
         st["finished"] = time.time()
 
 
-def people_scan_start(self, workers: int = 4) -> dict:
-    """Start the pass, or return the running one. Needs a model + onnxruntime."""
+def people_scan_start(self, workers: int = 4, only=None) -> dict:
+    """Start the pass, or return the running one. Needs a model + onnxruntime.
+
+    `only` = [(username, platform)] scans just those folders: the button inside
+    one profile. It is the same worker, so a per-profile scan reports the same
+    progress, stops the same way and resumes from the same per-picture answers.
+    """
     if not people_ready():
         return {"running": False, "ready": False,
                 "error": "onnxruntime or the model is missing"}
@@ -3009,8 +3041,9 @@ def people_scan_start(self, workers: int = 4) -> dict:
             "profile": "", "checked": 0, "clean": 0, "with_people": 0,
             "skipped": 0, "profiles_done": 0, "profiles_total": 0,
             "started": time.time(), "finished": 0.0,
+            "scope": (only[0][0] if only and len(only) == 1 else ""),
         })
-    threading.Thread(target=self._people_worker, args=(workers,),
+    threading.Thread(target=self._people_worker, args=(workers, only),
                      daemon=True, name="people-scan").start()
     return self.people_scan_status()
 
@@ -4279,6 +4312,10 @@ class Engine:
             saved_roots = [Path(p) for p in (d.get("roots") or []) if p]
             if saved_roots:
                 self.roots = saved_roots
+            # Remembered, not re-discovered: the file is on disk where the user
+            # left it, so the card can offer it again instead of asking twice.
+            self.saved_export_path = str(d.get("saved_export") or "")
+            self.saved_export_at = float(d.get("saved_export_at") or 0.0)
             saved_root = d.get("output_root")
             if saved_root:
                 self.output_root = Path(saved_root)
@@ -4294,6 +4331,16 @@ class Engine:
                     j.message = "resumed after restart"
                     j.attempts = 0
                 self.jobs[j.id] = j
+            # No remembered export yet (this is the first run with the field):
+            # take it from the newest saved job, so the card can offer the file
+            # the user already picked instead of starting from blank.
+            if not getattr(self, "saved_export_path", ""):
+                for j in sorted((x for x in self.jobs.values()
+                                 if x.kind == "saved" and getattr(x, "saved_export", "")),
+                                key=lambda x: x.added_at, reverse=True):
+                    self.saved_export_path = str(j.saved_export)
+                    self.saved_export_at = float(j.added_at or 0.0)
+                    break
             # Restore run order.
             for jid in (d.get("order") or []):
                 if jid in self.jobs and jid not in self.pending:
@@ -4351,6 +4398,12 @@ class Engine:
                     "tombstones": self.tombstones,
                     "output_root": str(self.output_root),
                     "roots": [str(p) for p in self.roots],
+                    # The TikTok export file the saved pass last used. It is a
+                    # file the user had to go and download from TikTok; losing
+                    # the PATH on every restart meant finding and re-picking it
+                    # before every run, for a file that never moved.
+                    "saved_export": getattr(self, "saved_export_path", "") or "",
+                    "saved_export_at": getattr(self, "saved_export_at", 0.0),
                     "jobs": jobs,
                 }
             # Write to a uniquely named temp file so two concurrent saves can
@@ -5049,6 +5102,8 @@ class Engine:
                     job.finished_at = None
                     job.error = ""
             job.saved_export = str(path)
+            self.saved_export_path = str(path)
+            self.saved_export_at = time.time()
             job.tiktok_total = len(links)
             job.message = f"{len(links)} saved videos"
             if job.status in ("done", "failed", "cancelled", "queued") and job.id not in self.pending:
@@ -6255,6 +6310,35 @@ class Engine:
             # explain why a queue is not moving.
             "disks": [r["disk"] for r in self.roots_status() if r["disk"]],
             "roots": self.roots_status(),
+            # Live progress for the people pass, small enough to ride the 1.2s
+            # poll. It used to be a separate request every 4s, which is why a
+            # running scan looked frozen between updates -- and it is here, not
+            # behind a flag, because the gallery tab (the one that shows the
+            # scan) polls `?lite=1`.
+            "people_scan": {
+                "running": bool(self._people_scan.get("running")),
+                "ready": people_ready(),
+                "checked": int(self._people_scan.get("checked") or 0),
+                "clean": int(self._people_scan.get("clean") or 0),
+                "with_people": int(self._people_scan.get("with_people") or 0),
+                "profiles_done": int(self._people_scan.get("profiles_done") or 0),
+                "profiles_total": int(self._people_scan.get("profiles_total") or 0),
+                "profile": self._people_scan.get("profile") or "",
+                "scope": self._people_scan.get("scope") or "",
+                "error": self._people_scan.get("error") or "",
+                "totals": _people_totals(),
+            },
+            # What the saved-videos card should offer: the export used last time,
+            # whether it is still there, and when it was used. Without this the
+            # card is blank after every restart and the pass has to be set up
+            # from scratch for a file that has not moved.
+            "saved_export": {
+                "path": getattr(self, "saved_export_path", "") or "",
+                "name": Path(getattr(self, "saved_export_path", "") or "").name,
+                "at": getattr(self, "saved_export_at", 0.0) or 0.0,
+                "exists": bool(getattr(self, "saved_export_path", ""))
+                          and Path(self.saved_export_path).exists(),
+            },
             # Where TikTok files actually go. Sent from here rather than worked
             # out again in the browser: a second copy of the location rule is
             # what made TikTok profiles vanish from the Gallery after the folder

@@ -467,6 +467,20 @@
   }
   .shortsframe iframe{width:100%;height:100%;border:0;display:block;background:#08080c}
 
+  /* A settings row pointed at from elsewhere flashes once, so the eye can find
+     it in a grid of 90 rows. */
+  .sgrid [data-row].hit{animation:rowhit 1.6s ease-out}
+  @keyframes rowhit{
+    0%,40%{background:rgba(255,255,255,.10);border-radius:8px}
+    100%{background:transparent}
+  }
+
+  /* ---------- people pass progress ---------- */
+  .pplrow{display:flex;align-items:center;gap:8px}
+  .pplbar-track{height:4px;border-radius:999px;background:var(--panel-3);overflow:hidden}
+  .pplbar-track > i{display:block;height:100%;background:var(--accent);
+    transition:width .4s ease}
+
   /* ---------- gallery grid ---------- */
   .gallery-head{display:flex;align-items:center;gap:10px;margin:0 0 14px}
   .profile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));
@@ -1156,6 +1170,7 @@
       <span class="hint" id="galleryHint" style="margin-left:auto">done archives only</span>
     </div>
     <div class="gbar" id="allBar" style="margin-bottom:16px"></div>
+    <div id="peopleBar" style="display:none;flex-direction:column;gap:5px;margin:0 0 10px"></div>
 
     <!-- Upload. The picker uses a plain file input with webkitdirectory, which
          on a phone opens the photo picker and on a desktop allows a whole
@@ -1402,7 +1417,11 @@ some.profile
             Check</button>
           <button class="small primary" id="savedAddBtn"
                   title="Queue every saved video in that file">Add to queue</button>
+          <button class="small" id="savedRunBtn" style="display:none"
+                  title="Queue the export you used last time, without finding it again">
+            Run again</button>
         </div>
+        <div id="savedRemembered" class="hint" style="margin-top:6px"></div>
         <div id="savedFound" style="margin-top:8px"></div>
         <label class="row" style="margin-top:8px;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="savedQueueCreators" checked>
@@ -2741,7 +2760,7 @@ function paintDisk(st){
         ${d.total_gb} GB (<b>${d.used_pct}% used</b>).
         ${stopping
           ? "Nothing new will start, and a run that crosses the limit is halted. Queued profiles are kept and are not marked failed — they resume on their own as soon as there is room."
-          : "Downloads still run, but they stop on their own once the drive reaches 95% used."}
+          : `Downloads still run, but they stop on their own once the drive reaches ${Math.round(d.limit_pct || 95)}% used.`}
       </div>
       <div style="margin-top:6px">
         ${stopping ? "Make room to continue:" : "Worth doing soon:"}
@@ -2749,7 +2768,48 @@ function paintDisk(st){
         drive under <b>Archive folders</b> and set it as the downloads folder, so
         new profiles land there instead.
       </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="small" id="diskLimitBtn"
+                title="The percentage where downloads stop, and whether there is a limit at all">
+          Change the ${d.limit_off ? "limit" : `${Math.round(d.limit_pct || 95)}%`} limit…</button>
+        <span class="hint" style="margin:0">${d.limit_off
+          ? "No limit: downloads run until the drive itself refuses."
+          : `Downloads stop at ${Math.round(d.limit_pct || 95)}% used — raise it to use more of the drive, lower it for more headroom.`}</span>
+      </div>
     </div>`;
+  // The banner is rebuilt on every poll, so the handler is attached here, not
+  // once at load.
+  const lb = $("diskLimitBtn");
+  if(lb) lb.onclick = openDiskLimit;
+}
+
+// The disk limit is a setting, and the warning that mentions it is the only
+// place a user meets the limit at all. This is the bridge: one button from the
+// warning to the number, opened, expanded and focused -- the row was reachable
+// before only by knowing it lives in Options -> Download settings -> Disk space.
+function openDiskLimit(){
+  const dlg = $("optionsDlg");
+  const box = $("settingsBox");
+  if(box){
+    box.hidden = false;
+    box.open = true;
+    if(typeof showOptTab === "function") showOptTab("settingsBox");
+  }
+  if(dlg && !dlg.open) dlg.showModal();
+  // The grid is built from the poll; give it a beat, then find the row.
+  const focusIt = () => {
+    const rows = [...document.querySelectorAll("#sgrid [data-row]")];
+    const row = rows.find(r => (r.dataset.terms || "").includes("disk_stop_pct"))
+             || rows.find(r => /stop at this/i.test(r.textContent || ""));
+    if(!row){ return false; }
+    row.scrollIntoView({block: "center", behavior: "smooth"});
+    row.classList.add("hit");
+    setTimeout(() => row.classList.remove("hit"), 1600);
+    const inp = row.querySelector("input");
+    if(inp){ inp.focus(); if(inp.select) inp.select(); }
+    return true;
+  };
+  if(!focusIt()) setTimeout(focusIt, 250);
 }
 
 // Where TikTok files land, shown as a clickable path. "Where did my TikTok
@@ -2950,10 +3010,43 @@ async function savedFind(){
   });
 }
 
+// The export is a file the user downloaded from TikTok once. Its PATH used to
+// live only in the input box, so every restart meant Find my export -> Use ->
+// Add to queue again, for a file that had not moved. The engine remembers the
+// path now and the poll carries it; this fills the box and offers one tap.
+function paintSavedExport(st){
+  const box = $("savedPath"), note = $("savedRemembered"), run = $("savedRunBtn");
+  if(!box) return;
+  const se = st.saved_export || {};
+  const known = (se.path || "").trim();
+  if(known && !box.value.trim()) box.value = known;
+  if(run){
+    run.style.display = known ? "" : "none";
+    run.disabled = !known || !se.exists;
+    run.title = !known ? ""
+      : (se.exists ? "Queue the export used last time"
+                   : "That file is gone — pick it again");
+  }
+  if(note){
+    if(!known){ note.textContent = ""; }
+    else {
+      const when = se.at ? new Date(se.at * 1000).toLocaleDateString() : "";
+      note.textContent = (se.exists
+        ? `Last used ${se.name}${when ? " · " + when : ""} — still there, so "Add to queue" needs no finding.`
+        : `${se.name} is no longer at that path — pick the export again.`);
+      note.style.color = se.exists ? "" : "var(--err)";
+    }
+  }
+}
+
 function wireSaved(){
   if($("savedFindBtn")) $("savedFindBtn").onclick = savedFind;
   if($("savedCheckBtn")) $("savedCheckBtn").onclick = savedCheck;
   if($("savedAddBtn")) $("savedAddBtn").onclick = savedAdd;
+  if($("savedRunBtn")) $("savedRunBtn").onclick = () => {
+    // Uses whatever the box holds: the remembered path when nothing was typed.
+    savedAdd();
+  };
   const box = $("savedQueueCreators");
   if(box){
     // The setting lives on the server: this card is drawn from a poll that
@@ -2984,6 +3077,9 @@ function render(st){
   paintDisk(st);
   paintTtPath(st);
   paintSavedSwitch(st);
+  paintSavedExport(st);
+  // Progress arrives with the poll (1.2s) instead of a separate 4s request.
+  if(st.people_scan){ gPeopleScan = st.people_scan; paintPeopleScan(st.people_scan); }
   // While the gallery or shorts tab is showing, the entire queue UI is
   // display:none. The 1.2s poll used to rebuild all of it anyway -- hundreds
   // of cards, invisible -- which showed up as the page stuttering whenever you
@@ -5228,9 +5324,10 @@ async function goBack(){
 // Draw the scan button from whatever the server last said. One place, so the
 // label, the tooltip and the disabled state cannot drift apart.
 function paintPeopleScan(st){
+  const s = st || {};
+  paintPeopleProgress(s);
   const b = $("peopleScanBtn");
   if(!b) return;
-  const s = st || {};
   const tot = s.totals || {};
   const done = tot.checked || 0;
   if(s.running){
@@ -5254,6 +5351,63 @@ function paintPeopleScan(st){
     b.classList.remove("on");
     b.disabled = false;
   }
+}
+
+// One line that says what the pass is doing, how far it has got, and which
+// profile it is on. The old UI only changed a button label every 4s, so a
+// running scan looked frozen and a per-profile scan had nowhere to report.
+// The in-profile scan button: its own label says whether THIS profile is the
+// one being scanned, and how far it has got.
+function paintPplScanBtn(){
+  const b = $("pplScanBtn");
+  if(!b) return;
+  const s = gPeopleScan || {};
+  const mine = s.running && s.scope && gProfile
+    && s.scope.toLowerCase() === String(gProfile).toLowerCase();
+  if(!s.ready && s.ready !== undefined){
+    b.textContent = "👤 Scan";
+    b.disabled = true;
+    b.title = "Needs the detector model — see the people pass notes";
+    return;
+  }
+  b.disabled = false;
+  if(mine){
+    const done = (s.checked || 0).toLocaleString();
+    b.textContent = `👤 ${done} checked`;
+    b.title = "Scanning this profile. Progress is saved per picture; stopping loses nothing.";
+  } else {
+    b.textContent = "👤 Scan";
+    b.title = "Mark every picture here as having somebody in it or not, "
+      + "so this profile can be filtered to the empty ones.";
+  }
+}
+
+function paintPeopleProgress(s){
+  const el = $("peopleBar");
+  if(!el) return;
+  const p = s || {};
+  if(!p.running){
+    // Finished or never started: say the archive total once, quietly.
+    const tot = (p.totals || {}).checked || 0;
+    if(tot && p.ready){
+      el.style.display = "flex";
+      el.innerHTML = `<span class="hint">👤 ${tot.toLocaleString()} pictures classified — `
+        + `use the <b>No people</b> chip in a profile.</span>`;
+    } else { el.style.display = "none"; }
+    return;
+  }
+  const done = p.checked || 0;
+  const prof = (p.profile || "").split(":").pop();
+  const n = p.profiles_done || 0, all = p.profiles_total || 0;
+  const scope = p.scope ? `scanning @${esc(p.scope)}` : `${n}/${all} profiles`;
+  const pct = all ? Math.min(100, Math.round(100 * n / all)) : 0;
+  el.style.display = "flex";
+  el.innerHTML = `<div class="pplrow">
+      <span class="hint"><b>👤 Looking for people</b> · ${done.toLocaleString()} pictures`
+      + `${prof ? ` · @${esc(prof)}` : ""} · ${scope}</span>
+      <span class="hint" style="margin-left:auto">${pct}%</span>
+    </div>
+    <div class="pplbar-track"><i style="width:${pct}%"></i></div>`;
 }
 
 async function refreshPeopleScan(){
@@ -8102,6 +8256,41 @@ function drawPhotos(username, sec){
   head.appendChild(pid);
   // The fetch control lives with the name it acts on.
   head.appendChild(dlwrap);
+  // And the people pass, for THIS profile. The archive-wide scan lives in the
+  // gallery bar, which is a different view -- inside a profile there was no way
+  // to ask for the one folder you were looking at.
+  const pplBtn = document.createElement("button");
+  pplBtn.className = "small";
+  pplBtn.id = "pplScanBtn";
+  pplBtn.textContent = "👤 Scan";
+  pplBtn.title = "Mark every picture here as having somebody in it or not, "
+    + "so this profile can be filtered to the empty ones. Saves as it goes.";
+  pplBtn.onclick = async () => {
+    const st = (gPeopleScan && gPeopleScan.running) ? gPeopleScan : null;
+    if(st){
+      toast("A scan is already running — stop it first if you want this one only");
+      return;
+    }
+    pplBtn.disabled = true;
+    pplBtn.textContent = "👤 starting…";
+    try{
+      const r = await (await fetch("/api/people-scan", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action: "start", profile: username,
+                              platform: gPlatform || "instagram"})})).json();
+      gPeopleScan = r;
+      paintPeopleScan(r);
+      if(r.error) toast(r.error);
+      else toast(`Scanning @${username} — progress is saved per picture`);
+    }catch(e){
+      toast("Could not reach the scan: " + e.message);
+    }finally{
+      pplBtn.disabled = false;
+      paintPplScanBtn();
+    }
+  };
+  head.appendChild(pplBtn);
+  paintPplScanBtn();
 
   // Download the whole profile: the folder in the gallery IS the archive on
   // disk, so the server zips that directory and hands it over. Kept where the
