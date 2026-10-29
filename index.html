@@ -720,6 +720,9 @@
   .dropzone{border:1px dashed var(--line);border-radius:12px;padding:12px 14px;
     margin-bottom:14px;background:var(--panel);transition:.15s}
   .dropzone.over{border-color:var(--accent);background:rgba(120,120,255,.07)}
+  /* The collapse toggle is a phone affordance only: on a desktop the panel is
+     already one compact row, and a second way to hide it is just a trap. */
+  #dzToggle{display:none}
   .dropzone .dz-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
     margin-bottom:6px}
   .dropzone .dz-target{display:flex;align-items:center;gap:6px;color:var(--muted);
@@ -963,6 +966,156 @@
     .vnav{width:40px;height:60px;font-size:26px}
     .vmedia img,.vmedia video{max-height:60vh}
   }
+
+  /* ================= phone pass: framing, density, viewing =================
+     Measured at 390x844 before this block: the first profile card started at
+     y=730, i.e. 87% of the screen was chrome before any content -- 85px of it
+     blank padding above the title (the safe-area inset ALREADY clears the
+     status bar, so the extra 26px was doubling it), a 183px upload panel, three
+     ragged rows of filter chips, and two sort rows on different alignments.
+     The rules below are width-scoped because they are LAYOUT (a narrow desktop
+     window should get them too); anything that is about thumbs rather than
+     pixels lives in the (pointer:coarse) block at the end. */
+  @media (max-width:640px){
+  .wrap{padding:calc(env(safe-area-inset-top) + 10px)
+                calc(env(safe-area-inset-right) + 14px)
+                calc(env(safe-area-inset-bottom) + 92px)
+                calc(env(safe-area-inset-left) + 14px)}
+  /* One row: the name and the drive chip side by side. Stacked they were 63px
+     of the top of the screen for two short pieces of text. */
+  header{margin-bottom:8px;gap:8px;flex-wrap:nowrap;flex-direction:row;
+    align-items:center;justify-content:space-between}
+  h1{font-size:19px;white-space:nowrap}
+  header #diskChip{font-size:11.5px;padding:4px 9px;margin:0;white-space:nowrap}
+  .tabs{margin:0 0 10px;gap:5px}
+  .tab{padding:11px 6px;font-size:13.5px;border-radius:10px}
+  /* A phone has no hover to tell you what is selected: the active tab is FILLED
+     rather than outlined, so "Download" cannot read as the current tab while
+     the gallery is on screen. */
+  .tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  /* Title and count on ONE line: the 640px rule above gives each a full row,
+     which cost 88px before the first chip. The count is short here because the
+     chip below already says "Profiles (2287)". */
+  /* Two rows: title + count, then the sort chips right-aligned. One row fitted
+     the text and cut "size ↓" in half at the right edge; wrapping the buttons
+     keeps every control whole, which matters more than the 16px it costs. */
+  .gallery-head{margin:0 0 8px;gap:2px 8px;flex-wrap:wrap;align-items:baseline}
+  #galleryTitle{font-size:15px !important;flex:1 1 auto;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #galleryHint{font-size:11px;flex:0 0 auto !important;margin-left:auto !important;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:48%}
+  .gallery-head > button{flex:0 0 auto}
+  /* Left-aligned with the chips below it: pushed right it looked like a
+     leftover desktop toolbar with a hole beside it. */
+  .gallery-head #sortNameBtn{margin-left:0 !important}
+  /* One row of chips that scrolls sideways, instead of three ragged rows that
+     ate 90px and left the right-hand side empty. */
+  .gbar{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+    -webkit-overflow-scrolling:touch;scrollbar-width:none;
+    margin:0 0 8px;padding-bottom:3px;
+    /* A chip cut by the screen edge reads as a layout bug, not as "there is
+       more". The fade says which edge the rest is behind. */
+    mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent);
+    -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent);
+    /* Room to scroll the last chip clear of the fade, so nothing sits
+       permanently half-visible under it. */
+    padding-right:26px;scroll-padding-right:26px}
+  .gbar::-webkit-scrollbar{display:none}
+  .gbar > *{flex:0 0 auto}
+  .fchip{padding:8px 13px;font-size:13px}
+  /* Search and the view switch on one row: the search shrinks instead of
+     taking a line of its own, which is what turned this block into 94px. */
+  .gsearch{margin-bottom:8px;gap:6px;flex-wrap:nowrap}
+  #gSearchWrap input{flex:1 1 auto;min-width:0;height:40px;font-size:16px}
+  .gviews{flex:0 0 auto}
+  .gviews button{padding:9px 9px;font-size:12.5px}
+  /* 8/4 is a card-density control that a 2-column phone grid cannot express. */
+  .gdens{display:none}
+  /* The upload panel is a desktop idea (choose files, choose a folder, drag
+     here). On a phone it is one row until you ask for it. */
+  #dropZone{padding:6px 10px;margin-bottom:8px}
+  /* The bar stays while you scroll: on a phone the tabs are the only way back,
+     and scrolling 2,288 profiles is exactly when you lose them. */
+  header{position:sticky;top:0;z-index:30;background:var(--bg);
+    padding-top:calc(env(safe-area-inset-top) + 4px)}
+  .tabs{position:sticky;top:calc(env(safe-area-inset-top) + 37px);z-index:29;
+    background:var(--bg);padding-bottom:2px}
+  .wrap{padding-top:0}
+  #dropZone .dz-head{gap:8px}
+  #dropZone .dz-body{display:none}
+  #dropZone.open .dz-body{display:block;margin-top:8px}
+  #dzToggle{display:inline-flex;margin-left:auto}
+  /* The post grid is the thing being browsed: one full-width tile per screen
+     meant 929 posts was 929 screens. Three square tiles across is the phone
+     shape for an archive this size. */
+  .pgrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}
+  .ptile{border-radius:6px}
+  .ptile .acts button{width:28px;height:28px;font-size:12.5px}
+  /* One row: face, handle, and Fetch new. Wrapped, the button took a line of
+     its own under a name it acts on. */
+  .phead{gap:8px;margin:0 0 8px;flex-wrap:nowrap}
+  .phead .pav{width:38px;height:38px}
+  .phead .pid{flex:1 1 auto;min-width:0}
+  .phead .pname{font-size:14px;gap:6px;flex-wrap:nowrap;min-width:0}
+  .phead .pname > span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .phead .pname .badge{flex:0 0 auto;font-size:9.5px;padding:2px 6px}
+  .phead .psub{font-size:11.5px;margin-top:2px;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis}
+  .phead .dlwrap{margin-left:auto;flex:0 0 auto}
+  /* A truncated timestamp on a 118px tile ("2026-10-28 15:…") is noise: it
+     cannot be read, and the viewer shows the full date. */
+  .ptile .pmeta{display:none}
+  .gback{padding:8px 12px;font-size:12.5px;margin-bottom:8px}
+  .shead{font-size:11.5px;margin:8px 0 4px}
+  #galleryPane.gprof #allBar,#galleryPane.gprof #dropZone{display:none}
+  /* Four overlays and a caption on a 118px thumbnail covered the picture. On a
+     phone a tile keeps the two actions you actually use while browsing (heart,
+     bookmark) and drops the destructive one -- trash is in the viewer, where
+     you can see what you are deleting. */
+  /* The destructive tile button, by the label it carries ("Move to trash").
+     Restore, on a trash tile, says "Restore to main folder" and stays. */
+  .ptile .acts-right button[title*="trash"]{display:none}
+  .ptile .pmeta{font-size:10.5px;padding:2px 4px}
+  #profileGrid.profile-grid{gap:9px}
+  #profileGrid.gview-grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr))}
+  #profileGrid.gview-card{grid-template-columns:minmax(0,1fr)}
+  .pcard{padding:9px 5px 8px;border-radius:11px}
+  .pcard .av{width:52px;height:52px;margin-bottom:6px}
+  .pcard .nm{font-size:12px}
+  .pcard.big .hero{height:84px}
+  /* Viewer: edge to edge on a phone. 14px of margin around a full-screen photo
+     is 28px of picture given away on the smallest screen there is. */
+  .viewwrap{padding:0}
+  .vbox{max-height:100%;height:100%;border-radius:0;border:0}
+  .vbar{padding:calc(env(safe-area-inset-top) + 8px) 12px 9px;gap:8px;
+    font-size:12px;flex-wrap:wrap}
+  .vcap{padding:9px 12px calc(env(safe-area-inset-bottom) + 9px);
+    font-size:12.5px;max-height:26vh}
+  .vmedia img,.vmedia video{max-height:100%}
+  .vnav{width:38px;height:56px;font-size:24px;background:rgba(0,0,0,.42)}
+  .vnav.prev{left:2px}
+  .vnav.next{right:2px}
+  /* A phone's own chrome (status bar, home indicator) is not part of the page. */
+  .shortsframe{height:min(74vh,760px);border-radius:12px}
+  .dlg{padding:0;border-radius:16px 16px 0 0;margin:auto 0 0;max-height:92vh;
+    width:100%;max-width:none}
+  .dlgwrap{align-items:flex-end;padding:0}
+  }
+
+  /* Thumbs, not pixels: only a coarse pointer gets thumb-sized controls, so a
+     narrow desktop window keeps its compact rows. */
+  @media (pointer:coarse){
+    .tab,.fchip,.gviews button,#dzToggle,.small,
+    .card > .actions .small,.card > .actions button.icon{min-height:44px}
+    .fchip{display:inline-flex;align-items:center}
+    .gviews button{display:inline-flex;align-items:center;justify-content:center}
+    .vact{width:40px;height:40px;font-size:17px}
+    .vnav{width:44px;height:64px}
+    .ptile .acts button{width:34px;height:34px;font-size:15px}
+    /* Hover previews are a mouse idea; on touch they cost a transcode and never
+       show. The tap opens the viewer instead. */
+    .ptile video.hovervid{display:none}
+  }
 </style>
 </head>
 <body>
@@ -1011,10 +1164,12 @@
     <div id="dropZone" class="dropzone">
       <input type="file" id="uploadInput" multiple accept="image/*,video/*" hidden>
       <input type="file" id="uploadDir" webkitdirectory directory multiple hidden>
-      <div class="dz-row">
+      <div class="dz-row dz-head">
         <b>Add your own photos</b>
         <span class="hint" id="upHint"></span>
+        <button class="small" id="dzToggle" type="button">＋ Add</button>
       </div>
+      <div class="dz-body">
       <div class="dz-row">
         <button class="small" id="pickFiles">Choose files</button>
         <button class="small" id="pickFolder">Choose folder</button>
@@ -1026,6 +1181,7 @@
         </span>
       </div>
       <div class="hint">…or drag files here. JPG, PNG, WEBP, HEIC, MP4, MOV.</div>
+      </div>
     </div>
 
     <div class="gsearch" id="gSearchWrap" style="display:none">
@@ -3925,7 +4081,11 @@ async function tick(){
   // would make the card visibly jump back and forth. Skip one or two polls.
   if(Date.now() < optimisticUntil) return;
   try{
-    const r = await fetch("/api/state");
+    const r = await fetch("/api/state", {cache: "no-cache"});
+    // 304: the state is byte-for-byte what this page already drew. Re-parsing
+    // 2 MB and re-rendering the queue for that was the single biggest cost in
+    // the whole UI, and it happened every 1.2s whether or not anything moved.
+    if(r.status === 304){ pollFails = 0; setOffline(false); return; }
     if(!r.ok) throw new Error("HTTP " + r.status);
     const st = await r.json();
     pollFails = 0;
@@ -5934,6 +6094,15 @@ async function uploadFiles(fileList){
   if(!inp || !zone) return;
   if(pick) pick.onclick = () => inp.click();
   if(pickDir && dir) pickDir.onclick = () => dir.click();
+  // On a phone the upload panel is one row until it is asked for: "Choose
+  // files / choose a folder / drag here" is three desktop ideas and 183px of
+  // the screen, most of it above the profile list. The button is hidden on
+  // desktop by CSS, so opening it there is not a thing that can happen.
+  const dzToggle = $("dzToggle");
+  if(dzToggle) dzToggle.onclick = () => {
+    const open = zone.classList.toggle("open");
+    dzToggle.textContent = open ? "× Close" : "＋ Add";
+  };
   inp.onchange = () => { uploadFiles(inp.files); inp.value = ""; };
   if(dir) dir.onchange = () => { uploadFiles(dir.files); dir.value = ""; };
 
@@ -6973,6 +7142,8 @@ async function togglePeek(card){
 async function renderGallery(){
   const host = $("profileGrid");
   if(gProfile) return renderPhotos(gProfile, gPlatform);
+  const gpList = $("galleryPane");
+  if(gpList) gpList.classList.remove("gprof");
   const mine = ++gReq;
   buildSortBtns();
   paintSortBtns();
@@ -7366,6 +7537,11 @@ async function renderPhotos(username, platform){
   // person, which reads as if you were still on that view.
   const abar = $("allBar");
   if(abar) abar.querySelectorAll(".fchip.on").forEach(c => c.classList.remove("on"));
+  // Phone-only: the cross-profile bar and the upload panel belong to the
+  // profile LIST. Left on screen inside a profile they are 120px of controls
+  // for somewhere else, above the photos you actually opened.
+  const gp0 = $("galleryPane");
+  if(gp0) gp0.classList.add("gprof");
   // Remember the view we are leaving (only when a profile is NOT already open,
   // so re-renders of the same profile do not stack up entries).
   if(!gProfile){
