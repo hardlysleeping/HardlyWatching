@@ -514,6 +514,26 @@ def _profile_list_param(raw) -> list[str]:
     return out[:200]
 
 
+def _page_args(q, default_limit: int = 0, cap: int = 2000) -> tuple[int, int]:
+    """(limit, offset) from a query, for the endpoints that can be paged.
+
+    `limit=0` (the default, and what happens when the parameter is absent) means
+    "the whole list", so every existing caller -- and the UI as it stands --
+    keeps getting exactly the response it got before. A caller that draws a page
+    at a time can ask for one and skip the rest of the payload.
+    """
+    def _int(name: str, fallback: int) -> int:
+        try:
+            return int((q.get(name) or [str(fallback)])[0] or fallback)
+        except (TypeError, ValueError):
+            return fallback
+    limit = _int("limit", default_limit)
+    offset = max(0, _int("offset", 0))
+    if limit > 0:
+        limit = min(limit, cap)
+    return max(0, limit), offset
+
+
 def _mark_bookmarks(posts, profile: str | None = None) -> list[dict]:
     """Mark which of these posts are already saved, with the category each is in.
 
@@ -1851,9 +1871,19 @@ class Handler(BaseHTTPRequestHandler):
             # Liked is the favourites folder plus every clip liked in the viewer
             # (gallery_all joins the two); trash is a folder like any other.
             posts = _mark_bookmarks(get_engine().gallery_all(section))
-            return self._json({"section": section,
-                               "profiles": get_engine().gallery_profiles(),
-                               "posts": posts})
+            total = len(posts)
+            limit, offset = _page_args(q)
+            if limit:
+                posts = posts[offset:offset + limit]
+            out = {"section": section,
+                   "profiles": get_engine().gallery_profiles(),
+                   "posts": posts}
+            if limit:
+                # Only when paging was asked for: the full answer keeps exactly
+                # the shape it always had.
+                out.update({"total": total, "offset": offset, "limit": limit,
+                            "has_more": offset + len(posts) < total})
+            return self._json(out)
         if p == "/api/bookmarks":
             # The user's own collection: every bookmarked post, newest first,
             # plus the categories they have made. `category` filters the list --
@@ -1888,7 +1918,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 posts = [p for p in allposts
                          if str(cat) in [str(c) for c in (p.get("categories") or [])]]
-            return self._json({
+            # `total` stays the size of the WHOLE collection (it is what the
+            # heading counts), so a page is drawn from a list that still knows
+            # how long it really is. No limit -> the same full response as ever.
+            limit, offset = _page_args(q)
+            if limit:
+                posts = posts[offset:offset + limit]
+            out = {
                 "categories": cats,
                 "category": cat,
                 "posts": posts,
@@ -1898,7 +1934,11 @@ class Handler(BaseHTTPRequestHandler):
                 # bookmark buttons from one answer instead of asking per tile.
                 "keys": {"%s/%s" % (p["username"].lower(), p["items"][0]["file"]):
                          p.get("categories") or [] for p in allposts},
-            })
+            }
+            if limit:
+                out.update({"offset": offset, "limit": limit,
+                            "has_more": offset + len(posts) < len(allposts)})
+            return self._json(out)
         if p == "/api/dupes":
             # Read-only report from the last scan, plus where it has got to.
             # Nothing here changes a file; removal is a separate, explicit call.

@@ -170,13 +170,17 @@ INSTALOADER = shutil.which("instaloader") or str(Path.home() / ".local/bin/insta
 # These are percentages of the volume, checked per root, so a profile pinned to
 # another drive is judged against its own drive instead of the main one.
 #
-#   WARN  tell the user, keep downloading
+#   WARN  tell the user, keep downloading -- five points below STOP, so it is
+#         tied to the limit that was set rather than to a fixed number
 #   STOP  start nothing else, and halt a run that crosses it
 #
 # STOP is also the reserve, expressed as a check made BEFORE the disk fills
 # rather than after: at 95%, no job may start unless at least 5% of the volume
 # is free, which is the same rule reached earlier. The GiB floor keeps small
 # volumes from having a trivially tiny reserve.
+#
+# DISK_WARN_PCT is only the value the guard starts with, before any settings
+# are applied; the live warning is derived from the live stop limit.
 DISK_WARN_PCT = 90.0
 DISK_STOP_PCT = 95.0
 DISK_RESERVE_MIN_GB = 2.0
@@ -201,9 +205,19 @@ def apply_disk_limits(stop_pct=None, off=None) -> None:
         _DISK_LIMITS["stop"] = min(99.9, max(50.0, pct))
     if off is not None:
         _DISK_LIMITS["off"] = bool(off)
-    # Warn a little before the stop, and never above it -- a 60% limit with a
-    # 90% warning would never warn at all.
-    _DISK_LIMITS["warn"] = min(DISK_WARN_PCT, _DISK_LIMITS["stop"] - 5.0)
+    # The warning is tied to the limit the person actually set, not to a fixed
+    # 90%: with a 99% limit, warning at 90% arrives with nine points still to
+    # go, which reads as noise and gets ignored. Five points below the limit is
+    # the rule, floored at 50 so that a low limit still warns before it stops.
+    #
+    # A limit that is OFF has nothing to be near, so the warning sits at 100 and
+    # never appears -- that is what turning it off means. (DISK_WARN_PCT is kept
+    # only as the pre-settings default; it must not raise the threshold, which
+    # is exactly what capping at 90 did to a 99% limit.)
+    if _DISK_LIMITS["off"]:
+        _DISK_LIMITS["warn"] = 100.0
+    else:
+        _DISK_LIMITS["warn"] = max(50.0, _DISK_LIMITS["stop"] - 5.0)
 
 
 def disk_usage(path) -> dict | None:
@@ -225,8 +239,9 @@ def disk_usage(path) -> dict | None:
     warn = _DISK_LIMITS["warn"]
     reserve = max(DISK_RESERVE_MIN_GB * 2 ** 30, total * (100.0 - stop) / 100.0)
     if _DISK_LIMITS["off"]:
-        # No limit: still report warn, so a nearly full drive is visible, but
-        # never "stop" -- that is what the switch means.
+        # No limit: no warning either. The person switched the guard off, and a
+        # warning is the guard talking -- warn sits at 100 in this state (see
+        # apply_disk_limits), so this only ever reports "ok".
         level = "warn" if pct >= warn else "ok"
     elif pct >= stop or u.free < reserve:
         level = "stop"
@@ -796,10 +811,9 @@ UPLOAD_EXTS = GALLERY_EXTS
 # Listing a profile folder means touching every file in it: the biggest
 # archives here hold ~6,700 posts, and /api/gallery lists all of them on every
 # request, which measured at ~0.7s of pure syscall overhead to produce 5KB of
-# JSON. The list only changes when a file is added or removed, and a directory's
-# mtime changes on exactly those events, so the result is cached against it.
-# Keyed by (folder, dir mtime, dir size) so a rename that preserves mtime still
-# misses. Entries are dropped when a folder disappears.
+# JSON. The list only changes when a file is added, removed or renamed, and a
+# directory's own metadata changes on exactly those events, so the result is
+# cached against it (see _folder_sig, which is the one place that decides).
 #
 # The same rows also live in a SQLite file (see _Cache), because an in-memory
 # cache is empty after every restart and the first load of each profile then
@@ -807,8 +821,6 @@ UPLOAD_EXTS = GALLERY_EXTS
 # warm one. The filesystem is always the source of truth: a row is only ever
 # used when its stamp still matches the directory on disk, so a stale or
 # corrupt cache degrades to a rescan and can never show a wrong list.
-_MEDIA_CACHE: dict[str, tuple[tuple, list[str]]] = {}
-_MEDIA_CACHE_MAX = 512
 
 CACHE_DB = cache_db_path()
 
@@ -839,6 +851,14 @@ class _Cache:
             path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(str(path), check_same_thread=False)
             self.conn.execute("PRAGMA journal_mode=WAL")
+            # WAL with synchronous=NORMAL: a commit does not fsync on every
+            # write. The default (FULL) made a cold pass over the archive pay
+            # one fsync per folder -- 2,289 of them, measured at ~4s of a 7s
+            # first request. This file is a cache: every row is validated
+            # against the directory before it is used and rebuilt when it does
+            # not match, so losing the last few commits to a power cut costs a
+            # rescan, not data.
+            self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.execute(
                 "CREATE TABLE IF NOT EXISTS media ("
                 " folder TEXT PRIMARY KEY,"
@@ -867,47 +887,46 @@ class _Cache:
             # scans the disk as it did before.
             self.conn = None
 
-    def get(self, folder: str, stamp: tuple) -> list[str] | None:
-        """Cached names for a folder. `stamp` is (mtime_ns, size, inode, newest).
+    def put_sig(self, folder: str, dir_stamp: tuple, names: list[str],
+                posts_stamp: tuple) -> None:
+        """Store one folder's listing AND its post stamp in a single row.
 
-        The four values must all match what is on disk right now. `newest` is
-        the newest file mtime, which is what catches a file being emptied (the
-        trash flow) -- the directory's own metadata does not change for that.
+        The two live in the same row, and writing them separately was a bug:
+        `put()` blanks the post stamp's columns (it has no `newest` or count to
+        give them), so a rescan of the listing quietly invalidated the cached
+        posts for that folder. One write keeps them consistent, and the posts
+        columns survive a listing refresh.
+
+        `dir_stamp` is (mtime_ns, size, inode) -- the listing key.
+        `posts_stamp` is (size, inode, newest_file_mtime, file_count) -- the
+        posts key. Both are matched by their own readers.
+
+        The cached POSTS are dropped when the post stamp changes and kept when
+        it does not. That is not an optimisation, it is a correctness rule: a
+        refreshed listing that moved the stamp on while leaving yesterday's
+        posts in the row would have `get_posts()` match the new stamp against
+        the old posts and serve a deleted file forever.
         """
         if self.conn is None:
-            return None
-        try:
-            with self._lock:
-                row = self.conn.execute(
-                    "SELECT mtime_ns, size, inode, newest_ns, names"
-                    " FROM media WHERE folder=?",
-                    (folder,)).fetchone()
-        except Exception:
-            return None
-        if not row:
-            return None
-        have = (row[0], row[1], row[2], row[3])
-        want = tuple(stamp)
-        if len(want) == 3:                 # older callers: no newest component
-            have, want = have[:3], want
-        if have != want:
-            return None                    # folder changed -> rescan
-        return row[4].split("\n") if row[4] else []
-
-    def put(self, folder: str, stamp: tuple, names: list[str]) -> None:
-        if self.conn is None:
             return
-        s = tuple(stamp) + (0, 0, 0, 0)
+        d = tuple(dir_stamp) + (0, 0, 0)
+        p = tuple(posts_stamp) + (0, 0, 0, 0)
         try:
             with self._lock:
                 self.conn.execute(
                     "INSERT INTO media (folder, mtime_ns, size, inode, newest_ns,"
-                    " names, updated) VALUES (?,?,?,?,?,?,?)"
+                    " nfiles, names, posts, updated) VALUES (?,?,?,?,?,?,?,NULL,?)"
                     " ON CONFLICT(folder) DO UPDATE SET"
-                    " mtime_ns=excluded.mtime_ns, size=excluded.size,"
-                    " inode=excluded.inode, newest_ns=excluded.newest_ns,"
+                    " mtime_ns=excluded.mtime_ns,"
+                    " posts=CASE WHEN media.size IS excluded.size"
+                    "   AND media.inode IS excluded.inode"
+                    "   AND media.newest_ns IS excluded.newest_ns"
+                    "   AND media.nfiles IS excluded.nfiles"
+                    "  THEN media.posts ELSE NULL END,"
+                    " size=excluded.size, inode=excluded.inode,"
+                    " newest_ns=excluded.newest_ns, nfiles=excluded.nfiles,"
                     " names=excluded.names, updated=excluded.updated",
-                    (folder, s[0], s[1], s[2], s[3], "\n".join(names),
+                    (folder, d[0], p[0], p[1], p[2], p[3], "\n".join(names),
                      time.time()))
                 self.conn.commit()
         except Exception:
@@ -939,6 +958,40 @@ class _Cache:
             return json.loads(row[4])
         except (ValueError, TypeError):
             return None                    # unreadable row -> rebuild
+
+    def get_sig(self, folder: str, dir_stamp: tuple) -> tuple[list[str], tuple] | None:
+        """(names, posts stamp) from the mirror, if the directory still matches.
+
+        The listing key -- (mtime, size, inode) -- is what is checked, because
+        it is the one that catches every add, remove and rename. The newest-file
+        mtime comes from the row too: re-reading it is exactly the scandir this
+        exists to avoid, and the next deep read of that folder refreshes it.
+
+        A row written before the post stamp was stored alongside the listing has
+        no file count, so it is refused and rebuilt rather than guessed at.
+        """
+        if self.conn is None:
+            return None
+        try:
+            with self._lock:
+                row = self.conn.execute(
+                    "SELECT mtime_ns, size, inode, newest_ns, nfiles, names"
+                    " FROM media WHERE folder=?", (folder,)).fetchone()
+        except Exception:
+            return None
+        if not row:
+            return None
+        want = tuple(dir_stamp)[:3]
+        if (row[0], row[1], row[2]) != want:
+            return None
+        if row[3] is None or row[4] is None or row[5] is None:
+            return None                     # pre-signature row -> rescan once
+        names = row[5].split("\n") if row[5] else []
+        if int(row[4]) < len(names):
+            return None                     # half-written row -> rescan
+        # nfiles counts the media plus the sidecars beside them, so it can be
+        # larger than the name count but never smaller.
+        return names, (row[1], row[2], row[3], row[4])
 
     def put_posts(self, folder: str, stamp: tuple, posts: list[dict]) -> None:
         if self.conn is None:
@@ -990,83 +1043,228 @@ _cache = _Cache(CACHE_DB)
 
 
 def _media_cache_forget(folder: Path) -> None:
-    """Drop a folder's cached listing after something wrote into it.
+    """Drop everything cached for one folder after something wrote into it.
 
-    Uploads add files without going through _gallery_media(), so the memory and
-    SQLite rows for that folder are stale the moment a file lands. Both are
-    cleared here rather than waiting for the directory stamp to be noticed,
-    because the next request may well be the one that lists the new file.
+    Uploads add files without going through _gallery_media(), and the trash
+    flow empties a file in place, which changes neither the directory's size
+    nor its mtime. Both are stale the moment the write happens, and the next
+    request may well be the one that shows the change, so the listing, the
+    folder's signature and the cached posts are all dropped here rather than
+    waiting for a stat to notice.
+
+    It also bumps _WRITE_SEQ, because an emptied file leaves no trace in the
+    directory metadata that the built answers (the timeline, the profile list's
+    disk half) are stamped against. That is the one invalidation they cannot
+    derive themselves, so it is handed to them here.
+    """
+    global _WRITE_SEQ
+    key = str(folder)
+    _SIG_CACHE.pop(key, None)
+    _cache.drop(key)
+    _WRITE_SEQ += 1
+
+
+# Bumped by every explicit "something wrote here" (see _media_cache_forget).
+# Part of every aggregate stamp: it is what makes a write that the directory
+# metadata cannot show -- a file emptied in place, an upload landing in a
+# folder whose size happens to come out the same -- invalidate the built lists
+# instead of leaving them serving the old answer.
+_WRITE_SEQ = 0
+
+
+# ---------------------------------------------------------------------------
+# One folder, one scan: the listing and its invalidation stamp together
+#
+# Every request asks each folder two questions: "what files are here" (the
+# listing the grid draws from) and "could the grouped posts have changed" (the
+# stamp the post cache is keyed on). Those were two separate passes, and the
+# stamp alone cost two stats per FILE -- 2 x 30,000 syscalls for one
+# all-profiles timeline, which measured 2.5s warm with nothing to rebuild.
+#
+# Both answers now come from a single scandir and are remembered, keyed on the
+# directory's own (mtime, size, inode). That key is checked on every call, so a
+# file being added, removed, renamed or emptied is noticed immediately -- which
+# is every write this app makes: downloads, trash, favourites, uploads,
+# deletes, restores.
+#
+# What a directory stat cannot see is a file rewritten IN PLACE with the same
+# name and size: an edited sidecar JSON, say. That is what the newest-file
+# mtime in the stamp is for, and re-reading it is a scandir -- so it is done at
+# most once per SIG_TTL per folder, and only for callers that look at one
+# folder (a profile being opened). Walks of the whole archive pass deep=False:
+# paying a scandir per folder there is exactly the cost this cache removes, and
+# a folder whose sidecar was hand-edited is re-read by the next single-profile
+# request anyway.
+SIG_TTL = 5.0
+# folder -> (dir stamp, names, posts stamp, when it was scanned)
+_SIG_CACHE: dict[str, tuple[tuple, list[str], tuple, float]] = {}
+_SIG_CACHE_MAX = 16384
+
+
+def _sig_cache_put(key: str, value: tuple) -> None:
+    if len(_SIG_CACHE) >= _SIG_CACHE_MAX:
+        for _ in range(max(1, _SIG_CACHE_MAX // 4)):
+            try:
+                _SIG_CACHE.pop(next(iter(_SIG_CACHE)))
+            except (StopIteration, KeyError):
+                break
+    _SIG_CACHE[key] = value
+
+
+def _folder_sig(folder: Path, deep: bool = True) -> tuple[list[str], tuple] | None:
+    """(media names, posts stamp) for one folder. One stat when nothing changed.
+
+    The stamp is (dir size, dir inode, newest file mtime, file count). The
+    directory's own mtime is deliberately NOT part of it: on this mount merely
+    reading a directory can bump it, so including it made the stamp differ on
+    every request and the post cache never hit -- measured as a 1.0x speedup,
+    i.e. no cache at all.
+
+    What IS used: the newest file mtime, because a post's date and caption come
+    from its sidecar JSON and editing one in place has to invalidate the cache;
+    the file count, so an added or removed file invalidates even when the
+    newest mtime happens to match; and the directory's size and inode, which
+    catch a folder being swapped for another at the same path.
     """
     key = str(folder)
-    _MEDIA_CACHE.pop(key, None)
-    _cache.drop(key)
-
-
-def _posts_stamp(folder: Path, names: list[str]) -> tuple | None:
-    """Invalidation key for cached posts.
-
-    The directory's own mtime is deliberately NOT part of this. On this mount
-    simply reading a directory bumps it (atime/relatime updates), so including
-    it made the stamp differ on every request and the cache never hit -- it
-    measured as a 1.0x speedup, i.e. no cache at all.
-
-    What is used instead:
-      * the newest file mtime, because a post's date and caption come from its
-        sidecar JSON -- editing or replacing that file has to invalidate the
-        cache, and the directory mtime would not notice;
-      * the file count, so an added or removed file also invalidates;
-      * size and inode of the directory, which are stable and catch a folder
-        being swapped for another one at the same path.
-
-    A brand-new file necessarily carries the newest mtime, so additions are
-    still caught even without the directory timestamp.
-    """
     st = _dir_stamp(folder)
     if st is None:
+        # Gone, or on a drive that is not mounted. Drop the memory entries and
+        # the row, but do NOT count it as a write: a walk over an archive with
+        # an unplugged root asks about missing folders constantly, and bumping
+        # _WRITE_SEQ for that would throw the built answers away on every
+        # request.
+        _SIG_CACHE.pop(key, None)
+        _cache.drop(key)
         return None
-    # Every media file is stat'ed here, and so is every sidecar.
-    #
-    # The sidecars matter and are easy to miss: GALLERY_EXTS only covers media,
-    # so a `.json` never appears in `names`. But a post's date and caption come
-    # FROM that sidecar, which means editing one changes the answer while the
-    # directory's size, inode and file count all stay identical. Skipping them
-    # served a stale caption after an edit. So the sidecars are stat'ed via a
-    # single scandir of the folder, which is far cheaper than a stat per name.
-    newest = 0
-    sidecars = 0
+    now = time.time()
+    hit = _SIG_CACHE.get(key)
+    if hit is not None and hit[0] == st:
+        if not deep or (now - hit[3]) < SIG_TTL:
+            return hit[1], hit[2]
+        # The TTL has elapsed and this caller wants the CONTENTS confirmed, so
+        # fall through to a scan. The SQLite mirror must not answer here: it
+        # only knows what the last scan saw, which is the very thing being
+        # asked about.
+    elif hit is None:
+        # Memory is empty on the first request after a restart, so ask the
+        # SQLite mirror before rescanning: it holds the same names and the same
+        # stamp, and accepting it is what makes a cold start as cheap as a warm
+        # one.
+        disk = _cache.get_sig(key, st)
+        if disk is not None:
+            _sig_cache_put(key, (st, disk[0], disk[1], now))
+            return disk
+    scanned = _scan_dir(folder)
+    if scanned is None:
+        return None
+    names, newest, sidecars = scanned
+    # nfiles counts the media plus the sidecars that carry their dates, which
+    # is the stamp the previous version of this cache wrote -- keeping it
+    # identical means an existing gallery-cache.db is still valid after an
+    # upgrade instead of every profile rebuilding at once.
+    stamp = (st[1], st[2], newest, len(names) + sidecars)
+    _sig_cache_put(key, (st, names, stamp, now))
+    _cache.put_sig(key, st, names, stamp)
+    return names, stamp
+
+
+def _archive_stamp(folders) -> tuple:
+    """A cheap fingerprint of what is on disk across many folders.
+
+    One directory stat per folder (2,289 here, ~40ms warm) -- which is what
+    makes it safe to keep a BUILT answer around: adding, removing, renaming or
+    emptying a file inside a profile changes that profile's directory, so the
+    fingerprint changes and the answer is rebuilt. It cannot see an in-place
+    rewrite, exactly like the per-folder stamp it is built from; see
+    _folder_sig for why that trade is made and what covers it.
+    """
+    out = []
+    for folder in folders:
+        if folder is None:
+            continue
+        sig = _folder_sig(folder, deep=False)
+        if sig is None:
+            continue
+        out.append((str(folder), sig[1]))
+    # _WRITE_SEQ first: a write the directory metadata cannot show (a file
+    # emptied in place) has to invalidate this too, and that is the only way it
+    # can be reported.
+    return (_WRITE_SEQ, tuple(out))
+
+
+def _scan_dir(folder: Path) -> tuple[list[str], int, int] | None:
+    """One pass over the folder: the media names, the newest date-carrying
+    mtime, and how many sidecars were counted.
+
+    Everything both the listing and its invalidation stamp need comes from this
+    single scandir, so neither is paid for twice.
+
+    The newest mtime is taken over the files that can actually change an answer:
+    the media files themselves, and the sidecar JSON beside them (a post's date
+    and caption come from its sidecar, so editing one has to invalidate the
+    cached posts -- and a `.json` is never in `names`, because GALLERY_EXTS only
+    covers media). Sidecars are matched by stem, so instaloader's
+    `<stamp>.json` and yt-dlp's `<stamp>.info.json` both count for a post whose
+    files are `<stamp>.jpg` or `<stamp>_1.jpg`. Subdirectories and unrelated
+    files are left out on purpose: their mtime moves for reasons that cannot
+    change what a post says, and counting them threw away a profile's cached
+    posts for nothing.
+    """
+    names = []
+    files: list[tuple[str, int]] = []
     try:
-        stem_set = {os.path.splitext(n)[0] for n in names}
         with os.scandir(folder) as it:
             for entry in it:
+                if entry.name == INDEX_FILE:
+                    continue          # our own bookkeeping, not archive content
                 try:
-                    # Two sidecar shapes date a post: instaloader's
-                    # `<name>.json`, and yt-dlp's `<id>.info.json` for TikTok.
-                    # The second was invisible here, so a TikTok video's date
-                    # came from its mtime and never noticed its metadata change.
-                    if entry.name.endswith(".info.json"):
-                        key = entry.name[:-len(".info.json")]
-                    elif entry.name.endswith(".json"):
-                        key = entry.name[:-len(".json")]
-                    else:
-                        continue
-                    if key not in stem_set:
-                        continue
-                    est = entry.stat()
+                    st = entry.stat()
+                    is_file = entry.is_file()
                 except OSError:
                     continue
-                sidecars += 1
-                if est.st_mtime_ns > newest:
-                    newest = est.st_mtime_ns
+                if not is_file:
+                    continue
+                files.append((entry.name, st.st_mtime_ns))
+                if os.path.splitext(entry.name)[1].lower() not in GALLERY_EXTS:
+                    continue
+                if st.st_size == 0:   # truncated, or emptied by the trash flow
+                    continue
+                names.append(entry.name)
     except OSError:
         return None
-    for name in names:
-        try:
-            m = (folder / name).stat().st_mtime_ns
-        except OSError:
-            continue
-        if m > newest:
-            newest = m
-    return (st[1], st[2], newest, len(names) + sidecars)
+    names.sort()
+    media = set(names)
+    stems = {os.path.splitext(n)[0] for n in names}
+    newest = 0
+    sidecars = 0
+    for name, mtime in files:
+        if name.endswith(".info.json"):
+            stem = name[:-len(".info.json")]
+        elif name.endswith(".json"):
+            stem = name[:-len(".json")]
+        else:
+            stem = None
+        if stem is not None and stem in stems:
+            sidecars += 1
+            if mtime > newest:
+                newest = mtime
+        elif name in media and mtime > newest:
+            newest = mtime
+    return names, newest, sidecars
+
+
+def _gallery_media(folder: Path) -> list[str]:
+    """Names of displayable media directly inside `folder` (sorted).
+
+    A thin read of _folder_sig: the listing and the post stamp come from the
+    same scan and the same cache entry, so asking for both costs one scan
+    rather than two. Not deep: a name list cannot change without the directory
+    itself changing, which the stamp checks on every call, so there is nothing
+    for the in-place check to catch here.
+    """
+    sig = _folder_sig(folder, deep=False)
+    return sig[0] if sig is not None else []
 
 
 def _dir_stamp(folder: Path) -> tuple | None:
@@ -1077,81 +1275,6 @@ def _dir_stamp(folder: Path) -> tuple | None:
     return (st.st_mtime_ns, st.st_size, st.st_ino)
 
 
-def _scan_dir(folder: Path) -> tuple[list[str], int] | None:
-    """One pass over the folder: media names and the newest entry mtime.
-
-    Everything the listing needs comes from this single scandir, so the cache
-    key and the listing are never paid for twice.
-    """
-    names = []
-    newest = 0
-    try:
-        with os.scandir(folder) as it:
-            for entry in it:
-                if entry.name == INDEX_FILE:
-                    continue          # our own bookkeeping, not archive content
-                try:
-                    st = entry.stat()
-                except OSError:
-                    continue
-                if st.st_mtime_ns > newest:
-                    newest = st.st_mtime_ns
-                if not entry.is_file():
-                    continue
-                if os.path.splitext(entry.name)[1].lower() not in GALLERY_EXTS:
-                    continue
-                if st.st_size == 0:   # truncated, or emptied by the trash flow
-                    continue
-                names.append(entry.name)
-    except OSError:
-        return None
-    names.sort()
-    return names, newest
-
-
-def _gallery_media(folder: Path) -> list[str]:
-    """Names of displayable media directly inside `folder` (sorted).
-
-    Cached in three layers, cheapest first: memory, the SQLite mirror, then a
-    real scan. The question the cache has to answer is "could anything have
-    changed since I looked", and the cheap, correct way to ask that is the
-    directory's own mtime: adding, deleting, renaming or replacing a file
-    updates it. Rewriting a file's CONTENTS does not, which is why the cached
-    entry also remembers the newest entry mtime and the entry count -- but that
-    is only re-read when the directory itself looks unchanged but old enough to
-    be worth confirming.
-    """
-    key = str(folder)
-    stamp = _dir_stamp(folder)
-    if stamp is None:
-        _MEDIA_CACHE.pop(key, None)
-        _cache.drop(key)
-        return []
-
-    hit = _MEDIA_CACHE.get(key)
-    if hit is not None and hit[0] == stamp:
-        return hit[1]
-
-    # Memory is empty on the first request after a restart, so ask the SQLite
-    # mirror before rescanning. It is accepted only when the directory metadata
-    # still matches; the looser newest-mtime check is applied after a rescan.
-    disk = _cache.get(key, stamp)
-    if disk is not None:
-        if len(_MEDIA_CACHE) >= _MEDIA_CACHE_MAX:
-            _MEDIA_CACHE.clear()
-        _MEDIA_CACHE[key] = (stamp, disk)
-        return disk
-
-    scanned = _scan_dir(folder)
-    if scanned is None:
-        return []
-    names, _newest = scanned
-
-    if len(_MEDIA_CACHE) >= _MEDIA_CACHE_MAX:
-        _MEDIA_CACHE.clear()
-    _MEDIA_CACHE[key] = (stamp, names)
-    _cache.put(key, stamp, names)
-    return names
 
 
 # How big one profile is, for sorting the profile list by size.
@@ -1621,7 +1744,7 @@ def _same(a: Path, b: Path) -> bool:
     return ra == rb
 
 
-def tiktok_roots(root: Path) -> tuple[Path, ...]:
+def _tiktok_roots_uncached(root: Path) -> tuple[Path, ...]:
     """Candidate folders holding TikTok archives for one root, best first.
 
     TikTok lives BESIDE the Instagram folder, not inside it: `<parent>/tiktok`
@@ -1678,7 +1801,42 @@ def tiktok_roots(root: Path) -> tuple[Path, ...]:
     return (nested,)
 
 
+def tiktok_roots(root: Path) -> tuple[Path, ...]:
+    """_tiktok_roots_uncached(), remembered against the two directories involved.
+
+    See _TIKTOK_ROOTS: this is one of the hottest calls in the gallery (once per
+    profile per request) and its answer is a property of two directories that
+    almost never change. A root that is not mounted resolves to no stamp at all,
+    and is then simply not cached -- an unplugged drive must start working the
+    moment it is back, without waiting for an entry to expire.
+    """
+    key = str(root)
+    try:
+        st = os.stat(root)
+        parent = os.stat(Path(root).parent)
+        stamp = (st.st_dev, st.st_mtime_ns, parent.st_mtime_ns)
+    except OSError:
+        _TIKTOK_ROOTS.pop(key, None)
+        return _tiktok_roots_uncached(root)
+    hit = _TIKTOK_ROOTS.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    got = _tiktok_roots_uncached(root)
+    if len(_TIKTOK_ROOTS) > 64:
+        _TIKTOK_ROOTS.clear()
+    _TIKTOK_ROOTS[key] = (stamp, got)
+    return got
+
+
 TIKTOK_MARKER = ".hardlywatching-tiktok"
+
+# tiktok_roots() is asked once per profile by every cross-profile view (the
+# gallery list, the Liked/Trash views, the timeline): 2,130 calls and 0.13s of
+# one /api/gallery, all answering the same question about the same two or three
+# roots. The answer depends only on the root and on what sits beside it, so it
+# is remembered against those two directories' mtimes -- creating or removing a
+# profile folder in either place changes one of them and the answer is rebuilt.
+_TIKTOK_ROOTS: dict[str, tuple[tuple, tuple[Path, ...]]] = {}
 
 
 def _looks_like_tiktok_archive(folder: Path) -> bool:
@@ -1818,15 +1976,23 @@ def _post_owner(folder: Path, stamp: str, platform: str = "instagram") -> str:
 
 
 def gallery_posts(self, username: str, section: str = "main",
-                  platform: str = "instagram") -> list[dict]:
+                  platform: str = "instagram", deep: bool = True,
+                  folder: Path | None = None) -> list[dict]:
     """Group one section's media into posts, carousel parts in order.
 
-    Each post is one Instagram post: a single image/video, or a carousel of
-    up to 20. Parts are ordered by their numeric suffix, not by string --
-    otherwise `_10` would sort before `_2`. A TikTok profile has no carousels
-    or sidecars, so every video simply becomes its own post.
+    Each post is one Instagram post: a single image/video, or a carousel of up
+    to 20. Parts are ordered by their numeric suffix, not by string -- otherwise
+    `_10` would sort before `_2`. A TikTok profile has no carousels or
+    sidecars, so every video simply becomes its own post.
+
+    `deep` says whether to re-read a folder whose directory metadata looks
+    unchanged to catch an in-place rewrite (see _folder_sig). Callers that walk
+    the WHOLE archive pass deep=False: the directory stat still catches every
+    add, remove, rename and empty, and a scandir per folder is exactly the cost
+    this cache exists to remove. `folder` skips resolving the handle again when
+    the caller already knows where the archive is.
     """
-    base = self.root_for(username, platform)
+    base = folder if folder is not None else self.root_for(username, platform)
     if base is None:
         return []
     folder = base
@@ -1844,22 +2010,27 @@ def gallery_posts(self, username: str, section: str = "main",
             pass
 
     grouped: dict[str, list[dict]] = {}
-    names = _gallery_media(folder)
+
+    # The listing and the invalidation stamp come out of ONE cached scan: it
+    # used to be two passes, and the stamp alone cost two stats per file on
+    # every request (2 x 30,000 syscalls for one all-profiles timeline).
+    sig = _folder_sig(folder, deep=deep)
+    if sig is None:
+        return []
+    names, stamp = sig
 
     # Grouped posts are cached here because building them is the expensive part:
     # one sidecar JSON read per file, measured at 1.27s of 1.63s for 20 profiles
     # (21,016 files). The all-profiles timeline would otherwise re-read 30k
     # sidecars on every request. Keyed on a stamp that includes the newest file
     # mtime, so an edited sidecar invalidates it.
-    stamp = _posts_stamp(folder, names)
-    if stamp is not None:
-        hit = _cache.get_posts(str(folder), stamp)
-        if hit is not None:
-            hit.sort(key=lambda p: p["ts"])
-            # Decorated after the cache: the people verdicts live in profiles.db
-            # and change when the scan runs, so baking them into the cached row
-            # would freeze "unknown" until the folder itself changed.
-            return self._attach_people(folder, hit)
+    hit = _cache.get_posts(str(folder), stamp)
+    if hit is not None:
+        hit.sort(key=lambda p: p["ts"])
+        # Decorated after the cache: the people verdicts live in profiles.db
+        # and change when the scan runs, so baking them into the cached row
+        # would freeze "unknown" until the folder itself changed.
+        return self._attach_people(folder, hit)
 
     # Group filenames first (see group_into_posts), then describe each file. The
     # grouping is by post, not by extension, so a carousel that mixes photos and
@@ -1934,9 +2105,39 @@ def gallery_posts(self, username: str, section: str = "main",
             "tagged": bool(owner) and owner.lower() != me,
         })
     posts.sort(key=lambda p: p["ts"])
-    if stamp is not None:
-        _cache.put_posts(str(folder), stamp, posts)
+    _cache.put_posts(str(folder), stamp, posts)
     return self._attach_people(folder, posts)
+
+
+PEOPLE_KNOWN_TTL = 60.0
+# folder -> (when read, {path: (size, has_people)})
+_PEOPLE_KNOWN: dict[str, tuple[float, dict]] = {}
+
+
+def _people_known(folder: Path) -> dict:
+    """Verdicts for one folder, remembered -- see PEOPLE_KNOWN_TTL.
+
+    people_known() is a LIKE query over the whole people table, with no index
+    that can serve it, so it costs ~1ms per folder and every cross-profile view
+    asks for every folder: 137 of them was 0.14s of a 0.17s /api/gallery/all.
+    The verdicts only change when the people pass writes them, which happens in
+    this file -- and that drops this cache, so a scan's results are visible at
+    the next request rather than after the TTL. The TTL is the backstop for a
+    scan run by another process (a second instance, the control panel).
+    """
+    key = str(folder)
+    now = time.time()
+    hit = _PEOPLE_KNOWN.get(key)
+    if hit is not None and (now - hit[0]) < PEOPLE_KNOWN_TTL:
+        return hit[1]
+    try:
+        known = _pdb._shared_db().people_known(key)
+    except Exception:
+        known = {}
+    if len(_PEOPLE_KNOWN) > 16384:
+        _PEOPLE_KNOWN.clear()
+    _PEOPLE_KNOWN[key] = (now, known)
+    return known
 
 
 def _attach_people(self, folder: Path, posts: list[dict]) -> list[dict]:
@@ -1954,10 +2155,7 @@ def _attach_people(self, folder: Path, posts: list[dict]) -> list[dict]:
 
     Read once per folder, so decorating a 2,700-post grid is one query.
     """
-    try:
-        known = _pdb._shared_db().people_known(str(folder))
-    except Exception:
-        known = {}
+    known = _people_known(folder)
     for p in posts:
         verdicts: list[int] | None = [] if known else None
         if verdicts is not None:
@@ -2046,14 +2244,39 @@ def timeline(self, months: int | None = None,
     else:
         sources = [(p.get("username"), "instagram")
                    for p in self.gallery_profiles() if p.get("username")]
+    # Resolve each handle to its folder ONCE: the walk below needs the folder
+    # anyway, and asking root_for() again per profile was two more stats and a
+    # tiktok_roots() lookup each (2,289 of them, per request).
+    walk = []
+    for username, plat in sources:
+        try:
+            folder = self.root_for(username, plat)
+        except Exception:
+            folder = None
+        if folder is not None:
+            walk.append((username, plat, folder))
+    # What this list was built FROM. A request for the same scope while nothing
+    # on disk has moved is answered from the list built last time: rebuilding it
+    # means re-reading the cached posts of 2,289 folders (6MB of JSON) and
+    # re-sorting 30,000 of them, which measured 2.5s per request for a view that
+    # had not changed at all. The stamp is one directory stat per folder, so it
+    # costs ~40ms and is checked on every call -- a file moved to trash, a
+    # favourite, an upload or a delete changes it and the list is rebuilt.
+    stamp = (bool(only_favorites), want_key, _archive_stamp([f for _u, _p, f in walk]))
+    if (getattr(self, "_timeline_stamp", None) == stamp
+            and getattr(self, "_timeline_all", None) is not None):
+        return {"months": self._timeline_groups,
+                "total": len(self._timeline_all),
+                "profile": want_key or ""}
     out: list[dict] = []
     if only_favorites:
         # Favourites-only timeline. These live in each profile's favorites/
         # subfolder rather than main/, so they are read from there; the same
         # post is never listed twice because only one folder is walked.
-        for username, plat in sources:
+        for username, plat, folder in walk:
             try:
-                favs = self.gallery_posts(username, "favorites", plat)
+                favs = self.gallery_posts(username, "favorites", plat,
+                                          deep=False, folder=folder)
             except Exception:
                 continue
             for p in favs:
@@ -2072,15 +2295,17 @@ def timeline(self, months: int | None = None,
                     "section": "favorites",
                 })
     else:
-        for username, plat in sources:
+        for username, plat, folder in walk:
             try:
-                posts = self.gallery_posts(username, "main", plat)
+                posts = self.gallery_posts(username, "main", plat,
+                                           deep=False, folder=folder)
             except Exception:
                 continue
             # Which posts are ALSO favourited, so a timeline tile can show the
             # heart already filled and toggle it without a second request.
             try:
-                fav_ids = {p["post"] for p in self.gallery_posts(username, "favorites", plat)}
+                fav_ids = {p["post"] for p in self.gallery_posts(
+                    username, "favorites", plat, deep=False, folder=folder)}
             except Exception:
                 fav_ids = set()
             for p in posts:
@@ -2115,6 +2340,16 @@ def timeline(self, months: int | None = None,
     self._timeline_all = out
     self._timeline_groups = groups
     self._timeline_favs = bool(only_favorites)
+    # What this list was built from, so the next request can tell in ~40ms
+    # whether it can reuse it (see the check at the top of this function).
+    #
+    # Recomputed rather than reused from the top of the function: building it
+    # runs reconcile_deletions(), which writes a profile's `.insta-index.json`
+    # the first time it sees the folder -- a write that changes that directory
+    # and would leave the stamp above already stale, so the very next request
+    # would rebuild the same list again.
+    self._timeline_stamp = (bool(only_favorites), want_key,
+                            _archive_stamp([f for _u, _p, f in walk]))
     # Which profile this list was built for, so a month request for a different
     # scope cannot be answered from the wrong cache.
     self._timeline_profile = want_key
@@ -2447,34 +2682,62 @@ def gallery_profiles(self) -> list[dict]:
     # Each profile is looked up under its own platform, so an Instagram profile
     # and a TikTok account sharing a handle stay separate entries on disk.
     wanted = [(u, "instagram") for u in on_disk] + [(u, "tiktok") for u in tt_on_disk]
+    # Resolve every handle to its folder first. A root that is not mounted
+    # resolves to None here, so profiles on an unplugged drive are simply absent
+    # from the list -- they reappear on the next request once the drive is back.
+    folders = []
     seen = set()
     for username, platform in wanted:
         key = (username, platform)
         if key in seen:
             continue
         seen.add(key)
-        job = mains.get(key)
-        # A root that is not mounted resolves to None here, so profiles on an
-        # unplugged drive are simply absent from the list -- they reappear on
-        # the next request once the drive is back.
         folder = self.root_for(username, platform)
         if folder is None:
             continue
-        media = _gallery_media(folder)
-        if not media:
+        folders.append((username, platform, folder))
+
+    # The disk half of each card: how many files, how many bytes, which root.
+    # That is the part that costs a stat (or a full walk) per profile, and it
+    # only changes when something inside the folder changes -- which the
+    # folder's own directory metadata reports. So it is remembered against a
+    # stamp of all of them (one stat each, ~40ms for this archive) and the LIVE
+    # job fields are re-attached below on every call: a running download's
+    # status and progress must never be served out of a cache.
+    stamp = _archive_stamp([f for _u, _p, f in folders])
+    disk = getattr(self, "_gallery_disk", None)
+    if disk is None or disk[0] != stamp:
+        cards = {}
+        for username, platform, folder in folders:
+            media = _gallery_media(folder)
+            if not media:
+                continue
+            cards[(username, platform)] = {
+                "count": len(media),
+                # How much disk this person's archive takes. Costs a walk of
+                # the folder the first time and is remembered after that; see
+                # profile_bytes(). The grid sorts by it.
+                "bytes": profile_bytes(folder, len(media)),
+                "root": str(folder.parent),
+            }
+        disk = (stamp, cards)
+        self._gallery_disk = disk
+    cards = disk[1]
+
+    for username, platform, _folder in folders:
+        got = cards.get((username, platform))
+        if got is None:
             continue
+        job = mains.get((username, platform))
         status = job.status if job else "done"
         out.append({
             "username": username,
             "platform": platform,
             "id": job.id if job else username,
-            "count": len(media),
-            # How much disk this person's archive takes. Costs a walk of the
-            # folder the first time and is remembered after that; see
-            # profile_bytes(). The grid sorts by it.
-            "bytes": profile_bytes(folder, len(media)),
-            "posts": job.posts if job else len(media),
-            "root": str(folder.parent),
+            "count": got["count"],
+            "bytes": got["bytes"],
+            "posts": job.posts if job else got["count"],
+            "root": got["root"],
             "status": status,
             "downloading": status in GALLERY_LIVE_STATUSES,
             # Progress within the current run, for the tile's progress hint.
@@ -2676,7 +2939,12 @@ def bookmarked_posts(self, category=None) -> list[dict]:
             saved_at[(str(r.get("creator") or "").lower(), f)] = float(when)
     out = []
     folders: dict[str, dict] = {}
-    listings: dict[tuple[str, str], tuple[set, set, set]] = {}
+    # Resolved per profile, not per bookmark: `hit[0] / hit[1]` plus str() on it
+    # was ~19k pathlib calls (0.08s) for 6,800 bookmarks that mostly belong to a
+    # handful of profiles. False means "this profile has no folder here", which
+    # is also worth remembering.
+    bases: dict[tuple[str, str], tuple] = {}
+    missing: set[tuple[str, str]] = set()
     for row in db.bookmarks(category):
         name = str(row.get("file") or "").rsplit("/", 1)[-1]
         plat = str(row.get("platform") or "instagram").lower()
@@ -2685,14 +2953,18 @@ def bookmarked_posts(self, category=None) -> list[dict]:
             continue
         if plat not in folders:
             folders[plat] = self._handle_folders(plat)
-        hit = folders[plat].get(stored.lower())
-        if not hit:
+        key = (plat, stored.lower())
+        if key in missing:
             continue
-        base = hit[0] / hit[1]
-        key = (plat, str(base))
-        lists = listings.get(key)
-        if lists is None:
-            lists = listings[key] = _folder_sections(base)
+        got = bases.get(key)
+        if got is None:
+            hit = folders[plat].get(stored.lower())
+            if not hit:
+                missing.add(key)
+                continue
+            base = hit[0] / hit[1]
+            got = bases[key] = (hit, base, _folder_sections(base))
+        hit, base, lists = got
         section = None
         for cand, names in zip(("main", FAVORITES_DIR, TRASH_DIR), lists):
             if name in names:
@@ -2819,9 +3091,14 @@ def gallery_all(self, section: str) -> list[dict]:
     if section not in SUBDIRS:
         return []
     out = []
-    for username, platform, _folder in self._profile_folders():
+    for username, platform, folder in self._profile_folders():
         try:
-            posts = self.gallery_posts(username, section, platform)
+            # deep=False: this walks every profile in the archive, and the
+            # directory stat inside still catches every add, remove, rename and
+            # empty -- see _folder_sig. A scandir per profile here is what made
+            # this view slow.
+            posts = self.gallery_posts(username, section, platform,
+                                       deep=False, folder=folder)
         except Exception:
             continue
         for p in posts:
@@ -2900,6 +3177,11 @@ def people_scan_profile(self, username: str, platform: str = "instagram",
                 db.people_set_many(batch)
             except Exception:
                 pass
+            # These folders' verdicts just changed, so the remembered answer for
+            # them is stale. Only theirs: clearing the whole cache here would
+            # make the grid re-query every profile on every batch.
+            for parent in {str(Path(row[0]).parent) for row in batch}:
+                _PEOPLE_KNOWN.pop(parent, None)
             st = self._people_scan
             st["checked"] = int(st.get("checked") or 0) + len(batch)
             st["with_people"] = int(st.get("with_people") or 0) + sum(
@@ -3774,6 +4056,13 @@ def move_media(self, username: str, name: str, section: str,
         _write_index(root, {**idx, "media": sorted(media)})
     except Exception:
         pass
+    # Every folder a post can live in, plus the write hook: a rename already
+    # changes the two directories, but the placeholder left behind (and the
+    # truncate path in the trash flow) can leave the metadata looking identical
+    # -- and the cached timeline and profile list are stamped on exactly that.
+    _media_cache_forget(root)
+    _media_cache_forget(root / FAVORITES_DIR)
+    _media_cache_forget(root / TRASH_DIR)
     return True, f"moved to {dest_dir.name}/"
 
 
@@ -4133,6 +4422,12 @@ class Engine:
             "profiles_done": 0, "profiles_total": 0,
             "started": 0.0, "finished": 0.0,
         }
+        # Built answers that are reused while nothing on disk has moved: the
+        # profile list's disk half, and the whole timeline. Both carry the
+        # stamp they were built from (see _archive_stamp) and are thrown away
+        # the moment it no longer matches, so neither can outlive a write.
+        self._gallery_disk: tuple | None = None
+        self._timeline_stamp: tuple | None = None
         self.active_session: str | None = None  # chosen instaloader session
         # Sessions the user has locked out (a flagged account cooling off).
         # Persisted, so a restart cannot quietly put that account back to work;
