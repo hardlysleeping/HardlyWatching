@@ -269,6 +269,21 @@ def self_check(server) -> int:
     except Exception as e:
         print(f"  instaloader                     NOT bundled: {e}")
         ok = False
+    # The people pass is optional, so it must not fail the check -- but "off"
+    # with no reason is what makes a support question take an afternoon. Say
+    # which half is missing: the runtime, the numpy it needs, or the model.
+    try:
+        import onnxruntime
+        print(f"  onnxruntime                     {onnxruntime.__version__}")
+    except Exception as e:
+        print(f"  onnxruntime                     absent ({e.__class__.__name__}: {e})")
+    try:
+        import engine as _engine
+        model = _engine.people_model_path()
+        print(f"  people model                    {model or 'not installed'}")
+        print(f"  people pass                     {'ready' if _engine.people_ready() else 'off'}")
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"  people pass                     could not tell: {e}")
     print(f"port / host     : {server.PORT} / {server.HOST}")
     print(f"output root     : {server.get_engine().output_root}")
     print("RESULT          : " + ("ok" if ok else "problems found"))

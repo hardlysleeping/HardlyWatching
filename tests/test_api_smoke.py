@@ -1102,6 +1102,34 @@ class PeoplePassTests(SandboxCase):
         self.assertIsNone(posts["2024-05-04_12-00-00_UTC"]["people"],
                           "a video is not something the pass judged")
 
+    def test_progress_is_visible_while_a_profile_is_still_running(self):
+        # A big profile takes minutes. If the counter only moves when the profile
+        # ends, the pass looks stuck for all of it -- and the worker used to add
+        # the profile's totals on top of what the profile itself published, so a
+        # finished run counted everything twice.
+        root = self.sb.root / "people-live"
+        folder = root / "live"
+        folder.mkdir(parents=True)
+        for n in range(4):
+            (folder / f"2024-06-0{n + 1}_12-00-00_UTC.jpg").write_bytes(b"x" * 200)
+        self.fake_probe({"2024-06-02": True})
+        eng = self.engine(root)
+
+        out = eng.people_scan_profile("live")
+        self.assertEqual(out["checked"], 4)
+        self.assertEqual(eng._people_scan["checked"], 4,
+                         "the running pass did not publish what it had done")
+        self.assertEqual(eng._people_scan["with_people"], 1)
+        self.assertEqual(eng._people_scan["clean"], 3)
+
+        # And the worker does not add the same numbers again.
+        eng._people_scan.update({"checked": 0, "clean": 0, "with_people": 0,
+                                 "profiles_done": 0, "stop": False})
+        eng._people_worker(workers=1)
+        self.assertEqual(eng._people_scan["checked"], 0,
+                         "nothing was left to do, so nothing should be counted")
+        self.assertEqual(eng._people_scan["profiles_done"], 1)
+
     def test_a_replaced_picture_is_looked_at_again(self):
         root = self.sb.root / "people-replace"
         folder = root / "swap"

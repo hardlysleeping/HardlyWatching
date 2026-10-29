@@ -61,8 +61,8 @@
         "install -Dm644 io.github.hardlysleeping.HardlyWatching.metainfo.xml /app/share/metainfo/io.github.hardlysleeping.HardlyWatching.metainfo.xml",
         "install -Dm755 hardlywatching-server /app/lib/hardlywatching/hardlywatching-server",
         "install -Dm755 hardlywatching-launch /app/bin/hardlywatching-launch",
-        "/usr/bin/python3 -m pip install --no-cache-dir --no-warn-script-location --prefix=/app 'pillow>=10.4,<12' instaloader yt-dlp",
-        "PYTHONPATH=/app/lib/python3.13/site-packages /usr/bin/python3 -c 'import PIL, instaloader, yt_dlp; print(\"deps\", PIL.__version__, instaloader.__version__, yt_dlp.version.__version__)'",
+        "/usr/bin/python3 -m pip install --no-cache-dir --no-warn-script-location --prefix=/app 'pillow>=10.4,<12' instaloader yt-dlp onnxruntime numpy",
+        "PYTHONPATH=/app/lib/python3.13/site-packages /usr/bin/python3 -c 'import PIL, instaloader, yt_dlp, onnxruntime, numpy; print(\"deps\", PIL.__version__, instaloader.__version__, yt_dlp.version.__version__)'",
         "cd src-tauri && cargo build --release",
         "install -Dm755 src-tauri/target/release/hardlywatching /app/bin/hardlywatching",
         "strip /app/bin/hardlywatching || true"

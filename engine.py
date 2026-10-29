@@ -2890,12 +2890,22 @@ def people_scan_profile(self, username: str, platform: str = "instagram",
     workers = max(1, min(8, int(workers or 1)))
 
     def flush() -> None:
+        # Publish as it goes, not at the end of the profile: a big profile takes
+        # minutes, and a counter that sits at 0 for all of it reads as "stuck".
+        # The worker adds only profiles_done now -- counting here AND there made
+        # the totals double.
         nonlocal batch
         if batch:
             try:
                 db.people_set_many(batch)
             except Exception:
                 pass
+            st = self._people_scan
+            st["checked"] = int(st.get("checked") or 0) + len(batch)
+            st["with_people"] = int(st.get("with_people") or 0) + sum(
+                1 for row in batch if row[2])
+            st["clean"] = int(st.get("clean") or 0) + sum(
+                1 for row in batch if not row[2])
             batch = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
@@ -2973,9 +2983,8 @@ def _people_worker(self, workers: int = 4) -> None:
             except Exception as exc:
                 st["error"] = f"{username}: {exc}"
                 res = {}
-            st["checked"] += int(res.get("checked") or 0)
-            st["clean"] += int(res.get("clean") or 0)
-            st["with_people"] += int(res.get("people") or 0)
+            # checked/clean/with_people were published by people_scan_profile
+            # as it wrote each batch; only the profile count is the worker's.
             st["skipped"] += int(res.get("skipped") or 0)
             st["profiles_done"] += 1
     except Exception as exc:

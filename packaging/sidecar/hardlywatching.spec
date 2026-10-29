@@ -118,6 +118,27 @@ try:
 except Exception as exc:  # pragma: no cover
     print(f"WARNING: pillow-heif not bundled ({exc}); HEIC photos will not thumbnail")
 
+# onnxruntime + numpy: the people pass (engine.people_probe) imports them lazily
+# and treats their absence as "the feature is off", so the frozen app used to
+# ship a people filter it could never run. Bundle them when the build venv has
+# them; numpy is onnxruntime's dependency and PyInstaller has a hook for it, but
+# onnxruntime's shared libraries are data, not code, so collect both.
+try:
+    import numpy as _np
+    hiddenimports += ["numpy"]
+    hiddenimports += collect_submodules("numpy")
+    print(f"numpy {_np.__version__} bundled")
+except Exception as exc:  # pragma: no cover
+    print(f"WARNING: numpy not bundled ({exc}); onnxruntime cannot import")
+
+try:
+    import onnxruntime as _ort
+    hiddenimports += collect_submodules("onnxruntime")
+    datas += collect_data_files("onnxruntime")
+    print(f"onnxruntime {_ort.__version__} bundled")
+except Exception as exc:  # pragma: no cover
+    print(f"WARNING: onnxruntime not bundled ({exc}); the people pass will be off")
+
 # instaloader: engine.py shells out to a program literally named
 # ``instaloader`` (it resolves it with shutil.which), so bundling the library is
 # only half the job -- build.sh drops a ``bin/instaloader`` wrapper that
@@ -146,7 +167,10 @@ a = Analysis(
     excludes=[
         "tkinter",
         "matplotlib",
-        "numpy",
+        # numpy used to be here: nothing imported it, so it was dead weight. The
+        # people pass's onnxruntime imports it, and an excluded module stays out
+        # of the bundle even when a hidden import asks for it -- which is why the
+        # pass reported "off" in a build that claimed to ship the runtime.
         "pandas",
         "PyQt5",
         "PyQt6",
