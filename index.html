@@ -1553,9 +1553,12 @@ some.profile
       <span class="sgdesc">where new downloads are written, and which folders the gallery reads</span>
     </div>
     <div class="hint" style="margin:0 0 10px">
-      Downloads are saved into the <b>downloads folder</b>. The gallery shows
-      everything in every folder listed below, so old archives can stay on other
-      drives and still appear. Nothing is ever moved without you asking.
+      Downloads are saved into the <b>downloads folder</b>. When that drive
+      reaches the space limit, a new download is written into one of the
+      archive folders below that still has room — one profile always stays on
+      one drive. The gallery shows everything in every folder listed, so old
+      archives can stay on other drives and still appear. Nothing is ever moved
+      without you asking.
     </div>
 
     <!-- Downloads folder: the one place new files are written. -->
@@ -1569,15 +1572,18 @@ some.profile
       <div class="hint" id="downloadsNote"></div>
     </div>
 
-    <!-- Archive folders: everything the gallery reads. -->
+    <!-- Archive folders: everything the gallery reads, and where overflow goes. -->
     <div class="foldcard">
       <div class="foldcard-head">
         <b>Archive folders</b>
         <span class="hint">everything the gallery shows</span>
       </div>
       <div class="hint" style="margin:4px 0 8px">
-        The downloads folder is always one of them. A folder on an unplugged
-        drive simply disappears from the gallery until it is plugged back in.
+        The downloads folder is always one of them. A folder marked
+        <b>takes overflow</b> is also where new downloads go once the downloads
+        drive is full, so a second drive keeps the queue moving instead of
+        stopping it. A folder on an unplugged drive simply disappears from the
+        gallery until it is plugged back in.
       </div>
       <div id="rootsBox"></div>
       <div class="row" style="gap:8px;margin:8px 0 0">
@@ -2553,10 +2559,32 @@ function renderRoots(roots){
     row.style.cssText = "align-items:center;gap:10px";
     const label = document.createElement("span");
     label.style.minWidth = "0";
+    // Space per root: each one can be a different drive, so "how much is left"
+    // is the number that decides whether a download can still be written here.
+    const d = r.disk || null;
+    const free = (!r.present) ? "not mounted"
+      : !d ? "space unknown"
+      : `${d.free_gb} GB free of ${d.total_gb} GB · ${d.used_pct}% used`;
+    // Whether a NEW job can be sent here once the downloads drive is full. The
+    // server answers with the same rule the chooser uses (root_ready), so this
+    // line cannot promise something a job would then refuse.
+    const why = String(r.overflow_reason || "");
+    let elig;
+    if(i === 0){
+      elig = r.overflow
+        ? "new downloads go here"
+        : "full — new downloads go to another drive that has room";
+    } else {
+      elig = r.overflow
+        ? "takes overflow"
+        : "no overflow — " + (why.length > 48 ? "at its space limit" : (why || "not usable"));
+    }
     label.innerHTML = (i === 0
         ? `<span class="tagtag">also the downloads folder</span> `
         : "") +
-      `<small class="hint" style="display:block;word-break:break-all">${esc(r.path)}</small>`;
+      `<small class="hint" style="display:block;word-break:break-all">${esc(r.path)}</small>` +
+      `<small class="hint" style="display:block" title="${esc(why || free)}">${esc(free)}` +
+      ` · <b>${esc(elig)}</b></small>`;
     row.appendChild(label);
     const state_ = document.createElement("span");
     state_.className = "hint";
@@ -2874,6 +2902,10 @@ function paintDisk(st){
   const disks = st.disks || [];
   const worst = st.disk_worst || null;
   const blocked = Object.values(st.disk_blocked || {}).filter(Boolean);
+  // Archive folders that can take a new job while the downloads drive is full.
+  // Their existence is the difference between "the queue has stopped" and "the
+  // queue moved to the other drive", so the banner has to say which it is.
+  const spill = (st.roots || []).filter(r => r.overflow && !r.receives && r.present);
 
   if(chip){
     if(!disks.length){
@@ -2907,7 +2939,9 @@ function paintDisk(st){
     <div class="dmain">
       <div class="dheadrow">
         <b>${stopping
-          ? "Downloads stopped — the drive is nearly full."
+          ? (spill.length
+              ? "The downloads drive is nearly full — new downloads go to another drive."
+              : "Downloads stopped — the drive is nearly full.")
           : "The drive is filling up."}</b>
         <button class="dmore" id="diskMore">details</button>
       </div>
@@ -2916,14 +2950,16 @@ function paintDisk(st){
           <code>${esc(d.path || "")}</code> — <b>${d.free_gb} GB free</b> of
           ${d.total_gb} GB (<b>${d.used_pct}% used</b>).
           ${stopping
-            ? "Nothing new will start, and a run that crosses the limit is halted. Queued profiles are kept and are not marked failed — they resume on their own as soon as there is room."
+            ? (spill.length
+                ? `New downloads are written to <code>${esc(spill[0].path)}</code> instead, which still has room. A run that crosses the limit on this drive is halted; it carries on by itself once there is room again.`
+                : "Nothing new will start, and a run that crosses the limit is halted. Queued profiles are kept and are not marked failed — they resume on their own as soon as there is room.")
             : `Downloads still run, but they stop on their own once the drive reaches ${Math.round(d.limit_pct || 95)}% used.`}
         </div>
         <div style="margin-top:6px">
           ${stopping ? "Make room to continue:" : "Worth doing soon:"}
-          remove what you do not need from the Gallery, or add a folder on another
-          drive under <b>Archive folders</b> and set it as the downloads folder, so
-          new profiles land there instead.
+          remove what you do not need from the Gallery${spill.length
+            ? ", or change the downloads folder under <b>Files and folders</b>."
+            : ", or add a folder on another drive under <b>Files and folders</b> — with room there, new downloads go to it instead of stopping."}
         </div>
       </div>
       <div class="dacts">
@@ -3834,6 +3870,10 @@ function groupFinished(jobs){
                  tiktok_total: j.tiktok_total || 0,
                  files: j.files || 0,
                  total_files: j.total_files || 0,
+                 // Where its files actually are, when that is not the downloads
+                 // folder: the finished card should not send someone looking on
+                 // the wrong drive.
+                 root: j.root || "",
                  passes: {}, jobs: [], posts: 0, total_bytes: 0,
                  last_run_seconds: 0, message: "", error: ""};
              byUser.set(key, g); }
@@ -3982,6 +4022,17 @@ function cardHtml(j, pos, qpos){
     // arguments. Showing them on a TikTok card offered three actions that could
     // only fail, and the profile link opened the wrong site entirely.
     const isTikTok = (j.platform || "instagram") === "tiktok";
+    // Which drive this job will actually land on. An overflow job writes to an
+    // archive folder rather than the downloads folder, and without saying so
+    // the card looks identical to one going to the usual place -- "where did
+    // these files go?" with no answer on screen. Only shown when it differs.
+    const roots = (lastState && lastState.roots) || [];
+    const dlRoot = roots.find(r => r.receives) || roots[0];
+    const trimSlash = (p) => String(p || "").replace(/\/+$/, "");
+    const jobRoot = trimSlash(j.root);
+    const dlPath = dlRoot ? trimSlash(dlRoot.path) : "";
+    const elsewhere = !!jobRoot && jobRoot !== dlPath;
+    const driveLabel = jobRoot.split("/").filter(Boolean).slice(-2).join("/");
     if(!isTikTok){
       more.push(`<button class="small iconbtn igicon" data-profile="${esc(j.username)}"
         title="View ${esc(j.username)} on Instagram"
@@ -4027,6 +4078,7 @@ function cardHtml(j, pos, qpos){
           ${j.platform==="tiktok"?'<span class="pill tiktok" title="Downloaded with yt-dlp">tiktok</span>':'<span class="pill ig" title="Downloaded with instaloader">instagram</span>'}
           ${j.kind==="reels"?'<span class="pill reels" title="Reels-only pass">reels</span>':""}
           ${j.kind==="tagged"?'<span class="pill tagged" title="Tagged-posts-only pass">tagged</span>':""}
+          ${elsewhere?`<span class="pill" title="This job writes to ${esc(jobRoot)} — not the downloads folder">↳ ${esc(driveLabel)}</span>`:""}
           <span class="pill ${esc(j.status)}">${esc(j.status)}</span>
           ${j.attempts>1?`<span class="pill">try ${j.attempts}</span>`:""}
           ${j.settings&&j.settings.fast_update===false?`<span class="pill">full</span>`:""}

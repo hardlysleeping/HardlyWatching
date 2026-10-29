@@ -3541,6 +3541,12 @@ def roots_status(self) -> list[dict]:
 
     Drives get unplugged. Reporting `present` is all the UI needs: an absent
     root contributes no profiles and is not an error.
+
+    Each entry also says whether a NEW download can be sent there when the
+    downloads drive is full (`overflow`), and why not when it cannot
+    (`overflow_reason`). That is what makes the settings list answer "which of
+    these drives will actually take the overflow?" instead of leaving the
+    person to work it out from a list of paths.
     """
     out = []
     for i, p in enumerate(self.roots):
@@ -3548,6 +3554,7 @@ def roots_status(self) -> list[dict]:
             present = p.is_dir()
         except OSError:
             present = False
+        ready, reason = self.root_ready(p) if present else (False, "not mounted")
         out.append({
             "path": str(p),
             "present": present,
@@ -3556,6 +3563,10 @@ def roots_status(self) -> list[dict]:
             # Space is reported per root, because each root can be a different
             # drive: one filling up must not stop downloads to another.
             "disk": disk_usage(p) if present else None,
+            # Same rule the job chooser uses (root_ready), so what this list
+            # says and where a job actually lands cannot disagree.
+            "overflow": ready,
+            "overflow_reason": reason,
         })
     return out
 
@@ -3586,6 +3597,192 @@ def disk_blocks(self, root=None) -> str:
         return ""
     return (f"{u['free_gb']} GB free on {u['path']} ({u['used_pct']}% used) — "
             f"at the {u['limit_pct']:.0f}% limit of {u['total_gb']} GB")
+
+
+def _platform_folder(self, root, platform: str = "instagram") -> Path:
+    """The folder inside `root` that one platform's downloads are written to.
+
+    A root IS an Instagram archive folder -- it holds `<root>/<username>` -- so
+    for Instagram the root itself is the answer. TikTok lives beside it (see
+    tiktok_roots), so its answer is whichever candidate comes first for this
+    root. One definition, used by the chooser and by the writers, so a root
+    that is eligible is a root a download can actually land in.
+    """
+    root = Path(root)
+    if platform == "tiktok":
+        return tiktok_roots(root)[0]
+    return root
+
+
+def job_root(self, job) -> Path:
+    """Where this job writes: its pinned root, or the downloads folder.
+
+    A job is pinned only when it has to be -- overflow onto another drive, or a
+    profile already archived somewhere -- so an unpinned job keeps following the
+    downloads folder when that setting changes.
+    """
+    return Path(job.root) if job.root else self.output_root
+
+
+def _profile_in(self, root, username: str,
+                platform: str = "instagram") -> Path | None:
+    """This profile's folder inside one root, or None when it is not there."""
+    root = Path(root)
+    try:
+        if platform == "tiktok":
+            for candidate in tiktok_roots(root):
+                folder = candidate / username
+                if folder.is_dir():
+                    return folder
+            return None
+        folder = root / username
+        return folder if folder.is_dir() else None
+    except OSError:
+        return None
+
+
+def root_ready(self, root, platform: str = "instagram") -> tuple[bool, str]:
+    """Whether a new download can be written into `root`, and why not.
+
+    Three questions, in the order that matters:
+
+    * is it THERE -- an unplugged drive is absent, not empty, and must never be
+      chosen for a download;
+    * can the platform folder be written -- it either exists, or its parent is
+      a directory this process may create it in;
+    * is there ROOM -- `disk_blocks()`, the same predicate every writer uses, so
+      "full" means one thing in this app.
+
+    Returns (True, "") when it can be used, otherwise (False, reason) with a
+    reason fit to show on screen.
+    """
+    p = Path(root)
+    try:
+        if not p.is_dir():
+            return False, "not mounted"
+    except OSError:
+        return False, "not mounted"
+    folder = self._platform_folder(p, platform)
+    try:
+        if folder.exists():
+            if not folder.is_dir():
+                return False, "not a folder"
+            if not os.access(folder, os.W_OK):
+                return False, "not writable"
+        else:
+            parent = folder.parent
+            if not parent.is_dir():
+                return False, "not mounted"
+            if not os.access(parent, os.W_OK):
+                return False, "not writable"
+    except OSError:
+        return False, "not readable"
+    why = self.disk_blocks(p)
+    if why:
+        return False, why
+    return True, ""
+
+
+def pick_root(self, platform: str = "instagram",
+              need_bytes: int | None = None) -> Path | None:
+    """The best root to write a new job into, or None when none can take it.
+
+    Order: the current downloads folder first, so nothing changes while there
+    is room, then every other root in list order. That is what turns "the
+    downloads drive is full" into "write to the other drive" instead of a job
+    that refuses to start, while leaving the ordinary case exactly as it was.
+
+    Never a root that is not there, and never one at its stop limit -- both come
+    from root_ready(). `need_bytes` is an optional extra floor for a caller that
+    knows the size it is about to write.
+
+    Read-only by design: it never adds, removes or reorders a root and never
+    touches output_root, so calling it (from a job, from the settings panel)
+    cannot change what the app is configured to do. Roots are compared by
+    RESOLVED path, because /home and /var/home are the same place spelled two
+    ways and a textual compare would list one drive twice.
+    """
+    order: list[Path] = [self.output_root]
+    for r in self.roots:
+        if not any(_same(r, seen) for seen in order):
+            order.append(r)
+    for root in order:
+        ok, _why = self.root_ready(root, platform)
+        if not ok:
+            continue
+        if need_bytes:
+            u = disk_usage(root)
+            if u is None or u["free"] < need_bytes:
+                continue
+        return root
+    return None
+
+
+def _pin_root(self, job) -> None:
+    """Pin the drive a new job will write to.
+
+    A profile already archived somewhere keeps that root, always: one profile
+    on one drive, so a re-run updates its archive instead of starting a second
+    copy. Otherwise the job is pinned only when the pick is NOT the downloads
+    folder -- an unpinned job follows the downloads folder, which is what every
+    job did before overflow existed, and keeps "change the downloads folder"
+    meaning what it says.
+    """
+    platform = getattr(job, "platform", "instagram")
+    if getattr(job, "root", ""):
+        return      # the caller already decided (a follow-up pass inherits)
+    existing = self._existing_root(job.username, platform)
+    if existing is not None:
+        job.root = str(existing)
+        return
+    pick = self.pick_root(platform)
+    if pick is not None and not _same(pick, self.output_root):
+        job.root = str(pick)
+        job.message = (f"writing to {pick} — the downloads folder has no room")
+
+
+def _reroot(self, job) -> str:
+    """Move a job off a pinned drive that can no longer take it.
+
+    Called just before a run. Two conditions, and both are needed:
+
+    * the pinned root is unusable -- at its stop limit, or not there at all;
+    * the profile is NOT already archived on it.
+
+    The second is the whole safety rule: one profile never gets split across
+    two drives. If the folder is there, the job keeps writing there and the
+    normal space check reports the block, exactly as before.
+
+    A root that is GONE needs one more thought, because its contents cannot be
+    listed: if this job has already written files it may well be archived on
+    that drive, so moving it would make a second copy the moment the drive is
+    plugged back in. Such a job is left alone. A job that has never written
+    anything has nothing to split, so it is moved.
+
+    Returns the note to show on the job ("" when nothing moved).
+    """
+    if not getattr(job, "root", ""):
+        return ""
+    pinned = Path(job.root)
+    platform = getattr(job, "platform", "instagram")
+    ok, why = self.root_ready(pinned, platform)
+    if ok:
+        return ""
+    if self._profile_in(pinned, job.username, platform) is not None:
+        return ""       # already archived here: never split it
+    if not pinned.is_dir() and (job.posts or job.total_files):
+        return ""       # written before, possibly onto that very drive
+    pick = self.pick_root(platform)
+    if pick is None or _same(pick, pinned):
+        return ""
+    old = job.root
+    job.root = str(pick)
+    note = f"switched to {pick} — {old} has no room"
+    job.message = note
+    self._log(job, f"! {why or 'that drive cannot take this run'}; "
+                   f"writing to {pick} instead")
+    self.save_state()
+    return note
 
 
 def add_root(self, path: str) -> tuple[bool, str]:
@@ -4547,6 +4744,15 @@ class Engine:
     roots_status = roots_status
     disk_worst = disk_worst
     disk_blocks = disk_blocks
+    # Where a new job is written when the downloads drive is full. Bound here
+    # like the rest: these are module-level functions that take self.
+    pick_root = pick_root
+    root_ready = root_ready
+    job_root = job_root
+    _platform_folder = _platform_folder
+    _profile_in = _profile_in
+    _pin_root = _pin_root
+    _reroot = _reroot
     add_root = add_root
     remove_root = remove_root
 
@@ -4928,12 +5134,12 @@ class Engine:
                 effective = Job(username=name, settings=overrides or None).effective(self.settings)
 
                 job = Job(username=name, kind="main", settings=overrides or None)
-                # Pin to the drive the profile already lives on, so a re-run
-                # (or "check for new") updates its existing archive instead of
-                # starting a second copy on the downloads folder.
-                root = self._existing_root(name)
-                if root is not None:
-                    job.root = str(root)
+                # Pin the drive this job will write to. A profile already
+                # archived somewhere keeps that drive (never split one profile
+                # across two); otherwise this is where a full downloads folder
+                # turns into "write to the other configured drive" instead of a
+                # job that waits forever.
+                self._pin_root(job)
                 self.jobs[job.id] = job
                 self.pending.append(job.id)
                 added.append(job)
@@ -5014,9 +5220,9 @@ class Engine:
                     continue
                 job = Job(username=h, kind="main", platform="tiktok",
                           tiktok_count=count)
-                root = self._existing_root(h, "tiktok")
-                if root is not None:
-                    job.root = str(root)
+                # Same rule as an Instagram job: an existing archive keeps its
+                # drive, a new one is sent wherever there is room.
+                self._pin_root(job)
                 self.jobs[job.id] = job
                 self.pending.append(job.id)
                 added.append(job)
@@ -5417,9 +5623,7 @@ class Engine:
                         and j.status != "cancelled"), None)
             if job is None:
                 job = Job(username=tt.SAVED_HANDLE, kind="saved", platform="tiktok")
-                root = self._existing_root(tt.SAVED_HANDLE, "tiktok")
-                if root is not None:
-                    job.root = str(root)
+                self._pin_root(job)
                 self.jobs[job.id] = job
                 added = [job]
             else:
@@ -7171,6 +7375,13 @@ class Engine:
                 self.save_state()
                 return  # genuinely idle; thread exits, this platform goes free
 
+            # A pinned drive that cannot take this run any more: move the job to
+            # a root that can, unless the profile is already archived where it
+            # is pinned (one profile never splits across two drives). Done
+            # before the space check, so an overflow job is not parked forever
+            # behind a full drive it was never going to write to.
+            moved = self._reroot(job)
+
             # Space check, before a single byte is written. This is the moment
             # the app can decline to fill a drive further. The job has already
             # been taken off the queue, so put it back at the FRONT: it keeps
@@ -7193,7 +7404,7 @@ class Engine:
                 self.current[platform] = job.username
                 self.cancel_current[platform] = False
             self._set(job, status="running", started_at=time.time(),
-                      message="starting", error="")
+                      message=moved or "starting", error="")
             t0 = time.time()
             try:
                 self._process(job)
@@ -7279,7 +7490,7 @@ class Engine:
         # reads as a peer of Instagram instead of a sub-folder of it. A profile
         # already in the old nested location keeps downloading there, so a
         # layout change cannot silently start a second copy of an archive.
-        base_root = Path(job.root) if job.root else self.output_root
+        base_root = self.job_root(job)
         existing = next((c / job.username for c in tiktok_roots(base_root)
                          if (c / job.username).is_dir()), None)
         tt_root = existing.parent if existing else tiktok_roots(base_root)[0]
@@ -7792,7 +8003,7 @@ class Engine:
 
         # A job pinned to a drive keeps downloading there even after the
         # downloads folder moves, so one profile never splits across roots.
-        target_dir = (Path(job.root) if job.root else self.output_root) / job.username
+        target_dir = self.job_root(job) / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
         session_user = self.session_username()
         cfg = job.effective(self.settings)
