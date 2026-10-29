@@ -422,6 +422,31 @@ day rather than turning the delays off.
 - **🕒 Timeline** — every post in one chronological stream, grouped by month, with
   a liked-only filter. Opened from a profile it covers that person alone.
 
+**Order.** The profile list sorts by **name**, **posts** or **size on disk** (the
+walk is cached for six hours and warmed at startup, so the numbers are there
+before you ask). Inside a profile the posts sort by **date** or by the size of
+their files, and the size badges only appear while that order is on. Every card
+says `count · size` either way.
+
+**Tagged.** A profile can be narrowed to the posts somebody else made — the ones
+an `--tagged` pass dropped into the folder. Nothing on a tile used to say who
+made a post; now each tagged tile carries the account that did, and the **🏷
+Tagged** chip is always there, greyed out when the folder holds none.
+
+**Going back.** Opening a profile from Bookmarks, Liked, All Trash, Timeline or
+the profile list puts a floating **← where you were** button on the screen, and
+it returns to that view at the scroll position you left it at. Pressing a view
+chip instead starts a fresh journey, so the button never offers a stale one.
+
+**No people.** A local detector (YOLOv8n as ONNX, 12.8 MB, CPU only) marks each
+photo as having somebody in it or not, one profile at a time, saving every answer
+as it goes — stopping or restarting loses nothing and the next run continues.
+The profile grid then has a **👤 No people** chip. A picture that has not been
+looked at, or that sits in a post with a video part, is left out of that filter
+rather than counted as empty. It is off until the model is in place:
+`pip install onnxruntime` and drop `yolov8n.onnx` in `~/.ai-tools/models/` (or
+point `AI_PEOPLE_MODEL` at it). Without it the button is disabled and says so.
+
 On a tile: **♡/♥** like, **🔖** bookmark, **🏷** file that bookmark, **⤢** open
 bigger, **🗑** trash. In the enlarged view: **♡/♥**, **🔖**, **🏷**, **⤓**
 download (videos), **🗑**, and **‹ ›** to step through posts. On desktop the arrow
@@ -446,8 +471,14 @@ Gallery → **🔖 Bookmarks** shows everything you saved across profiles, newes
 first, with chips for **All**, **Uncategorised** and every category you have made.
 **＋ Category** adds one, **✎ Rename** renames the category being shown, and
 **🗑 Delete category** deletes the category and not its contents — every bookmark
-filed under it goes back to **Uncategorised**. **🏷** files one bookmark under a
-category, or takes it back out.
+filed under it goes back to **Uncategorised**.
+
+**🔖 on a post that is already saved opens its categories** instead of unsaving
+it. They are checkboxes with a ✓ on each one it is in, and a post can be in as
+many as you like — it then shows under each category as well as under **All**.
+Tapping a ticked category takes it out of that one; taking it out of the last one
+unsaves it, and a separate **Remove bookmark** row does that in one go. A single
+tap cannot lose a bookmark any more.
 
 Bookmarks live in the same SQLite database as everything else, so the saved state
 travels with the post: one made in Shorts shows filled in its profile's grid and
