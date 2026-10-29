@@ -26,6 +26,7 @@ recorded process is alive and answering /api/health, prints where it is and exit
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import os
@@ -1110,6 +1111,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _json_etagged(self, obj, code: int = 200) -> None:
+        """JSON that the browser may revalidate: unchanged state costs ~0 bytes.
+
+        /api/state is polled every 1.2s and is ~2 MB (one entry per job, forever:
+        the queue keeps its history). Downloading and parsing that while nothing
+        has changed is most of what made the UI feel slow, on the gallery tab as
+        much as on the queue -- the gallery only needed the disk line and the
+        counts, which never change between polls. The body is still built (that
+        is milliseconds and the state has to be read anyway), but an unchanged
+        snapshot goes out as a 304 with no body and no parse on the other side.
+        """
+        body = json.dumps(obj).encode()
+        etag = '"' + hashlib.blake2b(body, digest_size=8).hexdigest() + '"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _read_json(self) -> dict:
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -1571,6 +1599,14 @@ class Handler(BaseHTTPRequestHandler):
             # if the worker died with work still queued, revive it.
             get_engine().watchdog()
             snap = get_engine().snapshot()
+            # `?lite=1` is what the poller asks for while the gallery or shorts
+            # tab is on screen: those views need the drive line, the counts and
+            # the run state, and NOT the 2,448-job queue (2 MB) they cannot even
+            # display. Same snapshot, one key dropped; the client keeps the jobs
+            # it already has and asks for the full one when the queue is shown.
+            from urllib.parse import parse_qs as _pq
+            if (_pq(urlparse(self.path).query).get("lite") or [""])[0] in ("1", "true"):
+                snap.pop("jobs", None)
             snap["roots"] = get_engine().roots_status()
             # Surface the on-disk listing cache so its state is inspectable
             # rather than a silent performance mystery.
@@ -1588,7 +1624,7 @@ class Handler(BaseHTTPRequestHandler):
                 snap["auto_retry"] = get_engine().retry_status()
             except Exception:
                 snap["auto_retry"] = {"enabled": False, "waiting": []}
-            return self._json(snap)
+            return self._json_etagged(snap)
         if p == "/api/profile-pic":
             from urllib.parse import parse_qs
             import engine as _eng

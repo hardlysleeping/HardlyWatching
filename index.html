@@ -4076,12 +4076,22 @@ function wireCards(container){
 // what forced a manual reload with no explanation of why.
 let pollFails = 0;
 
+// True while a tab that cannot show the queue is the one on screen. Its poll
+// asks for `?lite=1`: the drive line, the counts and the run state, without the
+// 2,448-job queue that only the Download tab can draw. Measured: 2.06 MB ->
+// 12 KB per poll while browsing the gallery, which is where the page felt slow.
+function pollLite(){
+  const gp = $("galleryPane"), sp = $("shortsPane");
+  return !!((gp && gp.style.display !== "none") || (sp && sp.style.display !== "none"));
+}
+
 async function tick(){
   // A reorder is still being saved: rendering the server's pre-move order
   // would make the card visibly jump back and forth. Skip one or two polls.
   if(Date.now() < optimisticUntil) return;
+  const lite = pollLite();
   try{
-    const r = await fetch("/api/state", {cache: "no-cache"});
+    const r = await fetch("/api/state" + (lite ? "?lite=1" : ""), {cache: "no-cache"});
     // 304: the state is byte-for-byte what this page already drew. Re-parsing
     // 2 MB and re-rendering the queue for that was the single biggest cost in
     // the whole UI, and it happened every 1.2s whether or not anything moved.
@@ -4090,6 +4100,10 @@ async function tick(){
     const st = await r.json();
     pollFails = 0;
     setOffline(false);
+    // A lite poll has no jobs: keep the ones already drawn so every downstream
+    // reader of st.jobs still sees a full shape (renderLight does not touch
+    // them, and the queue tab fetches a full state the moment it is shown).
+    if(lite && st.jobs === undefined) st.jobs = (lastState && lastState.jobs) || [];
     render(st);
   }catch(e){
     pollFails++;
@@ -4959,8 +4973,13 @@ function showTab(which, only){
   paintHeader(which);
   if(gallery) renderGallery();
   // The poll skips the queue while another pane is showing, so coming back has
-  // to draw it from the last state we saw.
-  else if(!shorts && lastQueueRender) render(lastQueueRender);
+  // to draw it from the last state we saw -- and then ask for a FULL state,
+  // because the polls taken while the gallery was open were lite and carried no
+  // jobs. Without this the queue would show whatever it had when you left it.
+  else if(!shorts){
+    if(lastQueueRender) render(lastQueueRender);
+    tick();
+  }
   rememberView();
 }
 
