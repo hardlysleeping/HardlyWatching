@@ -494,6 +494,28 @@
     100%{background:transparent}
   }
 
+  /* ---------- the disk warning, compact on a phone ---------- */
+  #diskBox{display:flex;gap:10px;align-items:flex-start}
+  #diskBox .dico{font-size:18px;line-height:1}
+  #diskBox .dmain{flex:1;min-width:0}
+  #diskBox .dheadrow{display:flex;align-items:baseline;gap:10px}
+  #diskBox .dmore{display:none}
+  #diskBox .dbody{display:block}
+  #diskBox .dacts{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  @media (max-width:640px){
+    /* 334px of warning on an 899px screen is the paste box pushed off it.
+       One line, a button, and the prose one tap away. */
+    #diskBox .dmore{display:inline-block;margin-left:auto;background:none;
+      border:0;color:var(--accent);font:inherit;font-size:12.5px;padding:0 2px}
+    #diskBox .dbody{display:none;margin-top:6px}
+    #diskBox.open .dbody{display:block}
+    #diskBox .dacts{margin-top:6px}
+    #diskBox .dacts .hint{display:none}
+    #diskBox code{word-break:break-all;font-size:11.5px}
+    /* The header chip was clipped mid-word at 390px: truncate it on purpose. */
+    #diskChip{max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  }
+
   /* ---------- people pass progress ---------- */
   .pplrow{display:flex;align-items:center;gap:8px}
   .pplbar-track{height:4px;border-radius:999px;background:var(--panel-3);overflow:hidden}
@@ -1095,6 +1117,13 @@
   .phead .psub{font-size:11.5px;margin-top:2px;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis}
   .phead .dlwrap{margin-left:auto;flex:0 0 auto}
+  /* Three controls plus the face left the handle with 36px of room at 390px.
+     The delete button keeps its icon and drops its label, and the platform
+     badge goes: the sub-tab already says which site you are on, and it was
+     eating 60px of the name. Measured at 390px: 63px for the handle, and the
+     whole head still fits one 362px row with nothing overflowing. */
+  #delProfileBtn .lbl{display:none}
+  .phead .pname .badge{display:none}
   /* A truncated timestamp on a 118px tile ("2026-10-28 15:…") is noise: it
      cannot be read, and the viewer shows the full date. */
   .ptile .pmeta{display:none}
@@ -1560,6 +1589,28 @@ some.profile
     <div class="sgrid" id="sgrid"></div>
     <div class="hint" id="noMatch" style="display:none;padding-bottom:14px">
       No settings match that filter.
+    </div>
+    <!-- Who a delete removed on purpose. This is the undo for "Never add them
+         again": an exclusion the user cannot find is a trap, so the list sits
+         in the settings panel with a jump chip like every other group. -->
+    <div class="sgroup" id="sg-excluded" tabindex="-1" data-jump="Excluded profiles">
+      <span class="sgname">Excluded profiles</span>
+      <span class="sgdesc">people you deleted — nothing downloads them again until you undo it</span>
+    </div>
+    <div class="foldcard">
+      <div class="foldcard-head">
+        <b>Excluded profiles</b>
+        <span class="hint" id="setExcludedCount"></span>
+        <button class="small" id="setExcludedRefresh" style="margin-left:auto">Refresh</button>
+      </div>
+      <div class="hint" style="margin:4px 0 8px">
+        Deleting a profile adds them here, so a pasted list or the automatic
+        check cannot download them again by accident. <b>Undo</b> only clears
+        that memory — their files went to the system Trash, and getting those
+        back is the Trash bin's job.
+      </div>
+      <div id="setExcluded" class="hint">—</div>
+      <div class="hint" id="setExcludedMsg" style="margin-top:6px;color:var(--ok)"></div>
     </div>
     <!-- Last, because it is set once and never touched again: the app-level
          switch that has nothing to do with what gets downloaded. -->
@@ -2839,7 +2890,9 @@ function paintDisk(st){
       chip.innerHTML = `<b>${d.free_gb} GB free</b> · ${d.used_pct}% used`;
       chip.title = disks.map(x =>
         `${x.path}\n  ${x.free_gb} GB free of ${x.total_gb} GB (${x.used_pct}% used)`).join("\n")
-        + `\nStops at 95%, warns at 90%.`;
+        + (d.limit_off
+            ? `\nNo limit set — nothing stops on space.`
+            : `\nStops at ${Math.round(d.limit_pct || 95)}%, warns at ${Math.round(d.limit_pct || 95) - 5}%.`);
     }
   }
 
@@ -2850,25 +2903,30 @@ function paintDisk(st){
   const stopping = level === "stop";
   box.style.display = "flex";
   box.innerHTML = `
-    <span style="font-size:18px;line-height:1">${stopping ? "⛔" : "⚠"}</span>
-    <div>
-      <b>${stopping
-        ? "Downloads stopped — the drive is nearly full."
-        : "The drive is filling up."}</b>
-      <div style="margin-top:4px">
-        <code>${esc(d.path || "")}</code> — <b>${d.free_gb} GB free</b> of
-        ${d.total_gb} GB (<b>${d.used_pct}% used</b>).
-        ${stopping
-          ? "Nothing new will start, and a run that crosses the limit is halted. Queued profiles are kept and are not marked failed — they resume on their own as soon as there is room."
-          : `Downloads still run, but they stop on their own once the drive reaches ${Math.round(d.limit_pct || 95)}% used.`}
+    <span class="dico">${stopping ? "⛔" : "⚠"}</span>
+    <div class="dmain">
+      <div class="dheadrow">
+        <b>${stopping
+          ? "Downloads stopped — the drive is nearly full."
+          : "The drive is filling up."}</b>
+        <button class="dmore" id="diskMore">details</button>
       </div>
-      <div style="margin-top:6px">
-        ${stopping ? "Make room to continue:" : "Worth doing soon:"}
-        remove what you do not need from the Gallery, or add a folder on another
-        drive under <b>Archive folders</b> and set it as the downloads folder, so
-        new profiles land there instead.
+      <div class="dbody">
+        <div style="margin-top:4px">
+          <code>${esc(d.path || "")}</code> — <b>${d.free_gb} GB free</b> of
+          ${d.total_gb} GB (<b>${d.used_pct}% used</b>).
+          ${stopping
+            ? "Nothing new will start, and a run that crosses the limit is halted. Queued profiles are kept and are not marked failed — they resume on their own as soon as there is room."
+            : `Downloads still run, but they stop on their own once the drive reaches ${Math.round(d.limit_pct || 95)}% used.`}
+        </div>
+        <div style="margin-top:6px">
+          ${stopping ? "Make room to continue:" : "Worth doing soon:"}
+          remove what you do not need from the Gallery, or add a folder on another
+          drive under <b>Archive folders</b> and set it as the downloads folder, so
+          new profiles land there instead.
+        </div>
       </div>
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <div class="dacts">
         <button class="small" id="diskLimitBtn"
                 title="The percentage where downloads stop, and whether there is a limit at all">
           Change the ${d.limit_off ? "limit" : `${Math.round(d.limit_pct || 95)}%`} limit…</button>
@@ -2877,10 +2935,20 @@ function paintDisk(st){
           : `Downloads stop at ${Math.round(d.limit_pct || 95)}% used — raise it to use more of the drive, lower it for more headroom.`}</span>
       </div>
     </div>`;
-  // The banner is rebuilt on every poll, so the handler is attached here, not
+  // The banner is rebuilt on every poll, so the handlers are attached here, not
   // once at load.
   const lb = $("diskLimitBtn");
   if(lb) lb.onclick = openDiskLimit;
+  const mb = $("diskMore");
+  if(mb){
+    mb.onclick = () => {
+      box.classList.toggle("open");
+      mb.textContent = box.classList.contains("open") ? "hide" : "details";
+    };
+    // Collapsed on a phone unless downloads are actually stopped: this card
+    // measured 334px of an 899px screen, which pushed the paste box off it.
+    if(!stopping) box.classList.remove("open");
+  }
 }
 
 // The disk limit is a setting, and the warning that mentions it is the only
@@ -4441,6 +4509,16 @@ $("clearInputBtn").onclick = () => {
   const r = $("ttResult"); if(r) r.textContent = "";
   $("input").focus();
 };
+// A phone gets a placeholder it can read in one glance. The desktop one lists
+// both link shapes and wraps mid-word in a 390px textarea, which looked broken.
+if(matchMedia("(max-width:640px)").matches){
+  const inp = $("input");
+  if(inp){
+    inp.placeholder = "Paste Instagram or TikTok links — one per line";
+    inp.style.minHeight = "120px";
+  }
+}
+
 $("pasteBtn").onclick = async () => {
   try{
     const t = await navigator.clipboard.readText();
@@ -4634,6 +4712,7 @@ function showOptTab(id){
   // the toggle listeners call are called here too.
   if(id === "backupCard") loadBackupInfo();
   if(id === "lanCard") loadNetwork();
+  if(id === "settingsBox") loadSetExcluded();
   if(id === "excludedCard") loadExcluded();
   if(id === "dupesCard") loadDupes();
 }
@@ -5097,6 +5176,17 @@ function rememberView(){
   try{ history.replaceState(null, "", location.pathname + want); }catch(e){}
 }
 
+// Put the current tab's top on screen. Both the document and .wrap are asked,
+// because the phone scrolls the body while a wide window can scroll the wrapper
+// -- a single scrollTo on the wrong element is a silent no-op.
+function scrollTabTop(){
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+  const w = document.querySelector(".wrap");
+  if(w) w.scrollTop = 0;
+}
+
 function showTab(which, only){
   // Three top-level tabs: Download (queue + finished for both platforms),
   // Gallery, and Shorts. Shorts was a separate page reachable only through a
@@ -5108,6 +5198,7 @@ function showTab(which, only){
   // profile list, and that must not count as having opened their profile.
   const gallery = which === "gallery";
   const shorts = which === "shorts";
+  const wasTab = currentTab;
   currentTab = gallery ? "gallery" : shorts ? "shorts" : "queue";
   $("tabQueue").classList.toggle("active", !gallery && !shorts);
   $("tabGallery").classList.toggle("active", gallery);
@@ -5166,6 +5257,12 @@ function showTab(which, only){
     hiddenByTab = [];
     inOtherTab = false;
   }
+  // A tab is a page, and a page starts at its top. The body keeps its scroll
+  // offset across a swap, so leaving a long gallery list for Download landed
+  // you a screen or three down the queue -- below the paste box, which is the
+  // one thing that tab is for. Only on an actual change: goBack() restores a
+  // saved offset right after this call.
+  if(wasTab !== currentTab) scrollTabTop();
   paintHeader(which);
   if(gallery) renderGallery();
   // The poll skips the queue while another pane is showing, so coming back has
@@ -5201,6 +5298,7 @@ function showPlatform(which){
   const ig = which === "ig";
   const next = ig ? "instagram" : "tiktok";
   const switched = next !== activePlatform;
+  if(switched) scrollTabTop();
   activePlatform = next;
   $("subIg").classList.toggle("active", ig);
   $("subTt").classList.toggle("active", !ig);
@@ -5261,8 +5359,10 @@ async function loadExcluded(){
     const sig = rows.map(p => `${p.platform}:${p.handle}:${p.reason}`).join("|");
     if(sig === excludedSig) return;
     excludedSig = sig;
+    if(typeof loadSetExcluded === "function") loadSetExcluded();
     if(!n){ box.textContent = "Nobody excluded."; return; }
-    const why = {removed_from_queue:"removed", deleted_from_gallery:"deleted"};
+    const why = {removed_from_queue:"removed", deleted_from_gallery:"deleted",
+                 deleted_on_purpose:"deleted on purpose"};
     box.innerHTML = rows.map(p => `
       <div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #222">
         <span>${esc(p.handle)}
@@ -5294,6 +5394,68 @@ async function loadExcluded(){
     });
   }catch(e){ box.textContent = "Could not load the excluded list."; }
 }
+
+// The settings-panel twin of the Excluded tab. Same store, different verb: the
+// tab's Restore puts the person back in the QUEUE, while this Undo only clears
+// the exclusion -- the files are in the Trash, so re-queueing them here would
+// start a fresh download of what was just deleted. It reads GET /api/exclusions
+// so the list the user can undo from has its own small endpoint.
+async function loadSetExcluded(){
+  const box = $("setExcluded");
+  if(!box) return;
+  let rows = [];
+  try{
+    const r = await fetch("/api/exclusions");
+    if(!r.ok){
+      // The page is served from disk, so a new UI can be live while the server
+      // half is not. Say which half is missing instead of "could not load".
+      box.textContent = r.status === 404
+        ? "Restart the app once to load this list — it is new."
+        : `Could not load the excluded list (${r.status}).`;
+      return;
+    }
+    rows = (await r.json()).profiles || [];
+  }catch(e){
+    box.textContent = "Could not load the excluded list.";
+    return;
+  }
+  const cnt = $("setExcludedCount");
+  if(cnt) cnt.textContent = rows.length ? `(${rows.length})` : "";
+  if(!rows.length){
+    box.textContent = "Nobody is excluded.";
+    return;
+  }
+  const why = {removed_from_queue: "removed from the queue",
+               deleted_from_gallery: "deleted",
+               deleted_on_purpose: "deleted on purpose"};
+  box.innerHTML = rows.map(p => `
+    <div class="row" style="justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #222">
+      <span>${esc(p.profile)}
+        <span class="pill ${p.platform === "tiktok" ? "tiktok" : "ig"}">${esc(p.platform)}</span>
+        <span class="hint">${esc(why[p.reason] || p.reason || "")}</span></span>
+      <button class="small" data-undel="${esc(p.profile)}" data-platform="${esc(p.platform)}">Undo</button>
+    </div>`).join("");
+  box.querySelectorAll("[data-undel]").forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try{
+        const res = await post("/api/exclusions/remove",
+                               {profile: b.dataset.undel, platform: b.dataset.platform});
+        if(!res.ok){ b.textContent = "Failed — retry"; b.disabled = false; return; }
+        const msg = $("setExcludedMsg");
+        if(msg) msg.textContent = `${b.dataset.undel} can be added again.`;
+        toast(`${b.dataset.undel} can be added again`);
+        excludedSig = null;             // the other list must repaint too
+        loadSetExcluded();
+        if(typeof loadExcluded === "function") loadExcluded();
+      }catch(e){
+        b.textContent = "Failed — retry";
+        b.disabled = false;
+      }
+    };
+  });
+}
+if($("setExcludedRefresh")) $("setExcludedRefresh").onclick = () => loadSetExcluded();
 
 $("ttRestoreAllBtn").onclick = async () => {
   if(!confirm("Restore everyone on the excluded list back into the queue?")) return;
@@ -5904,6 +6066,11 @@ async function renderBookmarks(){
   tot.className = "hint";
   const uniq = new Set(posts.map(p => p.username)).size;
   tot.textContent = `${posts.length} saved across ${uniq} profile${uniq===1?"":"s"}`;
+  // Sort comes FIRST, before the count. It used to sit after every category
+  // chip: at 390px that put it at x=1152 inside a 362px bar, three screen-widths
+  // to the right, i.e. unreachable unless you knew it was there. Even second on
+  // the row it started at x=210 and ran off the edge, so it leads.
+  bar.appendChild(dateOrderButtons(() => renderBookmarks()));
   bar.appendChild(tot);
 
   // Categories, as chips that filter. "Uncategorised" is a real filter, not an
@@ -5935,7 +6102,12 @@ async function renderBookmarks(){
     bmCats = r.categories || [];
     renderBookmarks();
   });
-  bar.appendChild(cats);
+  // Chips get their own row. They are a filter you set once; the sort above is
+  // what you change while browsing, so the two must not share a scroller.
+  const catsBar = document.createElement("div");
+  catsBar.className = "gbar";
+  catsBar.style.gridColumn = "1/-1";
+  catsBar.appendChild(cats);
 
   // A category can be renamed or dropped, but only while it is the one in view,
   // so neither is a button sitting there waiting to be hit by mistake.
@@ -5951,7 +6123,7 @@ async function renderBookmarks(){
       if(!r.ok){ toast("Could not rename that"); return; }
       renderBookmarks();
     };
-    bar.appendChild(ren);
+    catsBar.appendChild(ren);
     const del = document.createElement("button");
     del.className = "small danger";
     del.textContent = "🗑 Delete category";
@@ -5964,10 +6136,9 @@ async function renderBookmarks(){
       bmCat = "all";
       renderBookmarks();
     };
-    bar.appendChild(del);
+    catsBar.appendChild(del);
   }
 
-  bar.appendChild(dateOrderButtons(() => renderBookmarks()));
   if(posts.length){
     const play = document.createElement("button");
     play.className = "small";
@@ -5984,6 +6155,7 @@ async function renderBookmarks(){
   bar.appendChild(selButton());
   host.innerHTML = "";
   host.appendChild(bar);
+  host.appendChild(catsBar);
 
   const grid = document.createElement("div");
   grid.className = "pgrid";
@@ -8390,6 +8562,18 @@ function drawPhotos(username, sec){
     }
   };
   head.appendChild(pplBtn);
+
+  // Deleting a person was three separate jobs: empty their folder, clear the
+  // queue rows in two lists, and remember not to add them again. This is the
+  // one control for all of it, and it lives with the name it acts on.
+  const delBtn = document.createElement("button");
+  delBtn.className = "small danger";
+  delBtn.id = "delProfileBtn";
+  delBtn.title = "Move their files to the Trash, remove them from Waiting and "
+    + "Finished, and stop them being added again";
+  delBtn.innerHTML = `🗑<span class="lbl"> Delete…</span>`;
+  delBtn.onclick = () => openDeleteProfile(username, gPlatform || "instagram");
+  head.appendChild(delBtn);
   paintPplScanBtn();
 
   // Download the whole profile: the folder in the gallery IS the archive on
@@ -9777,6 +9961,146 @@ function dropTiles(username, names, toSection){
     bump(toSection, n);
   }
   return posts;
+}
+
+/* ---------- delete a profile: one action ---------- */
+/* What "delete" means here has to be said on screen, because it is NOT an
+   erase: the folder is MOVED TO THE SYSTEM TRASH (still on disk, restorable
+   from the Trash bin), the queue rows are dropped from Waiting and Finished,
+   and the name is remembered as excluded so a paste or the autocheck cannot
+   put it back. Each tick is one of those, and turning one off is a real
+   choice, so all three are sent to the server rather than assumed. */
+async function openDeleteProfile(username, platform){
+  const plat = platform || gPlatform || "instagram";
+  // The tick's wording needs a file count and a size. Ask the engine for them:
+  // the gallery's count is MEDIA, while a delete moves every file in the folder
+  // (sidecars and the profile picture too), so quoting the card's number made
+  // the dialog promise 4 and the toast report 8. A server without the route
+  // (the page can be newer than the process) falls back to the card's numbers.
+  let nFiles = 0;
+  let nBytes = 0;
+  try{
+    const r = await fetch(`/api/profile/totals?profile=${encodeURIComponent(username)}`
+                          + `&platform=${encodeURIComponent(plat)}`);
+    if(r.ok){
+      const t = await r.json();
+      nFiles = t.files || 0;
+      nBytes = t.bytes || 0;
+    }
+  }catch(e){ /* the card's numbers below are close enough */ }
+  if(!nFiles){
+    const same = (p) => (p.username || "").toLowerCase() === username.toLowerCase()
+                     && (p.platform || "instagram") === plat;
+    let card = (gProfiles || []).find(same);
+    if(!card){
+      try{
+        const d = await (await fetch("/api/gallery")).json();
+        card = (d.profiles || []).find(same);
+      }catch(e){ /* no number is better than no dialog */ }
+    }
+    nFiles = card ? (card.count || 0) : 0;
+    nBytes = card ? (card.bytes || 0) : 0;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "confirm";
+  const box = document.createElement("div");
+  box.className = "box";
+  box.style.maxWidth = "470px";
+  const who = `<b>@${esc(username)}</b>`;
+  box.innerHTML = `<p>Delete ${who}?</p>
+    <div class="why">One action: their files, their place in the queue, and a
+    memory so nothing downloads them again by accident.</div>`;
+
+  const boxes = {};
+  const make = (key, label, hint, checked) => {
+    const l = document.createElement("label");
+    l.className = "hint";
+    l.style.cssText = "display:flex;gap:8px;align-items:flex-start;margin:0 0 10px;line-height:1.4";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = checked; cb.dataset.tick = key;
+    const span = document.createElement("span");
+    span.innerHTML = `${esc(label)}<br><span style="opacity:.72">${hint}</span>`;
+    l.appendChild(cb); l.appendChild(span);
+    boxes[key] = cb;
+    return l;
+  };
+  box.appendChild(make(
+    "media",
+    nFiles ? `Move their ${nFiles.toLocaleString()} files (${fmtBytes(nBytes)}) to the Trash`
+           : "Move their files to the Trash",
+    "The system Trash: the files stay on disk and can be restored from the "
+    + "Trash bin. Nothing is erased here.", true));
+  box.appendChild(make(
+    "queue", "Remove from Waiting and Finished",
+    "Their card leaves both lists, whatever its status — this is what a delete "
+    + "does, so it is not optional.", true));
+  box.appendChild(make(
+    "exclude", "Never add them again",
+    `Autocheck and pasted lists will skip ${who} until you undo it in Settings → `
+    + "Excluded profiles.", true));
+
+  const row = document.createElement("div");
+  row.className = "row";
+  const cancel = document.createElement("button");
+  cancel.className = "small";
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => wrap.remove();
+  const go = document.createElement("button");
+  go.className = "small danger";
+  go.id = "delProfileGo";
+  go.textContent = `Delete @${username}`;
+  go.onclick = async () => {
+    go.disabled = true;
+    go.textContent = "Deleting…";
+    let res;
+    try{
+      const r = await fetch("/api/profile/delete", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          profile: username, platform: plat,
+          media: boxes.media.checked,
+          // The queue half is not optional in the engine (leaving Waiting and
+          // Finished is the point), so its tick only ever disables the button.
+          exclude: boxes.exclude.checked,
+        }),
+      });
+      res = r.ok ? await r.json()
+                 : {ok: false, error: r.status === 404
+                      ? "This needs one restart of the app to work — the page is newer than the running server."
+                      : `The server refused it (${r.status}).`};
+    }catch(e){
+      res = {ok: false, error: "Could not reach the server: " + e.message};
+    }
+    wrap.remove();
+    if(!res.ok){
+      // The refusal IS the answer (e.g. it is downloading right now), so it is
+      // shown as-is instead of being softened into "something went wrong".
+      toast(res.error || "Could not delete");
+      return;
+    }
+    const bits = [];
+    if(res.media_moved) bits.push(`${(res.files || 0).toLocaleString()} files (${fmtBytes(res.bytes)}) moved to the Trash`);
+    if(res.jobs_removed) bits.push(`${res.jobs_removed} queue ${res.jobs_removed === 1 ? "entry" : "entries"} removed`);
+    if(res.excluded) bits.push(`@${res.profile} won't be added again`);
+    toast(bits.length ? bits.join(" · ") : `Deleted @${username}`);
+    // The profile on screen no longer exists, so staying on it would show an
+    // empty grid. Go back to the list (or whatever view it was opened from).
+    excludedSig = null;
+    if(typeof loadExcluded === "function") loadExcluded();
+    if(typeof loadSetExcluded === "function") loadSetExcluded();
+    try{ await goBack(); }catch(e){ await renderGallery(); }
+  };
+  // A tick that does nothing is worse than no tick: "Remove from Waiting and
+  // Finished" is what the request asked for, so it is shown checked and locked
+  // rather than offered as a switch the engine does not have.
+  boxes.queue.disabled = true;
+  row.appendChild(cancel); row.appendChild(go);
+  box.appendChild(row);
+  wrap.appendChild(box);
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  document.body.appendChild(wrap);
+  go.focus();
 }
 
 async function confirmTrash(username, names, onDone, platform){

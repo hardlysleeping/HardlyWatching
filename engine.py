@@ -2464,6 +2464,33 @@ def _to_desktop_trash(path: Path) -> None:
         pass
 
 
+def _folder_totals(folder: Path) -> tuple[int, int]:
+    """(file count, bytes) for a profile folder, symlinks skipped.
+
+    Only used to TELL the user what a delete will move ("2,431 files, 3.2 GB"),
+    so it walks the folder the way the gallery counts it: every real file,
+    including sidecars, because every one of them goes to the Trash. A file that
+    cannot be stat'ed is skipped rather than failing the count -- the delete
+    itself does not depend on this number.
+    """
+    files = 0
+    total = 0
+    try:
+        for dirpath, _dirnames, filenames in os.walk(folder):
+            for fn in filenames:
+                p = Path(dirpath) / fn
+                try:
+                    if p.is_symlink():
+                        continue
+                    total += p.stat().st_size
+                    files += 1
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return files, total
+
+
 def reconcile_deletions(self, username: str) -> list[str]:
     """Leave a placeholder for media deleted outside the app.
 
@@ -4881,7 +4908,8 @@ class Engine:
                     continue
                 lname = name.lower()
                 if lname in blocked:
-                    rejected.append(f"{name} (excluded — restore it in the Excluded list)")
+                    rejected.append(f"{name} was deleted on purpose — remove it "
+                                    f"from Excluded profiles to add it again")
                     continue
                 if lname in spelling:
                     # Report the name as it is already listed, so the message
@@ -4958,7 +4986,11 @@ class Engine:
                 # Checked before `existing` so it is reported as excluded
                 # rather than silently vanishing.
                 if h.lower() in blocked:
-                    skipped.append(h)
+                    # Say WHY, not just "skipped": a paste of a following list
+                    # reports every refusal it made, and a bare handle there
+                    # reads like a parse failure.
+                    skipped.append(f"{h} was deleted on purpose — remove it from "
+                                   f"Excluded profiles to add it again")
                     continue
                 if h.lower() in existing:
                     # Already queued or downloaded: raising the number is the
@@ -5467,6 +5499,129 @@ class Engine:
             return _shared_db().excluded(platform)
         except Exception:
             return set()
+
+    def delete_profile(self, username: str, platform: str = "instagram",
+                       media: bool = True, exclude: bool = True) -> dict:
+        """Delete one profile in a single action: files, queue rows, exclusion.
+
+        This is the three things the user otherwise had to do by hand, and each
+        one is here rather than left to the caller:
+
+        - the media folder is MOVED TO THE SYSTEM TRASH with _to_desktop_trash,
+          the same helper clear_trash uses -- never unlinked, never rmtree'd --
+          so a mistake stays recoverable from the Trash bin. If the trash
+          refuses it, NOTHING ELSE HAPPENS either: queue rows still there, no
+          exclusion recorded, files untouched. A half-deleted profile (rows
+          gone, files on disk) is worse than a refusal, because the next run
+          would quietly rebuild the archive.
+        - EVERY job for that name and platform is dropped, whatever its status
+          (queued, running, done, failed, cancelled), so the profile leaves
+          Waiting and Finished together.
+        - an exclusion is recorded in profiles.db -- the same store the Excluded
+          list, add(), add_extra_pass(), the TikTok paste path and the
+          empty-queue autocheck already consult -- so nothing brings it back by
+          accident. /api/exclusions/remove is the undo.
+
+        Refuses while that profile is downloading: the worker has the folder
+        open, and stopping it is a separate, deliberate act.
+
+        Returns a small dict the UI reports verbatim:
+          {ok, profile, platform, media_moved, files, bytes, jobs_removed,
+           archived_removed, excluded}   -- or {ok: False, error}.
+        """
+        raw = (username or "").strip().lstrip("@").rstrip("/")
+        name = clean_profile_name(raw) or ""
+        if not name:
+            # clean_profile_name is Instagram-shaped; a TikTok handle can hold
+            # characters it rejects. Accept the raw name, but never a path.
+            if raw and "/" not in raw and "\\" not in raw \
+                    and not raw.startswith(".") and len(raw) <= 64:
+                name = raw
+            else:
+                return {"ok": False, "error": "not a valid profile name"}
+        platform = "tiktok" if platform == "tiktok" else "instagram"
+        lname = name.lower()
+
+        with self.lock:
+            mine = [j for j in self.jobs.values()
+                    if j.username.lower() == lname
+                    and getattr(j, "platform", "instagram") == platform]
+            if any(j.status == "running" for j in mine) or \
+                    (self.current.get(platform) or "").lower() == lname:
+                return {"ok": False, "error": f"@{name} is downloading — stop it first"}
+
+        # ---------- media: to the Trash, or nothing at all ----------
+        folder = self.root_for(name, platform)
+        moved = False
+        files = nbytes = 0
+        if media and folder is not None:
+            files, nbytes = _folder_totals(folder)
+            _to_desktop_trash(folder)
+            if folder.exists():
+                # gio refuses a directory on a system-internal mount and the
+                # plain-unlink fallback cannot remove one, so this is the real
+                # "could not trash it" case. Try rmdir only in case the trash
+                # moved the contents and left the empty directory behind; if it
+                # is still there, refuse and leave every file alone.
+                try:
+                    folder.rmdir()
+                except OSError:
+                    return {"ok": False, "profile": name, "platform": platform,
+                            "files": files, "bytes": nbytes,
+                            "error": f"could not move @{name}'s folder to the "
+                                     f"Trash — nothing was removed"}
+            moved = True
+            # The listing, the grouped posts and the aggregate stamp all keep
+            # serving a folder that is now gone; _media_cache_forget drops the
+            # first two and bumps _WRITE_SEQ for the third. One invalidation
+            # path, not a second scheme.
+            _media_cache_forget(folder)
+            _media_cache_forget(folder.parent)
+
+        # ---------- queue rows: Waiting and Finished both ----------
+        with self.lock:
+            ids = {jid for jid, j in self.jobs.items()
+                   if j.username.lower() == lname
+                   and getattr(j, "platform", "instagram") == platform}
+            for jid in ids:
+                self.jobs.pop(jid, None)
+            if ids:
+                self.pending = [jid for jid in self.pending if jid not in ids]
+            # "Remove from list" archives a finished job in self.removed, and a
+            # stale entry there would put the person back in the finished list.
+            archived = [r for r in self.removed
+                        if str(r.get("username") or "").lower() == lname
+                        and str(r.get("platform") or "instagram") == platform]
+            if archived:
+                self.removed = [r for r in self.removed if r not in archived]
+
+        excluded = False
+        if exclude:
+            excluded = self.exclude_profile(platform, name, "deleted_on_purpose")
+
+        self.save_state()
+        return {"ok": True, "profile": name, "platform": platform,
+                "media_moved": bool(moved), "files": files, "bytes": nbytes,
+                "jobs_removed": len(ids), "archived_removed": len(archived),
+                "excluded": bool(excluded)}
+
+    def profile_totals(self, username: str, platform: str = "instagram") -> dict:
+        """What delete_profile() would move, so the dialog can promise the truth.
+
+        The gallery's per-profile count is MEDIA (posts), while a delete moves
+        every file in the folder -- sidecars and the profile picture included.
+        Showing the gallery's number and then reporting a bigger one was the
+        mismatch this exists to avoid: one walk, one answer, used by both the
+        confirmation and the result.
+        """
+        raw = (username or "").strip().lstrip("@").rstrip("/")
+        name = clean_profile_name(raw) or raw
+        platform = "tiktok" if platform == "tiktok" else "instagram"
+        folder = self.root_for(name, platform)
+        files, nbytes = _folder_totals(folder) if folder is not None else (0, 0)
+        return {"ok": True, "profile": name, "platform": platform,
+                "has_folder": folder is not None,
+                "files": files, "bytes": nbytes}
 
     def forget(self, job_id: str) -> bool:
         """Drop a finished job from the list, archiving it so it can come back.
@@ -6470,6 +6625,14 @@ class Engine:
                             if j.username == job_id or j.id == job_id), None)
             if src is None:
                 return {"ok": False, "error": "profile not in the list"}
+
+            # A deleted profile is excluded, and an extra pass would download it
+            # again just as surely as a paste would.
+            src_plat = getattr(src, "platform", "instagram")
+            if src.username.lower() in self._excluded_set(src_plat):
+                return {"ok": False,
+                        "error": f"{src.username} was deleted on purpose — remove it "
+                                 f"from Excluded profiles to add it again"}
 
             # Don't stack duplicates of the same pass for one profile.
             existing = [j for j in self.jobs.values()

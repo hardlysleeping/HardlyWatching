@@ -1600,6 +1600,35 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/static":
             # Progress of the static-video scan, polled while it runs.
             return self._json(static_status())
+        if p == "/api/exclusions":
+            # Who is excluded, both platforms. Small and JSON, so the settings
+            # group and the delete dialog can both read it. Same store the
+            # engine consults on every add, so this list is the truth.
+            try:
+                db = _profile_db()
+                rows = []
+                for plat in ("instagram", "tiktok"):
+                    for r in db.excluded_list(plat):
+                        rows.append({"profile": r["handle"],
+                                     "platform": plat,
+                                     "reason": r.get("reason") or "",
+                                     "excluded_at": r.get("excluded_at") or 0})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e), "count": 0,
+                                   "profiles": []})
+            rows.sort(key=lambda r: r["excluded_at"], reverse=True)
+            return self._json({"ok": True, "count": len(rows), "profiles": rows})
+        if p == "/api/profile/totals":
+            # How many files and bytes a delete would move, counted the same way
+            # the delete counts them. The dialog quotes these numbers, so it
+            # cannot promise one figure and report another.
+            from urllib.parse import parse_qs as _pq
+            q = _pq(urlparse(self.path).query)
+            prof = str((q.get("profile") or [""])[0]).strip().lstrip("@")
+            plat = "tiktok" if (q.get("platform") or [""])[0] == "tiktok" else "instagram"
+            if not prof:
+                return self._json({"ok": False, "error": "no profile given"})
+            return self._json(get_engine().profile_totals(prof, plat))
         if p == "/api/tiktok/browsers":
             # Which browsers are signed into TikTok (yt-dlp takes a name, not a
             # cookie file, so this is a plain list).
@@ -2761,6 +2790,35 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/remove":
             return self._json({"ok": get_engine().remove(body.get("id", ""))})
+
+        if p == "/api/profile/delete":
+            # One action: media to the Trash, every job for that person gone
+            # from Waiting and Finished, and an exclusion so it cannot be
+            # re-downloaded by accident. The engine refuses while it is
+            # downloading and reports what it moved; this route only parses.
+            prof = str(body.get("profile") or "").strip()
+            if not prof:
+                return self._json({"ok": False, "error": "no profile given"})
+            plat = "tiktok" if str(body.get("platform") or "") == "tiktok" else "instagram"
+            return self._json(get_engine().delete_profile(
+                prof, plat,
+                media=bool(body.get("media", True)),
+                exclude=bool(body.get("exclude", True))))
+
+        if p == "/api/exclusions/remove":
+            # Undo one exclusion. Only the memory is cleared: the files went to
+            # the Trash, and getting those back is the Trash bin's job.
+            prof = str(body.get("profile") or "").strip().lstrip("@")
+            plat = "tiktok" if str(body.get("platform") or "") == "tiktok" else "instagram"
+            if not prof:
+                return self._json({"ok": False, "error": "no profile given"})
+            ok = False
+            try:
+                ok = bool(_profile_db().restore(plat, prof))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)})
+            return self._json({"ok": ok, "profile": prof, "platform": plat})
+
         if p == "/api/forget":
             return self._json({"ok": get_engine().forget(body.get("id", ""))})
 
