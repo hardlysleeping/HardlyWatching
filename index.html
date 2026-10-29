@@ -82,6 +82,11 @@
      a warning, so a misclick is visible before it happens rather than after. */
   button.small.safe{border-color:var(--line)}
   button.small.danger{border-color:#b4534b;color:#e8a49c}
+  /* Category rows in the bookmark picker: a fixed checkbox column so the ticks
+     line up, and the tick itself is the state -- not just a highlight. */
+  .bmrow{display:flex;align-items:center;gap:8px;justify-content:flex-start}
+  .bmcheck{width:1.1em;flex:0 0 auto;text-align:center;opacity:.9}
+  .bmrow.on{border-color:#4a7a4a;color:#bfe3bf}
   /* Two controls in the Download bar are symbols: start/pause for the queue and a
      folder door. Written out they were the longest words in the row, they changed
      length with the queue's state, and they pushed their neighbours about.
@@ -442,7 +447,7 @@
     .gallery-head > b{flex:1 1 100%}
     #galleryHint{flex:1 1 100%;margin-left:0 !important}
     #sortNameBtn{margin-left:auto !important}
-    #sortNameBtn,#sortCountBtn{white-space:nowrap}
+    #sortNameBtn,#sortCountBtn,#sortSizeBtn{white-space:nowrap}
   }
 
   /* ---- shorts tab -------------------------------------------------------
@@ -1214,6 +1219,44 @@ some.profile
              never shows it and the videos look like they went somewhere else. -->
         <div class="hint" id="ttPath" style="margin-top:10px"></div>
       </div>
+      <!-- Saved videos. TikTok's Favorites list is the one thing a downloader
+           cannot read for you: the call behind it only answers a signed request
+           from TikTok's own page, so it is read from the account holder's data
+           export instead -- Settings -> Download your data, which lists every
+           saved video as a link. The links are then downloaded like any other
+           TikTok video. -->
+      <div class="card">
+        <h3 style="margin-top:0">Saved videos</h3>
+        <p class="hint" style="margin-top:0">
+          Reads the export TikTok makes for you (<b>Settings → Account → Download
+          your data</b>, JSON) and downloads every saved video into <b>its
+          creator's own folder</b>, making that profile if it is not there yet.
+          Anything already grabbed is skipped — the app keeps its own list of what
+          it has taken, so exporting again only fetches what is new. Everything it
+          takes is filed under the bookmark category <b>TikTok Favorites</b>, so
+          the whole lot is viewable in one place.
+        </p>
+        <div class="row" style="margin-top:8px">
+          <button class="small" id="savedFindBtn"
+                  title="Look in Downloads, Documents and Desktop for a TikTok export">
+            Find my export</button>
+          <input id="savedPath" type="text" placeholder="/path/to/user_data_tiktok.json"
+                 style="flex:1;min-width:220px">
+          <button class="small" id="savedCheckBtn" title="Count the saved videos in that file">
+            Check</button>
+          <button class="small primary" id="savedAddBtn"
+                  title="Queue every saved video in that file">Add to queue</button>
+        </div>
+        <div id="savedFound" style="margin-top:8px"></div>
+        <label class="row" style="margin-top:8px;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="savedQueueCreators" checked>
+          <span class="hint" style="margin:0">
+            Add these creators to the download queue (<b>newest 5</b> each) —
+            skipped if they are already queued or excluded
+          </span>
+        </label>
+        <div class="hint" id="savedResult" style="margin-top:6px"></div>
+      </div>
       <!-- TikTok's logins live in the Sessions panel, which lists every saved
            login with the one in use and lets each be renamed or deleted. This tab
            used to carry a second, single-slot copy of that control; one place, and
@@ -1237,6 +1280,24 @@ some.profile
        profiles. All four are the very same <details> elements, with the same
        ids and the same handlers -- this dialog only decides which one you see,
        so nothing about them had to be rewritten to get them off the page. -->
+  <dialog class="dlg" id="jobDlg">
+    <div class="dlg-head">
+      <b id="jobDlgTitle">Options for this one</b>
+      <span class="hint" id="jobDlgNote" style="margin-left:6px"></span>
+      <button class="small" id="jobDlgClose" style="margin-left:auto">Close ✕</button>
+    </div>
+    <div class="dlg-body">
+      <div class="hint" id="jobDlgHint" style="margin:0 0 10px"></div>
+      <div class="sgrid" id="jobGrid"></div>
+      <div class="row" style="margin-top:12px">
+        <label class="hint" style="display:flex;align-items:center;gap:7px">
+          <input type="checkbox" id="jobRequeue"> Run it again with these settings
+        </label>
+        <button class="small" id="jobReset" style="margin-left:auto">Follow the panel again</button>
+        <button class="small primary" id="jobSave">Save</button>
+      </div>
+    </div>
+  </dialog>
   <dialog class="dlg" id="optionsDlg">
     <div class="dlg-head">
       <div class="dlg-tabs" role="tablist">
@@ -1425,7 +1486,9 @@ some.profile
         <div class="section-head">
           <h2>Waiting</h2>
           <span class="hint" id="queueHint"></span>
-          <button class="small" id="removedBtn" style="display:none;margin-left:auto">Removed (<span id="removedCount">0</span>)</button>
+          <button class="small" id="clearQueueBtn" style="margin-left:auto;display:none"
+            title="Move every waiting profile to Finished — nothing is deleted, and any of them can be re-queued from there">Clear queue</button>
+          <button class="small" id="removedBtn" style="display:none">Removed (<span id="removedCount">0</span>)</button>
         </div>
         <div id="removedPanel" class="composer" style="display:none;margin-bottom:12px">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1930,7 +1993,6 @@ const SPEC = [
   {group:"Metadata"},
   {k:"captions", l:"Captions", d:"txt file per post", t:"bool", flag:"--no-captions"},
   {k:"metadata_json", l:"JSON metadata", d:"full data per post", t:"bool", flag:"--no-metadata-json"},
-  {k:"comments", l:"Comments", d:"slower — extra request per post", t:"bool", flag:"--comments"},
   {k:"geotags", l:"Geotags", d:"slower — extra request per post", t:"bool", flag:"--geotags"},
   {k:"compress_json", l:"Compress JSON", d:".xz instead of readable json", t:"bool", flag:"--no-compress-json"},
   {group:"Which posts"},
@@ -1942,6 +2004,12 @@ const SPEC = [
   {group:"How"},
   {k:"between_profiles", l:"Seconds between profiles", d:"600 = 10 min. Longer is much safer", t:"num", flag:"(app)"},
   {k:"between_tiktok", l:"Seconds between TikTok profiles", d:"own timer, so TikTok pacing can't stall Instagram. 600 = 10 min", t:"num", flag:"(app)"},
+  {group:"Disk space"},
+  // The stop point was a constant in the engine, so the only way to use the last
+  // 5% of a drive (or to keep more headroom) was to edit the code. It is a
+  // setting now, applied on the next check rather than at the next restart.
+  {k:"disk_stop_pct", l:"Stop at this % used", d:"default 95, which keeps a 5% reserve. Lower it for more headroom, raise it to use more of the drive.", t:"num", flag:"(app)"},
+  {k:"disk_limit_off", l:"No disk limit", d:"ignore the percentage above and keep downloading until the drive itself refuses the write", t:"bool", flag:"(app)"},
   {group:"TikTok (yt-dlp)"},
   // Queue behaviour rather than a format option, but it belongs here: this is
   // where "videos per profile" lives, which is the setting it changes the meaning
@@ -2061,7 +2129,7 @@ async function loadAutostart(){
 
 function buildSettings(){
   const IG_ONLY = ["posts","profile_pic","stories","highlights","reels","tagged","igtv",
-    "captions","metadata_json","comments","geotags","compress_json","fast_update",
+    "captions","metadata_json","geotags","compress_json","fast_update",
     "latest_stamps","count","post_filter","storyitem_filter","between_profiles",
     "max_connection_attempts","request_timeout","sanitize_paths","resume","iphone","slide"];
   $("sgrid").innerHTML = SPEC.map((s)=>{
@@ -2236,7 +2304,6 @@ function refreshSummary(){
   if(settings.reels) on.push("reels");
   if(settings.tagged) on.push("tagged");
   if(settings.igtv) on.push("IGTV");
-  if(settings.comments) on.push("comments");
   const mode = settings.fast_update ? "new only" : "full scan";
   $("setSummary").textContent =
     `· ${mode}${on.length ? " · " + on.join(", ") : " · posts only"}` +
@@ -2555,12 +2622,212 @@ function paintTtPath(st){
   };
 }
 
+/* ---------- one job's own options ---------- */
+// The global panel cannot reach a row already in the queue: each job carries the
+// settings it was added with. This dialog edits that copy, so "stop grabbing X
+// for this download" is possible after the fact instead of only for new rows.
+let jobDlgId = null;
+
+function jobValue(src, key){
+  if(key.includes(".")){
+    const [a, b] = key.split(".");
+    return (src[a] || {})[b];
+  }
+  return src[key];
+}
+
+function openJobSettings(jobId){
+  const job = (lastState && lastState.jobs || []).find(j => j.id === jobId);
+  if(!job) return;
+  jobDlgId = jobId;
+  const tiktok = (job.platform || "instagram") === "tiktok";
+  const base = (lastState && lastState.settings) || {};
+  const own = job.settings || {};
+  const eff = {...base, ...own, tiktok: {...(base.tiktok || {}), ...(own.tiktok || {})}};
+
+  $("jobDlgTitle").textContent = (job.kind === "saved" ? "Saved videos" : "@" + job.username)
+                                 + " — options";
+  $("jobDlgNote").textContent = job.status === "running" ? "this run is already going"
+                              : job.status === "queued" ? "applies to its next run" : "";
+  $("jobDlgHint").textContent = tiktok
+    ? "yt-dlp options for this one profile. Anything you change here stops following the panel."
+    : "instaloader options for this one profile. Anything you change here stops following the panel.";
+
+  // Which rows belong to which platform: yt-dlp options are TikTok-only, and
+  // Instagram takes everything else except TikTok's own pacing knob. (IG_ONLY
+  // inside buildSettings() is a local, so it cannot be borrowed here.)
+  const rows = SPEC.filter(r => !r.group).filter(r => tiktok
+    ? r.k.startsWith("tiktok.")
+    : (!r.k.startsWith("tiktok.") && r.k !== "between_tiktok"));
+
+  $("jobGrid").innerHTML = rows.map(r => {
+    const v = jobValue(eff, r.k);
+    if(r.t === "bool"){
+      return `<label class="tog"><input type="checkbox" data-jk="${esc(r.k)}" data-jt="bool"
+        ${v ? "checked" : ""}><span>${esc(r.l)}<small>${esc(r.d || "")}</small></span></label>`;
+    }
+    return `<div class="num"><span style="min-width:0">${esc(r.l)}
+      <small class="hint" style="display:block">${esc(r.d || "")}</small></span>
+      <input type="text" data-jk="${esc(r.k)}" data-jt="${esc(r.t)}"
+             value="${esc(v == null ? "" : String(v))}" style="margin-left:auto"
+             title="${esc(r.flag || "")}"></div>`;
+  }).join("");
+
+  $("jobRequeue").checked = false;
+  $("jobRequeue").disabled = !["done", "failed", "cancelled", "skipped"].includes(job.status);
+  const dlg = $("jobDlg");
+  if(!dlg.open) dlg.showModal();
+}
+
+function jobPatch(){
+  // Only the fields actually touched: a full dump would freeze every other
+  // option on this row and quietly cut it off from the panel forever.
+  const patch = {};
+  const eff = null;
+  $("jobGrid").querySelectorAll("input").forEach(el => {
+    const k = el.dataset.jk;
+    const job = (lastState && lastState.jobs || []).find(j => j.id === jobDlgId) || {};
+    const base = (lastState && lastState.settings) || {};
+    const own = job.settings || {};
+    const merged = {...base, ...own, tiktok: {...(base.tiktok || {}), ...(own.tiktok || {})}};
+    const was = jobValue(merged, k);
+    let now;
+    if(el.dataset.jt === "bool") now = el.checked;
+    else if(el.dataset.jt === "num") now = parseInt(el.value || "0", 10) || 0;
+    else now = el.value;
+    const same = el.dataset.jt === "bool" ? !!was === !!now : String(was ?? "") === String(now);
+    if(same) return;
+    if(k.includes(".")){
+      const [a, b] = k.split(".");
+      (patch[a] = patch[a] || {})[b] = now;
+    } else {
+      patch[k] = now;
+    }
+  });
+  return patch;
+}
+
+function wireJobSettings(){
+  const dlg = $("jobDlg");
+  if(!dlg) return;
+  $("jobDlgClose").onclick = () => dlg.close();
+  dlg.addEventListener("click", (e) => { if(e.target === dlg) dlg.close(); });
+  $("jobSave").onclick = async () => {
+    const patch = jobPatch();
+    const requeue = $("jobRequeue").checked && !$("jobRequeue").disabled;
+    if(!Object.keys(patch).length && !requeue){ dlg.close(); return; }
+    const r = await post("/api/job-settings", {id: jobDlgId, settings: patch, requeue});
+    if(!r.ok){ showErr(r.error || "Could not save those options"); return; }
+    toast(Object.keys(patch).length ? "Options saved for this one" : "Queued again");
+    dlg.close();
+    tick();
+  };
+  $("jobReset").onclick = async () => {
+    const r = await post("/api/job-settings", {id: jobDlgId, reset: true});
+    if(!r.ok){ showErr(r.error || "Could not reset those options"); return; }
+    toast("This row follows the panel again");
+    dlg.close();
+    tick();
+  };
+}
+wireJobSettings();
+
+/* ---------- saved videos (TikTok data export) ---------- */
+// TikTok's saved list only answers a signed request from its own page, so it is
+// read out of the export the account holder downloads from TikTok. Nothing here
+// queues anything until "Add to queue" is pressed.
+
+function savedNote(msg, bad){
+  const el = $("savedResult");
+  if(!el) return;
+  el.textContent = msg || "";
+  el.style.color = bad ? "var(--err)" : "";
+}
+
+async function savedCheck(){
+  const path = ($("savedPath").value || "").trim();
+  if(!path){ savedNote("Paste the path to the export file first.", true); return; }
+  const r = await post("/api/tiktok/saved", {path, dry_run: true});
+  if(!r.ok){ savedNote(r.error || "Could not read that file.", true); return; }
+  const extra = (r.source && r.source !== "favorites list") ? ` (${r.source})` : "";
+  const have = r.already ? `, ${r.already} already grabbed` : "";
+  savedNote(`${r.count} saved video${r.count===1?"":"s"} in `
+            + `${r.file.split("/").pop()}${extra} — ${r.new} to fetch${have}`);
+}
+
+async function savedAdd(){
+  const path = ($("savedPath").value || "").trim();
+  if(!path){ savedNote("Paste the path to the export file first.", true); return; }
+  const r = await post("/api/tiktok/saved", {path});
+  if(!r.ok){ savedNote(r.error || "Could not queue that export.", true); return; }
+  const have = r.already ? ` (${r.already} already grabbed)` : "";
+  savedNote(`Queued ${r.count} saved video${r.count===1?"":"s"}${have} — the queue row is “saved”.`);
+  tick();
+}
+
+async function savedFind(){
+  const el = $("savedFound");
+  el.innerHTML = '<div class="hint">Looking…</div>';
+  const r = await post("/api/tiktok/saved/find", {});
+  const rows = r.found || [];
+  if(!rows.length){
+    el.innerHTML = '<div class="hint">No TikTok export found in Downloads, Documents or '
+      + 'Desktop. Get one from TikTok: Settings → Account → Download your data.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(f => {
+    const name = f.path.split("/").pop();
+    const when = f.mtime ? new Date(f.mtime*1000).toLocaleDateString() : "";
+    return `<div class="row" style="align-items:center;gap:8px;margin-top:6px">
+      <div style="flex:1;min-width:0">
+        <div>${esc(name)}</div>
+        <div class="meta">${esc(f.path)}${when?" · "+esc(when):""} · ${f.count} saved</div>
+      </div>
+      <button class="small" data-usepath="${esc(f.path)}">Use</button>
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-usepath]").forEach(b => {
+    b.onclick = () => {
+      $("savedPath").value = b.dataset.usepath;
+      savedNote("File picked — Check counts it, Add to queue starts it.");
+    };
+  });
+}
+
+function wireSaved(){
+  if($("savedFindBtn")) $("savedFindBtn").onclick = savedFind;
+  if($("savedCheckBtn")) $("savedCheckBtn").onclick = savedCheck;
+  if($("savedAddBtn")) $("savedAddBtn").onclick = savedAdd;
+  const box = $("savedQueueCreators");
+  if(box){
+    // The setting lives on the server: this card is drawn from a poll that
+    // carries it, so the box shows what the engine will actually do.
+    box.onchange = async () => {
+      const r = await post("/api/settings",
+        {settings: {queue_saved_creators: box.checked}});
+      if(!r || !r.settings){ box.checked = !box.checked; toast("Could not save that"); return; }
+      toast(box.checked ? "Creators from saved videos will be queued"
+                        : "Creators will not be queued");
+    };
+  }
+}
+wireSaved();
+
+// Paint the switch from the poll, without stealing a click in progress.
+function paintSavedSwitch(st){
+  const box = $("savedQueueCreators");
+  if(!box || !st || !st.settings) return;
+  const want = st.settings.queue_saved_creators !== false;
+  if(document.activeElement !== box && box.checked !== want) box.checked = want;
+}
+
 function render(st){
   lastState = st;  // cache for optimistic updates (reorder, etc.)
   // Space is not queue-specific: show it on every tab, before the early return
   // below skips the queue work.
   paintDisk(st);
   paintTtPath(st);
+  paintSavedSwitch(st);
   // While the gallery or shorts tab is showing, the entire queue UI is
   // display:none. The 1.2s poll used to rebuild all of it anyway -- hundreds
   // of cards, invisible -- which showed up as the page stuttering whenever you
@@ -2834,6 +3101,14 @@ function render(st){
   const showRemoved = activePlatform === "instagram" && st.removed && st.removed.length;
   $("removedBtn").style.display = showRemoved ? "" : "none";
 
+  // "Clear queue" only means something while something is waiting. It sends
+  // those to Finished; nothing is deleted.
+  const clearQ = $("clearQueueBtn");
+  if(clearQ){
+    clearQ.style.display = queued.length ? "" : "none";
+    clearQ.textContent = queued.length > 1 ? `Clear queue (${queued.length})` : "Clear queue";
+  }
+
   // Waiting list. Paged and searchable: with hundreds queued, rendering every
   // card was both slow and a lot of scrolling to find one name.
   paintPagedQueue(queued);
@@ -2892,10 +3167,16 @@ function paintPagedQueue(queued){
   // with nothing running. On a touch screen that is a list being torn down under
   // your finger every 600ms.
   if(slice.length){
-    setRows("list", slice.map((j, i) => ({
-      key: rowKeyOf(j, start + i + 1),
-      html: cardHtml(j, String(start + i + 1), start + i + 1),
-    })));
+    setRows("list", slice.map((j, i) => {
+      // The job's own place in the run order, not its row in this filtered
+      // slice: a search result that is really 512th in the queue must not be
+      // labelled 1. 0 = the engine did not place it, so claim nothing.
+      const at = Number(j.qpos) || 0;
+      return {
+        key: rowKeyOf(j, start + i + 1),
+        html: cardHtml(j, at ? String(at) : "", at),
+      };
+    }));
   } else if(hits.length){
     setRows("list", []);
   } else {
@@ -3225,8 +3506,12 @@ function cardHtml(j, pos, qpos){
     // Every waiting job can be promoted, not just the first few: moving
     // something to the top is the whole point of a priority queue.
     if(isQ){
-      // ⤒ / ↑ are pointless on the job that will run next anyway.
-      if(qpos > 1){
+    // ⤒ / ↑ are pointless on the job that will run next anyway -- but only on
+    // the job that really is next. This used to test the card's row number, so
+    // with the list filtered by a search or a platform tab the top RESULT was
+    // treated as the top of the queue: it showed position 1 and lost both
+    // buttons, making it impossible to promote anything from a search.
+    if(qpos !== 1){
         btns.push(`<button class="icon" data-top="${j.id}" title="Move to the front (run next)">⤒</button>`);
         btns.push(`<button class="icon" data-up="${j.id}" title="Move up one">↑</button>`);
       }
@@ -3236,9 +3521,17 @@ function cardHtml(j, pos, qpos){
     // Straight to this profile's media, without going via the gallery's profile
     // list. Offered on every card on purpose: a TikTok entry has no picture to
     // click, so the button is the only route for those.
-    btns.push(`<button class="small" data-galprofile="${esc(j.username)}"
-      data-platform="${esc(j.platform||"instagram")}"
-      title="Open ${esc(j.username)}'s gallery — the files already downloaded">Gallery</button>`);
+    if(j.kind === "saved"){
+      // A saved pass has no folder of its own: its videos are split into the
+      // creators' folders, so the one place they are all together is the
+      // bookmark category it files them under.
+      btns.push(`<button class="small" data-savedgallery="1"
+        title="Open TikTok Favorites — every saved video in one place">Gallery</button>`);
+    } else {
+      btns.push(`<button class="small" data-galprofile="${esc(j.username)}"
+        data-platform="${esc(j.platform||"instagram")}"
+        title="Open ${esc(j.username)}'s gallery — the files already downloaded">Gallery</button>`);
+    }
     btns.push(`<button class="small" data-open="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}" title="Open the download folder">Open</button>`);
 
     // Secondary actions live behind one menu so the row stays readable.
@@ -3273,7 +3566,7 @@ function cardHtml(j, pos, qpos){
       more.push(`<button class="small iconbtn igicon" data-profile="${esc(j.username)}"
         title="View ${esc(j.username)} on Instagram"
         aria-label="View ${esc(j.username)} on Instagram">${IG_SVG}</button>`);
-    }else{
+    }else if(j.kind !== "saved"){
       more.push(`<button class="small iconbtn igicon" data-ttprofile="${esc(j.username)}"
         title="View ${esc(j.username)} on TikTok"
         aria-label="View ${esc(j.username)} on TikTok">${TT_SVG}</button>`);
@@ -3295,6 +3588,10 @@ function cardHtml(j, pos, qpos){
     } else {
       more.push(`<button class="small danger" data-forget="${j.id}">Remove from list</button>`);
     }
+    // One row's own options. Global settings never reached a job already in the
+    // queue, so this is the way to change what THIS download will run with.
+    btns.push(`<button class="small icon" data-jobsettings="${j.id}"
+      title="Options for this one${j.status==="queued"?" (next run)":j.status==="done"?" (already downloaded)":""}">⚙</button>`);
     btns.push(`<button class="small" data-more="${j.id}" title="More actions">⋯</button>`);
     const moreMenu = `<div class="menu" data-menu="${j.id}" style="display:none">${more.join("")}</div>`;
 
@@ -3305,7 +3602,7 @@ function cardHtml(j, pos, qpos){
       <div>
         <div class="top">
           <span class="name clickable" data-profile="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}"
-                title="Open ${esc(j.username)}">${esc(j.username)}</span>
+                title="${j.kind==="saved"?"Every video saved on the account, from its TikTok data export":`Open ${esc(j.username)}`}">${j.kind==="saved"?"Saved videos":esc(j.username)}</span>
           ${j.passes ? passPills(j.passes) : ""}
           ${j.platform==="tiktok"?'<span class="pill tiktok" title="Downloaded with yt-dlp">tiktok</span>':'<span class="pill ig" title="Downloaded with instaloader">instagram</span>'}
           ${j.kind==="reels"?'<span class="pill reels" title="Reels-only pass">reels</span>':""}
@@ -3315,7 +3612,7 @@ function cardHtml(j, pos, qpos){
           ${j.settings&&j.settings.fast_update===false?`<span class="pill">full</span>`:""}
         </div>
         <div class="metaline">${detail?`<span class="mmsg">${esc(detail)}</span>`:""}${bits.map(b=>`<span class="mbit">${esc(b)}</span>`).join("")}</div>
-        ${j.platform==="tiktok"?ttCountBar(j):""}
+        ${j.platform==="tiktok" && j.kind!=="saved" ? ttCountBar(j) : ""}
         ${prog}
         ${tail}
       </div>
@@ -3578,6 +3875,14 @@ function wireCards(container){
     if(r.ok === false) showErr("Could not forget that");
     tick();
   }));
+  on("[data-savedgallery]", b=>b.onclick=(e)=>{
+    e.stopPropagation();
+    openFavoritesBookmarks();
+  });
+  on("[data-jobsettings]", b=>b.onclick=(e)=>{
+    e.stopPropagation();
+    openJobSettings(b.dataset.jobsettings);
+  });
   on("[data-top]", b=>b.onclick=async()=>{
     // Optimistic: move to front immediately, then sync to server.
     if(optimisticReorder(b.dataset.top, "to", 0)){
@@ -3747,6 +4052,20 @@ $("clearFinishedBtn").onclick = async () => {
   const r = await post("/api/clear-finished",{});
   toast(`Cleared ${r.removed} entries`); tick();
 };
+$("clearQueueBtn").onclick = async () => {
+  // Say exactly what happens, because "clear" on a downloader reads like
+  // "delete". It is a move to Finished, and nothing on disk is touched.
+  const n = ($("clearQueueBtn").textContent.match(/\((\d+)\)/) || [])[1];
+  if(!confirm(`Move ${n ? n + " waiting profile" + (n === "1" ? "" : "s") : "every waiting profile"} to Finished?\n\n`
+            + `Nothing is deleted. Files already downloaded stay where they are, `
+            + `and any cleared profile can be re-queued from Finished.`)) return;
+  const r = await post("/api/clear-queue",{});
+  if(!r.ok){ toast(r.error || "Could not clear the queue"); return; }
+  toast(r.running
+    ? `Moved ${r.cleared} to Finished — 1 still downloading`
+    : `Moved ${r.cleared} to Finished`);
+  tick();
+};
 $("clearInputBtn").onclick = () => {
   $("input").value = "";
   const r = $("ttResult"); if(r) r.textContent = "";
@@ -3783,10 +4102,11 @@ $("refreshSess").onclick = async () => { await loadSessions(); toast("Refreshed"
 $("resetSettings").onclick = async () => {
   const def = {posts:true,profile_pic:true,stories:true,highlights:true,tagged:false,
     reels:false,igtv:false,videos:true,video_thumbnails:false,pictures:true,captions:true,
-    metadata_json:true,compress_json:false,comments:false,geotags:false,fast_update:true,
+    metadata_json:true,compress_json:false,geotags:false,fast_update:true,
     latest_stamps:true,
     count:0,post_filter:"",storyitem_filter:"",sanitize_paths:true,resume:true,
-    max_connection_attempts:3,request_timeout:300,iphone:true,slide:"",between_profiles:240,autocheck:false,autocheck_hours:6,hold_after_limit:true};
+    max_connection_attempts:3,request_timeout:300,iphone:true,slide:"",between_profiles:240,autocheck:false,autocheck_hours:6,hold_after_limit:true,
+    disk_stop_pct:95,disk_limit_off:false};
   const r = await post("/api/settings",{settings:def});
   fillSettings(r.settings);
   toast("Defaults restored");
@@ -4261,7 +4581,101 @@ let gPlatform = "instagram";  // platform of the profile currently open
 let gAll = null;          // null | "favorites" | "trash" — cross-profile view
 let gFilter = "all";      // "all" | "favorites" | "trash"
 let gType = "any";        // "any" | "photos" | "videos"
-let gSort = "random";     // "random" | "newest" | "oldest"
+// Show ONLY the tagged posts: the ones in this folder that somebody else made,
+// which instaloader's --tagged pass dropped here. The folder mixes them with the
+// profile's own posts and nothing on a tile said so, so there was no way to look
+// at just the tagged ones. This is a view -- it downloads nothing and moves
+// nothing; the files stay where they are.
+let gTaggedOnly = false;
+// "No people" filter: show only pictures the people pass found nobody in. A
+// separate axis from tagged -- one is about who made the post, this is about
+// what is in the frame -- so both can be on at once.
+let gNoPeople = false;
+// Last known state of the server-side people scan (polled while it runs).
+let gPeopleScan = null;
+let gPeopleTimer = null;
+// Where a profile was opened FROM, so it can be left again. A list view is a
+// place you were reading -- its scroll position, its category, its timeline
+// picks -- and opening somebody's profile used to throw all of that away: the
+// only way back to Bookmarks was to press the chip again and start at the top.
+let navStack = [];
+// One chip for the order, not a row of them. Order is a single axis, so tapping
+// the chip walks it: newest -> oldest -> (random, where a shuffle makes sense)
+// and round again. The label always says what the list is doing right now, so
+// there is nothing to compare between two buttons.
+function orderChip(states, get, set, repaint){
+  const b = document.createElement("button");
+  b.className = "fchip on";
+  const at = () => Math.max(0, states.findIndex(s => s[0] === get()));
+  const paint = () => {
+    const [key, label, tip] = states[at()];
+    b.textContent = label;
+    b.dataset.order = key;
+    b.title = tip || "Tap to change the order";
+  };
+  b.onclick = () => {
+    const [key] = states[(at() + 1) % states.length];
+    set(key);
+    paint();
+    repaint();
+  };
+  paint();
+  return b;
+}
+
+let gSort = "newest";     // "random" | "newest" | "oldest"
+// Which way the date order runs. Kept apart from gSort so the newest/oldest
+// button still remembers its direction while Random is the one in use.
+let gDateDir = "newest";  // "newest" | "oldest"
+// Date order and shuffle as two separate controls.
+//
+// One button cycling newest -> oldest -> random hid the date order behind two
+// clicks and could sit there reading "Random" on a grid opened to read in date
+// order. The date button is a real toggle: tap it and the direction flips, so
+// newest/oldest is one tap each way instead of a lap through Random.
+function dateOrderButtons(repaint){
+  const wrap = document.createElement("span");
+  wrap.className = "sortgroup";
+  const date = document.createElement("button");
+  date.className = "fchip";
+  const rand = document.createElement("button");
+  rand.className = "fchip";
+  rand.textContent = "⇄ Random";
+  const paint = () => {
+    const onDate = gSort !== "random";
+    date.classList.toggle("on", onDate);
+    date.dataset.order = gDateDir;
+    date.textContent = gDateDir === "oldest" ? "↑ Oldest saved" : "↓ Newest saved";
+    date.title = gDateDir === "oldest"
+      ? "Oldest saved first — tap to flip to newest first"
+      : "Newest saved first — tap to flip to oldest first";
+    rand.classList.toggle("on", gSort === "random");
+    rand.title = gSort === "random" ? "Shuffled — tap to go back to date order"
+                                    : "Shuffle this collection";
+  };
+  date.onclick = () => {
+    // Coming from Random, the first tap applies the direction it is showing.
+    if(gSort !== "random") gDateDir = (gDateDir === "newest" ? "oldest" : "newest");
+    gSort = gDateDir;
+    paint();
+    repaint();
+  };
+  rand.onclick = () => {
+    if(gSort === "random"){
+      gSort = gDateDir;
+    } else {
+      gSort = "random";
+      gSeed = (Date.now()&0x7fffffff);
+    }
+    paint();
+    repaint();
+  };
+  paint();
+  wrap.appendChild(date);
+  wrap.appendChild(rand);
+  return wrap;
+}
+
 // Inside one profile there is nothing to shuffle and no counts to rank: the
 // only order that means anything is when it was posted. Kept apart from gSort
 // so the cross-profile views (All, Liked, Bookmarks) keep their own default.
@@ -4562,6 +4976,135 @@ $("ttCheckBtn").onclick = async () => {
   }catch(e){ $("ttResult").textContent = "Error: " + e.message; }
 };
 
+/* ---------- going back ---------- */
+
+// What to call the place behind us. The chip row already names these views, so
+// the button uses the same words -- "back" alone would not say where to.
+function backLabel(all){
+  return all === "favorites" ? "← Liked"
+    : all === "trash" ? "← All Trash"
+    : all === "bookmarks" ? "← Bookmarks"
+    : all === "timeline" ? "← Timeline"
+    : "← Profiles";
+}
+
+// One floating button, only while a profile is open. Drawn from navStack so it
+// always names the view it will return to.
+function paintBackFloat(){
+  const existing = $("backFloat");
+  const top = navStack[navStack.length - 1];
+  if(!gProfile || !top){
+    if(existing) existing.style.display = "none";
+    return;
+  }
+  let b = existing;
+  if(!b){
+    b = document.createElement("button");
+    b.id = "backFloat";
+    b.className = "fchip";
+    b.onclick = () => goBack();
+    document.body.appendChild(b);
+  }
+  b.style.display = "";
+  b.textContent = backLabel(top.all);
+  b.title = "Back to where you were — the list and its scroll position are kept";
+}
+
+// Return to the view a profile was opened from, at the scroll position it had.
+async function goBack(){
+  const entry = navStack.pop();
+  gProfile = null;
+  gPlatform = "instagram";
+  paintBackFloat();
+  if(!entry){
+    gAll = null;
+    await renderGallery();
+    return;
+  }
+  gAll = entry.all;
+  if(entry.all === "favorites" || entry.all === "trash"){
+    await renderAllSection(entry.all);
+  }else if(entry.all === "bookmarks"){
+    bmCat = entry.bmCat ?? "all";
+    await renderBookmarks();
+  }else if(entry.all === "timeline"){
+    tlPicks = entry.tlPicks || [];
+    tlMonths = []; tlIndex = 0; tlCache.clear();
+    renderTimeline();
+  }else{
+    await renderGallery();
+  }
+  paintBackFloat();
+  // After the view is drawn, put the page back where it was. The grid pages its
+  // tiles in on scroll, so this is what makes the list look like it did.
+  if(entry.scroll){
+    const y = entry.scroll;
+    requestAnimationFrame(() => window.scrollTo(0, y));
+    setTimeout(() => window.scrollTo(0, y), 150);
+  }
+}
+
+/* ---------- the people pass ---------- */
+
+// Draw the scan button from whatever the server last said. One place, so the
+// label, the tooltip and the disabled state cannot drift apart.
+function paintPeopleScan(st){
+  const b = $("peopleScanBtn");
+  if(!b) return;
+  const s = st || {};
+  const tot = s.totals || {};
+  const done = tot.checked || 0;
+  if(s.running){
+    b.textContent = `👤 Scanning ${done.toLocaleString()}…`;
+    b.title = `Looking for people in every picture, one profile at a time (${s.profile || "starting"}). `
+      + `Progress is saved per picture, so stopping or restarting loses nothing. Tap to stop.`;
+    b.classList.add("on");
+    b.disabled = false;
+  }else if(!s.ready){
+    b.textContent = "👤 People scan";
+    b.title = "Needs onnxruntime and a detector model — install them to enable this";
+    b.classList.remove("on");
+    b.disabled = true;
+  }else{
+    b.textContent = done ? `👤 ${done.toLocaleString()} checked` : "👤 Scan for people";
+    b.title = done
+      ? `${done.toLocaleString()} pictures checked (${(tot.with_people || 0).toLocaleString()} have somebody in them). `
+        + `Tap to continue where it left off.`
+      : "Mark every picture as having somebody in it or not, so a profile can be filtered to the empty ones. "
+        + "Runs one profile at a time and saves as it goes.";
+    b.classList.remove("on");
+    b.disabled = false;
+  }
+}
+
+async function refreshPeopleScan(){
+  try{
+    gPeopleScan = await (await fetch("/api/people-scan")).json();
+    paintPeopleScan(gPeopleScan);
+    // Keep polling only while a scan is actually running.
+    if(gPeopleScan && gPeopleScan.running){
+      clearTimeout(gPeopleTimer);
+      gPeopleTimer = setTimeout(refreshPeopleScan, 4000);
+    }
+  }catch(e){ /* the button keeps its last label; nothing to report */ }
+}
+
+async function togglePeopleScan(){
+  const running = gPeopleScan && gPeopleScan.running;
+  try{
+    const r = await (await fetch("/api/people-scan", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: running ? "stop" : "start"})})).json();
+    gPeopleScan = r;
+    paintPeopleScan(r);
+    if(r.error) toast(r.error);
+    else if(running) toast("Stopping after this picture");
+    else toast("Scanning for people — one profile at a time");
+    clearTimeout(gPeopleTimer);
+    if(r.running) gPeopleTimer = setTimeout(refreshPeopleScan, 2500);
+  }catch(e){ toast("Could not reach the scan: " + e.message); }
+}
+
 function buildAllBar(profileCount){
   const bar = $("allBar");
   bar.innerHTML = "";
@@ -4569,7 +5112,9 @@ function buildAllBar(profileCount){
     const b = document.createElement("button");
     b.className = "fchip" + (active ? " on" : "");
     b.textContent = label;
-    b.onclick = fn;
+    // Pressing a view chip is a new journey, not a step back through the old
+    // one: drop the history so the floating button cannot offer a stale return.
+    b.onclick = () => { navStack.length = 0; paintBackFloat(); fn(); };
     return b;
   };
   bar.appendChild(mk(`Profiles (${profileCount})`, gAll === null,
@@ -4601,6 +5146,19 @@ function buildAllBar(profileCount){
       tlMonths = []; tlIndex = 0; tlCache.clear();
       renderTimeline();
     }));
+
+  // The people pass. A scan button, not a filter: it walks the archive one
+  // profile at a time, marks every picture with "somebody in it / nobody", and
+  // the per-profile grid then offers a "No people" chip. It shows progress in
+  // its own label while it runs and keeps going if the page is closed -- the
+  // scan lives in the server, the button only reports it.
+  const ppl = document.createElement("button");
+  ppl.className = "fchip";
+  ppl.id = "peopleScanBtn";
+  ppl.onclick = () => togglePeopleScan();
+  bar.appendChild(ppl);
+  paintPeopleScan(gPeopleScan);
+  refreshPeopleScan();      // shows how much is already answered, and re-attaches the poll
 
   // Interrupted-download leftovers. Only shown when there is something to
   // clean, so it is not permanent clutter for a tidy archive.
@@ -4669,17 +5227,11 @@ async function renderAllSection(section){
     }
   }
 
-  const sorts = [["random","⇄ Random"],["newest","↓ Newest"],["oldest","↑ Oldest"]];
-  const sg = document.createElement("span");
-  sg.className = "sortgroup";
-  for(const [key,label] of sorts){
-    const b = document.createElement("button");
-    b.className = "fchip" + (gSort === key ? " on" : "");
-    b.textContent = label;
-    b.onclick = () => { gSort = key; if(key==="random") gSeed = (Date.now()&0x7fffffff); renderAllSection(section); };
-    sg.appendChild(b);
-  }
-  bar.appendChild(sg);
+  bar.appendChild(orderChip(
+    [["newest","↓ Newest"],["oldest","↑ Oldest"],["random","⇄ Random"]],
+    () => gSort,
+    (k) => { gSort = k; if(k === "random") gSeed = (Date.now()&0x7fffffff); },
+    () => renderAllSection(section)));
 
   // Swipe mode. The point of this view is to sit and flip through everything
   // liked on a phone, so the one thing it needs is a way in that starts at
@@ -4743,44 +5295,118 @@ async function bookmarkPost(username, file, plat, on, category){
 function paintBook(btn, saved){
   btn.textContent = "🔖";
   btn.classList.toggle("dim", !saved);
-  btn.title = saved ? "Bookmarked — tap to remove" : "Bookmark this";
+  // Saved no longer means "tap to remove": one tap on a saved post opens the
+  // category list, where unticking is deliberate. Losing a bookmark by tapping
+  // the bookmark button was far too easy.
+  btn.title = saved ? "Bookmarked — tap to change its categories or remove it"
+                    : "Bookmark this";
 }
 
 // Choosing a category for one saved post. Native prompt() is not used anywhere
 // else in this page, so this is the same small overlay the confirm dialogs use.
-function bookmarkPicker(username, file, plat, current){
+function bookmarkPicker(username, file, plat, current, saved){
+  // `current` is the list of categories this post is in (or a single id from an
+  // older caller). `saved` says whether it is bookmarked at all -- tapping a
+  // category that is already ticked unticks it, which is the only way a
+  // bookmark is removed from here. There is no "one tap and it is gone".
+  const cats = Array.isArray(current) ? current.map(String)
+    : (current === undefined || current === null || current === "none" ? [] : [String(current)]);
+  const inCat = (id) => cats.includes(String(id));
+  const isSaved = saved === undefined ? cats.length > 0 : !!saved;
+
   const wrap = document.createElement("div");
   wrap.className = "confirm";
   const box = document.createElement("div");
   box.className = "box";
   const title = document.createElement("p");
-  title.textContent = "File this bookmark";
+  title.textContent = isSaved ? "Bookmarked — tick the categories" : "File this bookmark";
   box.appendChild(title);
   const why = document.createElement("div");
   why.className = "why";
-  why.textContent = "Categories are yours to name. A bookmark can sit in one, or none.";
+  why.textContent = isSaved
+    ? "A post can sit in several categories. Untick the ones it should leave; unticking all of them removes the bookmark."
+    : "Categories are yours to name. A bookmark can sit in one, several, or none.";
   box.appendChild(why);
 
   const list = document.createElement("div");
   list.className = "bmlist";
   const close = () => wrap.remove();
+  // What the server last said this post is in, so a second tap in the same
+  // picker cannot act on a stale idea of the ticks.
+  let live = cats.slice();
+  let liveSaved = isSaved;
+
+  const repaintRows = () => {
+    for(const b of list.querySelectorAll("[data-cat]")){
+      const id = b.dataset.cat;
+      const on = id === "none" ? live.length === 0 && liveSaved : live.includes(id);
+      b.classList.toggle("on", on);
+      b.dataset.on = on ? "1" : "0";
+      const mark = b.querySelector(".bmcheck");
+      if(mark) mark.textContent = on ? "✓" : "";
+    }
+    const rm = list.querySelector("[data-remove]");
+    if(rm) rm.style.display = liveSaved ? "" : "none";
+  };
+
+  const apply = async (nextCats, nextSaved) => {
+    live = nextCats; liveSaved = nextSaved;
+    repaintRows();
+    repaintBookmarksView();
+    if(vState) paintViewerActions();
+    if(!nextSaved) toast("Bookmark removed");
+  };
 
   const addRow = (label, cat, n) => {
     const b = document.createElement("button");
-    b.className = "small" + (String(current ?? "none") === String(cat) ? " on" : "");
-    b.textContent = n === undefined ? label : `${label} (${n})`;
+    b.className = "small bmrow";
+    b.dataset.cat = String(cat);
+    const mark = document.createElement("span");
+    mark.className = "bmcheck";
+    const text = document.createElement("span");
+    text.textContent = n === undefined ? label : `${label} (${n})`;
+    b.appendChild(mark);
+    b.appendChild(text);
     b.onclick = async () => {
-      const r = await bookmarkPost(username, file, plat, true, cat);
-      close();
-      if(!r.ok){ toast("Could not file that"); return; }
-      toast(cat === "none" ? "Uncategorised" : `Filed under ${label}`);
-      repaintBookmarksView();
-      if(vState) paintViewerActions();
+      const key = String(cat);
+      const isOn = key === "none"
+        ? (live.length === 0 && liveSaved)
+        : live.includes(key);
+      let r;
+      if(isOn){
+        // Untick. Removing the last category removes the bookmark, which is why
+        // the row says so before you press it.
+        r = await bookmarkPost(username, file, plat, false, key === "none" ? undefined : cat);
+        if(!r || !r.ok){ toast("Could not update bookmarks"); return; }
+        await apply(r.categories ?? [], !!r.bookmarked);
+        if(!r.bookmarked) close();
+        return;
+      }
+      r = await bookmarkPost(username, file, plat, true, cat);
+      if(!r || !r.ok){ toast("Could not file that"); return; }
+      await apply(r.categories ?? [cat], true);
+      toast(cat === "none" ? "Bookmarked" : `Filed under ${label}`);
     };
     list.appendChild(b);
   };
   addRow("No category", "none");
   for(const c of bmCats) addRow(c.name, c.id, c.count);
+
+  if(isSaved){
+    const rm = document.createElement("button");
+    rm.className = "small danger";
+    rm.dataset.remove = "1";
+    rm.textContent = "Remove bookmark";
+    rm.title = "Take it out of every category and unsave it";
+    rm.onclick = async () => {
+      const r = await bookmarkPost(username, file, plat, false);
+      if(!r || !r.ok){ toast("Could not update bookmarks"); return; }
+      close();
+      await apply([], false);
+    };
+    list.appendChild(rm);
+  }
+  repaintRows();
 
   const row = document.createElement("div");
   row.className = "row";
@@ -4796,16 +5422,14 @@ function bookmarkPicker(username, file, plat, current){
     const made = r.category;
     if(made){
       const got = await bookmarkPost(username, file, plat, true, made.id);
-      close();
+      if(!got || !got.ok){ toast("Could not file that"); return; }
+      await apply(got.categories ?? [made.id], true);
       toast(`Filed under ${made.name}`);
-      repaintBookmarksView();
-      if(vState) paintViewerActions();
-      return;
     }
   };
   const cancel = document.createElement("button");
   cancel.className = "small";
-  cancel.textContent = "Cancel";
+  cancel.textContent = "Done";
   cancel.onclick = close;
   row.appendChild(fresh);
   row.appendChild(cancel);
@@ -4816,9 +5440,6 @@ function bookmarkPicker(username, file, plat, current){
   document.body.appendChild(wrap);
 }
 
-// Redraw whichever view is on screen after a bookmark changed. The category
-// counts the picker shows come back with the write itself (bookmarkPost), so
-// this only has to redraw the collection when it is the view on screen.
 function repaintBookmarksView(){
   if(gAll === "bookmarks") renderBookmarks();
 }
@@ -4913,17 +5534,7 @@ async function renderBookmarks(){
     bar.appendChild(del);
   }
 
-  const sorts = [["random","⇄ Random"],["newest","↓ Newest"],["oldest","↑ Oldest"]];
-  const sg = document.createElement("span");
-  sg.className = "sortgroup";
-  for(const [key,label] of sorts){
-    const b = document.createElement("button");
-    b.className = "fchip" + (gSort === key ? " on" : "");
-    b.textContent = label;
-    b.onclick = () => { gSort = key; if(key === "random") gSeed = (Date.now()&0x7fffffff); renderBookmarks(); };
-    sg.appendChild(b);
-  }
-  bar.appendChild(sg);
+  bar.appendChild(dateOrderButtons(() => renderBookmarks()));
   if(posts.length){
     const play = document.createElement("button");
     play.className = "small";
@@ -4950,17 +5561,23 @@ async function renderBookmarks(){
       : bmCat === "none" ? "Nothing uncategorised."
       : "Nothing filed under this category yet."}</div>`;
   } else {
-    for(const post of sortPosts(posts)){
-      // Saved by definition: the tile shows it as bookmarked and keeps the
-      // category it carries, so the picker opens on the right one.
-      post.bookmarked = 1;
-      const tile = tileFor(post.username, post, post.section || "main");
-      const tag = document.createElement("span");
-      tag.className = "ptile-user";
-      tag.textContent = post.username;
-      tile.appendChild(tag);
-      grid.appendChild(tile);
-    }
+    // A batch at a time, the same way a profile's grid draws. Building every
+    // tile at once meant 6,700 saved videos became 6,700 DOM nodes plus a
+    // thumbnail request each, all before the tab appeared -- that was the lag
+    // on a large collection, not the server's answer.
+    pageGrid(grid, null,
+             sortPosts(posts).map(p => ({post: p, section: p.section || "main"})),
+             (j) => {
+               // Saved by definition: the tile shows it as bookmarked and keeps
+               // the category it carries, so the picker opens on the right one.
+               j.post.bookmarked = 1;
+               const tile = tileFor(j.post.username, j.post, j.section);
+               const tag = document.createElement("span");
+               tag.className = "ptile-user";
+               tag.textContent = j.post.username;
+               tile.appendChild(tag);
+               return tile;
+             });
   }
   host.appendChild(grid);
 }
@@ -4970,10 +5587,12 @@ function confirmClearTrash(n){
   wrap.className = "confirm";
   const box = document.createElement("div");
   box.className = "box";
-  box.innerHTML = `<p>Permanently delete all trash?</p>
+  // Our own text plus a count — no user content, so innerHTML is safe here.
+  box.innerHTML = `<p>Empty trash?</p>
     <div class="why">${n} post${n===1?"":"s"} across every profile will be
-    <b>deleted from disk</b>. A hidden marker is left so the downloader does
-    not fetch them again.</div>`;
+    <b>moved to this drive's Trash bin</b> — still there, and still taking up
+    space, until you empty that bin. A hidden marker is left so the downloader
+    does not fetch them again.</div>`;
   const row = document.createElement("div");
   row.className = "row";
   const cancel = document.createElement("button");
@@ -4982,13 +5601,13 @@ function confirmClearTrash(n){
   cancel.onclick = () => wrap.remove();
   const go = document.createElement("button");
   go.className = "small danger";
-  go.textContent = "Delete permanently";
+  go.textContent = "Move to trash";
   go.onclick = async () => {
     go.disabled = true;
     const r = await post("/api/gallery/trash/clear", {confirm:"DELETE"});
     wrap.remove();
     if(r.ok){
-      toast(`Deleted ${r.removed} file${r.removed===1?"":"s"}`);
+      toast(`Moved ${r.removed} file${r.removed===1?"":"s"} to the system trash`);
       if(r.errors && r.errors.length) toast(`${r.errors.length} skipped`);
     } else {
       toast(r.error || "Could not clear trash");
@@ -5084,15 +5703,23 @@ function changeFolderDialog(current){
 // Each button shows the direction IT sorts in, and is outlined when that axis is
 // the one in use -- so the pair reads as "sorted by this, this way". The axis you
 // are not using keeps its own direction, and all three choices survive a reload.
-const SORT_K_AXIS = "gSortAxis", SORT_K_NAME = "gSortNameDir", SORT_K_COUNT = "gSortCountDir";
-let gSortAxis = localStorage.getItem(SORT_K_AXIS) === "count" ? "count" : "name";
+//
+// A third button ranks profiles by how much disk they take, because "who is
+// eating the drive" is the other thing this list gets asked.
+const SORT_K_AXIS = "gSortAxis", SORT_K_NAME = "gSortNameDir", SORT_K_COUNT = "gSortCountDir",
+      SORT_K_SIZE = "gSortSizeDir";
+const SORT_AXES = ["name", "count", "size"];
+const savedAxis = localStorage.getItem(SORT_K_AXIS);
+let gSortAxis = SORT_AXES.includes(savedAxis) ? savedAxis : "name";
 let gSortNameDir = localStorage.getItem(SORT_K_NAME) === "za" ? "za" : "az";
 let gSortCountDir = localStorage.getItem(SORT_K_COUNT) === "few" ? "few" : "most";
+let gSortSizeDir = localStorage.getItem(SORT_K_SIZE) === "small" ? "small" : "big";
 
 function saveSort(){
   localStorage.setItem(SORT_K_AXIS, gSortAxis);
   localStorage.setItem(SORT_K_NAME, gSortNameDir);
   localStorage.setItem(SORT_K_COUNT, gSortCountDir);
+  localStorage.setItem(SORT_K_SIZE, gSortSizeDir);
 }
 
 // Fold the old single "gProfileSort" value (az|za|most|few) into the new shape
@@ -5115,13 +5742,20 @@ function sortProfiles(list){
     // Ties fall back to the name, so equal counts do not shuffle about.
     out.sort((a,b) => (gSortCountDir === "most" ? b.count - a.count : a.count - b.count)
       || byName(a,b));
+  } else if(gSortAxis === "size"){
+    // How much disk the profile takes, from the engine's own walk of the folder.
+    // A profile whose size has not been measured yet counts as 0 and lands at
+    // the bottom rather than being guessed at.
+    out.sort((a,b) => ((gSortSizeDir === "big" ? (b.bytes||0) - (a.bytes||0)
+                                              : (a.bytes||0) - (b.bytes||0))
+      || byName(a,b)));
   } else {
     out.sort(gSortNameDir === "az" ? byName : (a,b) => byName(b,a));
   }
   return out;
 }
 
-// The two buttons live next to the gallery hint, so they are created once and
+// The three buttons live next to the gallery hint, so they are created once and
 // only their labels change.
 function buildSortBtns(){
   const hint = $("galleryHint");
@@ -5146,22 +5780,36 @@ function buildSortBtns(){
     else gSortAxis = "count";
     saveSort(); paintSortBtns(); renderGallery();
   };
+  const size = document.createElement("button");
+  size.id = "sortSizeBtn";
+  size.className = "small";
+  size.style.marginLeft = "6px";
+  size.onclick = () => {
+    if(gSortAxis === "size") gSortSizeDir = (gSortSizeDir === "big" ? "small" : "big");
+    else gSortAxis = "size";
+    saveSort(); paintSortBtns(); renderGallery();
+  };
   hint.parentNode.insertBefore(name, hint.nextSibling);
   hint.parentNode.insertBefore(count, name.nextSibling);
+  hint.parentNode.insertBefore(size, count.nextSibling);
 }
 
 function paintSortBtns(){
-  const name = $("sortNameBtn"), count = $("sortCountBtn");
-  if(!name || !count) return;
-  const byNameNow = gSortAxis === "name";
+  const name = $("sortNameBtn"), count = $("sortCountBtn"), size = $("sortSizeBtn");
+  if(!name || !count || !size) return;
   name.textContent = gSortNameDir === "az" ? "A→Z" : "Z→A";
   name.title = (gSortNameDir === "az" ? "Names A to Z" : "Names Z to A")
-    + (byNameNow ? " — in use. Click to reverse." : " — click to sort by name.");
-  name.classList.toggle("on", byNameNow);
+    + (gSortAxis === "name" ? " — in use. Click to reverse." : " — click to sort by name.");
+  name.classList.toggle("on", gSortAxis === "name");
   count.textContent = gSortCountDir === "most" ? "count ↓" : "count ↑";
   count.title = (gSortCountDir === "most" ? "Most items first" : "Fewest items first")
-    + (!byNameNow ? " — in use. Click to reverse." : " — click to sort by count.");
-  count.classList.toggle("on", !byNameNow);
+    + (gSortAxis === "count" ? " — in use. Click to reverse." : " — click to sort by count.");
+  count.classList.toggle("on", gSortAxis === "count");
+  size.textContent = gSortSizeDir === "big" ? "size ↓" : "size ↑";
+  size.title = (gSortSizeDir === "big" ? "Biggest archive first, by disk used"
+                                       : "Smallest archive first, by disk used")
+    + (gSortAxis === "size" ? " — in use. Click to reverse." : " — click to sort by size.");
+  size.classList.toggle("on", gSortAxis === "size");
 }
 
 /* ---------- upload your own photos ---------- */
@@ -6204,7 +6852,10 @@ function pSplit(p){
 }
 
 function pCount(p){
-  return `${p.count.toLocaleString()} ${p.count===1?"file":"files"}`;
+  const n = `${p.count.toLocaleString()} ${p.count===1?"file":"files"}`;
+  // How much disk this person's archive takes. It is what the "size" sort
+  // orders by, and without the number that order is unverifiable.
+  return p.bytes ? `${n} · ${fmtBytes(p.bytes)}` : n;
 }
 
 // The compact grid: what the list has always looked like.
@@ -6328,7 +6979,7 @@ async function renderGallery(){
   // The name/count sorters belong to the profile LIST. Kept on screen while a
   // profile is open, they read as controls for the photos in front of you --
   // which they are not: they reorder the list you just left.
-  for(const id of ["sortNameBtn", "sortCountBtn"]){
+  for(const id of ["sortNameBtn", "sortCountBtn", "sortSizeBtn"]){
     const b = $(id);
     if(b) b.style.display = "";
   }
@@ -6654,6 +7305,29 @@ function openGalleryProfileFilter(username, platform, filter){
 // before the gallery is drawn and would otherwise hide it one last time.
 wireCtxMenu();
 
+// Open the saved pass's own view: Bookmarks, on the category it files into.
+// Ordered newest-saved first by default, so it reads like the TikTok list.
+async function openFavoritesBookmarks(){
+  showTab("gallery");
+  gProfile = null;
+  gAll = "bookmarks";
+  gPlatform = "tiktok";
+  // Newest save first: this view is a stand-in for the TikTok list, which is
+  // ordered by when things were saved, not shuffled.
+  gSort = "newest";
+  try{
+    const r = await (await fetch("/api/bookmarks?category=all")).json();
+    bmCats = r.categories || [];
+    const cat = bmCats.find(c => (c.name || "").toLowerCase() === "tiktok favorites");
+    bmCat = cat ? String(cat.id) : "all";
+  }catch(e){
+    bmCat = "all";
+  }
+  listUI.done.page = 0;
+  renderBookmarks();
+  rememberView();
+}
+
 // Open one profile's gallery from the queue.
 //
 // showTab first, then set the profile: renderGallery() delegates to renderPhotos
@@ -6679,7 +7353,7 @@ async function renderPhotos(username, platform){
   if(host) host.className = "profile-grid";
   // A profile's own photos are ordered by date, not by name or count, so the
   // list's sorters go away while it is open.
-  for(const id of ["sortNameBtn", "sortCountBtn"]){
+  for(const id of ["sortNameBtn", "sortCountBtn", "sortSizeBtn"]){
     const b = $(id);
     if(b) b.style.display = "none";
   }
@@ -6692,10 +7366,19 @@ async function renderPhotos(username, platform){
   // person, which reads as if you were still on that view.
   const abar = $("allBar");
   if(abar) abar.querySelectorAll(".fchip.on").forEach(c => c.classList.remove("on"));
+  // Remember the view we are leaving (only when a profile is NOT already open,
+  // so re-renders of the same profile do not stack up entries).
+  if(!gProfile){
+    navStack.push({all: gAll, bmCat, tlPicks: tlPicks ? [...tlPicks] : [],
+                   scroll: window.scrollY || 0});
+    if(navStack.length > 12) navStack.shift();
+  }
   gProfile = username;
   gPlatform = platform || "instagram";
   gFilter = "all";
   gType = "any";
+  gTaggedOnly = false;
+  gNoPeople = false;
   gSeed = (Date.now() & 0x7fffffff);
   rememberView();
   const mine = ++gReq;
@@ -6840,6 +7523,25 @@ function tileFor(username, post, section){
     vb.textContent = "▶";
     meta.appendChild(vb);
   }
+  // Sorted by size, the size has to be visible or the order is unverifiable.
+  // Shown only in that order, so the usual grid keeps its room for the date.
+  if((gProfSort === "big" || gProfSort === "small") && post.bytes){
+    const sb = document.createElement("span");
+    sb.className = "vbadge";
+    sb.textContent = fmtBytes(post.bytes);
+    sb.title = "Size of this post's files on disk";
+    meta.appendChild(sb);
+  }
+  // A post someone else made, sitting in this folder because the profile was
+  // tagged. Named, not just flagged: the whole point of the filter is to find
+  // these, so the tile says whose they are.
+  if(post.tagged && post.owner){
+    const ob = document.createElement("span");
+    ob.className = "vbadge";
+    ob.textContent = "🏷 @" + post.owner;
+    ob.title = "Posted by @" + post.owner + " — this profile was tagged";
+    meta.appendChild(ob);
+  }
   tile.appendChild(meta);
 
   if(post.caption) tile.title = post.caption;
@@ -6916,7 +7618,13 @@ function tileFor(username, post, section){
       () => bookmarkPicker(username, first.file, plat, post.category ?? "none"));
     tagBtn.dataset.tag = "1";
     const bb = mkBtn("🔖", "Bookmark this", async () => {
-      const want = !saved;
+      if(saved){
+        // Already saved: open the picker instead of unsaving. The picker's
+        // unticked rows and its Remove button are the only ways out.
+        bookmarkPicker(username, first.file, plat, post.categories ?? [], true);
+        return;
+      }
+      const want = true;
       bb.disabled = true;
       const r = await bookmarkPost(username, first.file, plat, want);
       bb.disabled = false;
@@ -6924,6 +7632,7 @@ function tileFor(username, post, section){
       saved = want;
       post.bookmarked = want ? 1 : 0;
       post.category = r.category ?? null;
+      post.categories = r.categories ?? [];
       paintBook(bb, saved);
       tagBtn.style.display = saved ? "" : "none";
       toast(saved ? "Bookmarked" : "Bookmark removed");
@@ -6984,9 +7693,18 @@ function sortPosts(list){
 
 // One profile's posts: chronological, newest first unless the direction is
 // flipped. No random order here -- a profile is a body of work in time, and
-// shuffling it just makes it harder to find what you saw last week.
+// shuffling it just makes it harder to find what you saw last week. Size is the
+// other order this grid gets asked for: which of these posts is the big one.
 function sortProfPosts(list){
   const a = list.slice();
+  if(gProfSort === "big" || gProfSort === "small"){
+    const dir = gProfSort === "big" ? -1 : 1;
+    // `bytes` is the post's own files added up (a carousel is the sum of its
+    // parts). Equal sizes keep the newest-first date order so the grid does not
+    // shuffle about between draws.
+    a.sort((x,y) => (dir * ((x.bytes||0) - (y.bytes||0))) || ((y.ts||0) - (x.ts||0)));
+    return a;
+  }
   a.sort((x,y) => gProfSort === "oldest" ? (x.ts||0) - (y.ts||0)
                                          : (y.ts||0) - (x.ts||0));
   return a;
@@ -7271,31 +7989,94 @@ function drawPhotos(username, sec){
     b.onclick = () => { gType = key; gSeed = (gSeed * 7919 + 13) & 0x7fffffff; drawPhotos(username, sec); };
     tgroup.appendChild(b);
   }
+  // Tagged filter: show only the posts somebody else made. Rendered even when
+  // the folder holds none, disabled, because "there is no button" and "the
+  // button has nothing to show" are different answers and only one of them is
+  // true here.
+  const nTagged = allPosts.filter(p => p.tagged).length;
+  if(!nTagged) gTaggedOnly = false;
+  const tb = document.createElement("button");
+  tb.className = "fchip" + (gTaggedOnly ? " on" : "");
+  tb.disabled = !nTagged;
+  tb.style.opacity = nTagged ? "" : "0.45";
+  tb.innerHTML = `🏷 ${gTaggedOnly ? "Tagged only" : "Tagged"}<span class="n">${nTagged}</span>`;
+  tb.title = !nTagged ? "No tagged posts in this folder"
+    : gTaggedOnly ? `${nTagged} tagged posts — tap to show everything`
+    : `${nTagged} posts here were made by other accounts (tagged) — tap to show only those`;
+  tb.onclick = () => { gTaggedOnly = !gTaggedOnly; drawPhotos(username, sec); };
+  tgroup.appendChild(tb);
+
+  // No-people filter: only the pictures the people pass found nobody in. Counted
+  // from the posts actually on screen, so a folder that has not been scanned yet
+  // reads 0 and says so instead of pretending everything is empty of people.
+  const nClean = allPosts.filter(p => p.people === false).length;
+  const nKnown = allPosts.filter(p => p.people !== null && p.people !== undefined).length;
+  if(!nClean) gNoPeople = false;
+  const pb = document.createElement("button");
+  pb.className = "fchip" + (gNoPeople ? " on" : "");
+  pb.disabled = !nClean;
+  pb.style.opacity = nClean ? "" : "0.45";
+  pb.innerHTML = `👤 ${gNoPeople ? "No people only" : "No people"}<span class="n">${nClean}</span>`;
+  pb.title = nClean
+    ? (gNoPeople ? `${nClean} posts with nobody in them — tap to show everything`
+                 : `${nClean} posts with nobody in them — tap to show only those`)
+    : (nKnown ? "Nothing here is people-free" : "Not scanned yet — use 👤 Scan for people in the gallery bar");
+  pb.onclick = () => { gNoPeople = !gNoPeople; drawPhotos(username, sec); };
+  tgroup.appendChild(pb);
   bar.appendChild(tgroup);
 
   const tot = document.createElement("span");
   tot.className = "hint";
   tot.dataset.counts = "1";
-  tot.textContent = `${allPosts.length} posts · ${items.toLocaleString()} files`
-    + (vids ? ` · ${vids.toLocaleString()} videos` : "");
+  // While the tagged filter is on, the totals describe what is on screen: the
+  // tagged posts and their files, not the whole profile.
+  const taggedFiles = allPosts.filter(p => p.tagged).reduce((n,p) => n + p.count, 0);
+  const cleanFiles = allPosts.filter(p => p.people === false).reduce((n,p) => n + p.count, 0);
+  tot.textContent = gNoPeople
+    ? `${nClean} posts with no people · ${cleanFiles.toLocaleString()} files`
+    : gTaggedOnly
+    ? `${nTagged} tagged posts · ${taggedFiles.toLocaleString()} files`
+    : `${allPosts.length} posts · ${items.toLocaleString()} files`
+      + (vids ? ` · ${vids.toLocaleString()} videos` : "");
   bar.appendChild(tot);
 
-  // Order toggle. Only the two chronological directions are offered: inside a
-  // profile the post date is the one axis that means anything.
-  const sorts = [["newest","↓ Newest"],["oldest","↑ Oldest"]];
-  const sgroup = document.createElement("span");
-  sgroup.className = "sortgroup";
-  for(const [key,label] of sorts){
-    const b = document.createElement("button");
-    b.className = "fchip" + (gProfSort === key ? " on" : "");
-    b.textContent = label;
-    b.onclick = () => {
-      gProfSort = key;
-      drawPhotos(username, sec);
-    };
-    sgroup.appendChild(b);
-  }
-  bar.appendChild(sgroup);
+  // Order. Two chips rather than one cycling button: date in either direction,
+  // and size in either direction. A cycle put "back to date order" up to three
+  // taps away, and inside a profile those are the only two orders that mean
+  // anything -- when it was posted, and how big the post is.
+  const ordWrap = document.createElement("span");
+  ordWrap.className = "sortgroup";
+  const dateBtn = document.createElement("button");
+  dateBtn.className = "fchip";
+  const sizeBtn = document.createElement("button");
+  sizeBtn.className = "fchip";
+  const paintOrd = () => {
+    const bySize = gProfSort === "big" || gProfSort === "small";
+    dateBtn.textContent = gProfSort === "oldest" ? "↑ Oldest" : "↓ Newest";
+    dateBtn.title = bySize ? "Back to date order, newest first"
+                           : (gProfSort === "oldest" ? "Oldest first — tap to flip to newest first"
+                                                     : "Newest first — tap to flip to oldest first");
+    dateBtn.classList.toggle("on", !bySize);
+    sizeBtn.textContent = gProfSort === "small" ? "↑ Smallest" : "↓ Largest";
+    sizeBtn.title = bySize
+      ? (gProfSort === "small" ? "Smallest posts first — tap to flip" : "Largest posts first — tap to flip")
+      : "Order by file size — the biggest posts first";
+    sizeBtn.classList.toggle("on", bySize);
+  };
+  dateBtn.onclick = () => {
+    gProfSort = (gProfSort === "oldest") ? "newest" : "oldest";
+    paintOrd();
+    drawPhotos(username, sec);
+  };
+  sizeBtn.onclick = () => {
+    gProfSort = (gProfSort === "big") ? "small" : "big";
+    paintOrd();
+    drawPhotos(username, sec);
+  };
+  paintOrd();
+  ordWrap.appendChild(dateBtn);
+  ordWrap.appendChild(sizeBtn);
+  bar.appendChild(ordWrap);
   host.appendChild(head);
   host.appendChild(bar);
 
@@ -7316,6 +8097,12 @@ function drawPhotos(username, sec){
   const passesType = (p) => gType === "any"
     || (gType === "videos" && p.items.some(i => i.kind === "video"))
     || (gType === "photos" && !p.items.some(i => i.kind === "video"));
+  // Tagged filter, independent of the type and section chips: it narrows whatever
+  // folder is on screen down to the posts somebody else made.
+  const passesTag = (p) => !gTaggedOnly || !!p.tagged;
+  // Only pictures with nobody in them. Unknown (null) is not clean: a post whose
+  // images were never scanned must not appear under this filter.
+  const passesPeople = (p) => !gNoPeople || p.people === false;
 
   // Build the full ordered list of (section, post) first, then render it a
   // page at a time. A profile can hold 2,700+ posts, and creating every tile
@@ -7325,7 +8112,7 @@ function drawPhotos(username, sec){
   // turned into tiles; the rest arrive as you scroll.
   const jobs = [];
   for(const [section, list] of show){
-    const kept = list.filter(passesType);
+    const kept = list.filter(p => passesType(p) && passesTag(p) && passesPeople(p));
     if(!kept.length) continue;
     if(gFilter === "all"){
       // Mark where the liked group starts rather than hiding it at the
@@ -7339,7 +8126,9 @@ function drawPhotos(username, sec){
 
   if(!jobs.length){
     grid.innerHTML = `<div class="gempty">${
-      gType === "videos" ? "No videos in this view."
+      gNoPeople ? "No people-free pictures here — either they all have somebody in them or this folder has not been scanned."
+      : gTaggedOnly ? "No tagged posts in this folder — nobody has tagged this profile here."
+      : gType === "videos" ? "No videos in this view."
       : gType === "photos" ? "No photo-only posts in this view."
       : gFilter === "favorites" ? "Nothing liked yet — tap ♡ on a photo to add one."
       : gFilter === "trash" ? "Trash is empty."
@@ -7351,6 +8140,9 @@ function drawPhotos(username, sec){
   }
 
   host.appendChild(grid);
+  // The way back to the list this profile was opened from (only drawn while a
+  // profile is open, so the profile list never carries it).
+  paintBackFloat();
   // The ordered posts on screen, for arrow-key walking in the viewer. While a
   // tile is enlarged, ← and → move through this list, crossing into the next
   // photo when the current one has no more parts. Headings are not posts, so
@@ -7390,7 +8182,7 @@ async function patchGalleryCounts(){
     const p = byName.get(card.dataset.profile);
     if(!p) continue;
     const ct = card.querySelector(".ct");
-    const want = `${p.count} ${p.count===1?"item":"items"}`;
+    const want = pCount(p);
     if(ct && ct.textContent !== want) ct.textContent = want;
     const badge = card.querySelector(".livebadge");
     if(p.downloading && !badge){
@@ -7461,7 +8253,7 @@ function wireProfileSearch(){
   if(clr) clr.onclick = () => { box.value = ""; applyProfileSearch(); box.focus(); };
 }
 
-function pageGrid(grid, username, jobs){
+function pageGrid(grid, username, jobs, build){
   let next = 0;
   let sentinel = null;
 
@@ -7476,7 +8268,7 @@ function pageGrid(grid, username, jobs){
         h.textContent = j.heading;
         frag.appendChild(h);
       } else {
-        frag.appendChild(tileFor(username, j.post, j.section));
+        frag.appendChild(build ? build(j) : tileFor(username, j.post, j.section));
       }
     }
     // Insert before the sentinel so it stays last in the grid.
@@ -7747,6 +8539,8 @@ function openViewer(username, post, section, idx){
         <span class="vcount"></span>
         <span class="vdate"></span>
         <span style="flex:1"></span>
+        <button class="vact" data-vwho title="Open this profile in the gallery">👤</button>
+        <button class="vact" data-vsite title="Open this profile on the site"></button>
         <button class="vact" data-vfav title="Add to liked">♡</button>
         <button class="vact" data-vbook title="Bookmark this">🔖</button>
         <button class="vact" data-vtag title="File this bookmark" hidden>🏷</button>
@@ -7766,6 +8560,24 @@ function openViewer(username, post, section, idx){
     host.querySelector("[data-vclose]").onclick = closeViewer;
     host.querySelector("[data-vprev]").onclick = (e) => { e.stopPropagation(); stepViewer(-1); };
     host.querySelector("[data-vnext]").onclick = (e) => { e.stopPropagation(); stepViewer(1); };
+    // From a post to the person: the portrait opens their page in THIS app, the
+    // platform mark opens them on TikTok (where that is what the mark means).
+    // Both are read from vState at click time, so stepping through a carousel or
+    // into another profile's photo cannot leave a stale handle behind.
+    host.querySelector("[data-vwho]").onclick = (e) => {
+      e.stopPropagation();
+      if(!vState) return;
+      const who = vState.username;
+      const plat = postPlatform(vState.post) || gPlatform || "instagram";
+      closeViewer();
+      openGalleryProfile(who, plat);
+    };
+    host.querySelector("[data-vsite]").onclick = (e) => {
+      e.stopPropagation();
+      if(!vState) return;
+      const plat = postPlatform(vState.post) || gPlatform || "instagram";
+      openProfile(vState.username, plat);
+    };
     host.querySelector("[data-vfav]").onclick = (e) => { e.stopPropagation(); viewerToggleFav(); };
     host.querySelector("[data-vbook]").onclick = (e) => { e.stopPropagation(); viewerToggleBook(); };
     host.querySelector("[data-vtag]").onclick = (e) => { e.stopPropagation(); viewerPickCategory(); };
@@ -8023,6 +8835,7 @@ function paintViewer(){
   // The action buttons describe the CURRENT item, so they are repainted on
   // every step (carousel parts can be a mix of images and videos).
   paintViewerActions();
+  paintViewerWho();
   // preload neighbours so arrows feel instant
   for(const d of [-1, 1]){
     const n = srcs[idx+d];
@@ -8034,6 +8847,28 @@ function paintViewer(){
 // A carousel can mix images and videos, so the download button appears only
 // for a video part and the liked state is re-read per part.
 const VIEWER_BTN = {fav:null, dl:null, trash:null, book:null, tag:null};
+
+// Who this post belongs to, as two marks: a portrait for the gallery page here,
+// and the platform's own mark for the site.
+function paintViewerWho(){
+  if(!vState) return;
+  const host = document.getElementById("vwrap");
+  if(!host) return;
+  const who = vState.username || "";
+  const plat = postPlatform(vState.post) || gPlatform || "instagram";
+  const tt = plat === "tiktok";
+  const gallery = host.querySelector("[data-vwho]");
+  const site = host.querySelector("[data-vsite]");
+  if(gallery){
+    gallery.title = `Open @${who} in the gallery`;
+    gallery.setAttribute("aria-label", gallery.title);
+  }
+  if(site){
+    site.innerHTML = tt ? TT_SVG : IG_SVG;
+    site.title = tt ? `Open @${who} on TikTok` : `Open @${who} on Instagram`;
+    site.setAttribute("aria-label", site.title);
+  }
+}
 
 function viewerCurrentFile(){
   if(!vState) return null;
@@ -8169,11 +9004,18 @@ async function viewerToggleBook(){
   const post = st.post;
   const file = viewerCurrentFile();
   if(!file) return;
-  const want = !post.bookmarked;
+  if(post.bookmarked){
+    // Same rule as the grid: a saved post opens its categories rather than
+    // unsaving itself on one tap.
+    bookmarkPicker(st.username, file, postPlatform(post), post.categories ?? [], true);
+    return;
+  }
+  const want = true;
   const r = await bookmarkPost(st.username, file, postPlatform(post), want);
   if(!r || !r.ok){ toast("Could not update bookmarks"); return; }
   post.bookmarked = want ? 1 : 0;
   post.category = r.category ?? null;
+  post.categories = r.categories ?? [];
   paintViewerActions();
   toast(want ? "Bookmarked" : "Bookmark removed");
   if(!want && gAll === "bookmarks"){

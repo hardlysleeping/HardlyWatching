@@ -74,16 +74,38 @@ CREATE TABLE IF NOT EXISTS bookmark_categories (
 -- Keyed by the file that identifies the post, the same way the gallery names a
 -- tile, so it works for photos as well as clips: a bookmark is not a property
 -- of a video, it is a property of a post.
+--
+-- ONE ROW PER (post, category), not one row per post: the same post can be
+-- filed under several categories, which is what the picker's checkboxes mean.
+-- Category 0 is "uncategorised" rather than NULL so it can take part in the
+-- primary key -- SQLite allows NULLs to repeat in a UNIQUE index, which would
+-- let the same uncategorised bookmark be inserted twice.
 CREATE TABLE IF NOT EXISTS bookmarks (
     platform TEXT NOT NULL,
     profile  TEXT NOT NULL,           -- lowercased handle
     file     TEXT NOT NULL,
-    category INTEGER,                 -- bookmark_categories.id, NULL = none
+    category INTEGER NOT NULL DEFAULT 0,   -- bookmark_categories.id, 0 = none
     created  REAL NOT NULL,
-    PRIMARY KEY (platform, profile, file)
+    PRIMARY KEY (platform, profile, file, category)
 );
 CREATE INDEX IF NOT EXISTS idx_bookmarks_created ON bookmarks(created DESC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_cat ON bookmarks(category, created DESC);
+
+-- Every video the saved-videos pass has taken care of, by video id. This is a
+-- ledger, not a folder listing: the files are split into their creator's own
+-- profile folder as they land, so "have I already got this one?" cannot be
+-- answered by looking in one place. It also survives the file being moved,
+-- renamed or deleted afterwards -- the point is not to re-grab it, and a fresh
+-- export will contain every saved video again, forever.
+CREATE TABLE IF NOT EXISTS saved_videos (
+    video_id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL DEFAULT 'tiktok',
+    creator  TEXT NOT NULL,           -- the handle whose folder it went into
+    file     TEXT NOT NULL,           -- basename in that folder
+    grabbed  REAL NOT NULL,
+    saved_at REAL                     -- when it was SAVED on TikTok, from the export
+);
+CREATE INDEX IF NOT EXISTS idx_saved_creator ON saved_videos(creator);
 """
 
 
@@ -121,6 +143,10 @@ class ProfileDB:
         ("profiles", "state", "TEXT NOT NULL DEFAULT 'active'"),
         ("profiles", "reason", "TEXT DEFAULT ''"),
         ("profiles", "excluded_at", "REAL DEFAULT 0"),
+        # The date a video was SAVED on TikTok, out of the export. The bookmark
+        # row is written with it so the collection reads in saved order rather
+        # than in whatever order the export happened to hand them over.
+        ("saved_videos", "saved_at", "REAL"),
         # 1 = a reel, 0 = an Instagram video that is not a reel, -1 = not known
         # (no sidecar). Stored rather than re-read on every feed request.
         ("clips", "is_reel", "INTEGER NOT NULL DEFAULT -1"),
@@ -168,6 +194,55 @@ class ProfileDB:
             """CREATE TABLE IF NOT EXISTS profile_splits (
                    handle  TEXT PRIMARY KEY,
                    created REAL NOT NULL)""")
+        # What the people pass found in each image: 1 = somebody is in it, 0 =
+        # nobody. Stored per FILE, not per post, because a carousel is one post
+        # with up to 20 images and the question is about the pictures. It lives
+        # here rather than in gallery-cache.db because that file is disposable
+        # and a full pass over the archive costs real CPU time -- losing it to a
+        # cache wipe would mean scanning 80,000 images again.
+        #
+        # `size` is the file's byte size when it was checked: a replaced file is
+        # a different picture and has to be looked at again, and comparing sizes
+        # is cheaper than trusting an absolute path to mean the same bytes.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS people (
+                   path    TEXT PRIMARY KEY,
+                   size    INTEGER NOT NULL DEFAULT 0,
+                   people  INTEGER NOT NULL DEFAULT 0,
+                   score   REAL    NOT NULL DEFAULT 0,
+                   checked REAL    NOT NULL DEFAULT 0
+               )""")
+        self._conn.commit()
+
+    def _migrate_bookmarks_multi(self):
+        """Rebuild an old one-row-per-post bookmarks table as one row per category.
+
+        The first version keyed a bookmark on (platform, profile, file), so a post
+        could sit in exactly one category. The picker now offers checkboxes, and
+        the primary key has to allow the same post in several. Old rows convert
+        with NULL -> 0 (uncategorised); nothing is lost.
+        """
+        info = list(self._conn.execute("PRAGMA table_info(bookmarks)"))
+        pk_cols = [r["name"] for r in sorted(info, key=lambda r: r["pk"]) if r["pk"]]
+        if pk_cols == ["platform", "profile", "file", "category"]:
+            return                      # already the multi-category shape
+        self._conn.executescript("""
+            ALTER TABLE bookmarks RENAME TO bookmarks_single;
+            CREATE TABLE bookmarks (
+                platform TEXT NOT NULL,
+                profile  TEXT NOT NULL,
+                file     TEXT NOT NULL,
+                category INTEGER NOT NULL DEFAULT 0,
+                created  REAL NOT NULL,
+                PRIMARY KEY (platform, profile, file, category)
+            );
+            INSERT OR IGNORE INTO bookmarks (platform, profile, file, category, created)
+                SELECT platform, profile, file, COALESCE(category, 0), created
+                FROM bookmarks_single;
+            DROP TABLE bookmarks_single;
+            CREATE INDEX IF NOT EXISTS idx_bookmarks_created ON bookmarks(created DESC);
+            CREATE INDEX IF NOT EXISTS idx_bookmarks_cat ON bookmarks(category, created DESC);
+        """)
         self._conn.commit()
 
     def _migrate(self):
@@ -175,6 +250,9 @@ class ProfileDB:
         # created yet fails on a fresh database, which is exactly what happens the
         # first time this runs somewhere new.
         self._create_tables()
+        # The bookmarks table changed shape (one row per post -> one row per
+        # category), which needs a rebuild rather than an ALTER.
+        self._migrate_bookmarks_multi()
         for table, column, decl in self._MIGRATIONS:
             cols = {r["name"] for r in
                     self._conn.execute(f"PRAGMA table_info({table})")}
@@ -669,6 +747,112 @@ class ProfileDB:
     # row, so a photo can be bookmarked too, and it survives the file being
     # filed into favourites/ or moved to trash.
 
+    # -- saved-videos ledger -------------------------------------------------
+
+    def saved_ids(self) -> set[str]:
+        """Every saved-video id already taken care of."""
+        with self._lock:
+            cur = self._conn.execute("SELECT video_id FROM saved_videos")
+            return {str(r["video_id"]) for r in cur}
+
+    def mark_saved(self, rows: list[tuple]) -> int:
+        """Record (video id, creator, file[, saved_at]) as handled.
+
+        Returns how many were new. Re-recording an id updates the creator/file it
+        is known by and fills in `saved_at` when it was not known before, but
+        keeps the first `grabbed` time -- when it arrived is not what changed.
+        """
+        clean = []
+        for row in rows:
+            v, c, f = (list(row) + [None, None])[:3]
+            saved_at = row[3] if len(row) > 3 else None
+            if not str(v or "").strip() or not str(c or "").strip():
+                continue
+            clean.append((str(v).strip(), _key(str(c)), str(f or "").strip(),
+                          float(saved_at) if saved_at else None))
+        if not clean:
+            return 0
+        with self._lock:
+            before = self._conn.execute("SELECT COUNT(*) FROM saved_videos").fetchone()[0]
+            now = time.time()
+            self._conn.executemany(
+                "INSERT INTO saved_videos (video_id, platform, creator, file, grabbed, saved_at)"
+                " VALUES (?, 'tiktok', ?, ?, ?, ?)"
+                " ON CONFLICT(video_id) DO UPDATE SET creator=excluded.creator,"
+                " file=excluded.file,"
+                " saved_at=COALESCE(excluded.saved_at, saved_videos.saved_at)",
+                [(v, c, f, now, s) for v, c, f, s in clean])
+            self._conn.commit()
+            after = self._conn.execute("SELECT COUNT(*) FROM saved_videos").fetchone()[0]
+            return int(after or 0) - int(before or 0)
+
+    def restamp_saved(self, dates: dict, category=None) -> int:
+        """Apply the export's own save dates to what is already recorded.
+
+        A saved-videos pass writes the ledger and the "TikTok Favorites"
+        category as it goes, but an export dates EVERY row in it -- including
+        the thousands recorded before that date was being read. Without this the
+        collection can only be ordered by when each file happened to be fetched,
+        which is not what "saved" means. Returns how many rows moved.
+
+        Only rows already in `category` are restamped: a bookmark the user filed
+        somewhere of their own keeps the date it has.
+        """
+        clean: dict[str, float] = {}
+        for vid, when in (dates or {}).items():
+            try:
+                ts = float(when)
+            except (TypeError, ValueError):
+                continue
+            if ts > 0 and str(vid).strip():
+                clean[str(vid).strip()] = ts
+        if not clean:
+            return 0
+        cat = None
+        if category not in (None, "", "none"):
+            try:
+                cat = int(category)
+            except (TypeError, ValueError):
+                cat = None
+        with self._lock:
+            before = self._conn.total_changes
+            self._conn.executemany(
+                "UPDATE saved_videos SET saved_at=?"
+                " WHERE video_id=? AND (saved_at IS NULL OR saved_at<>?)",
+                [(ts, vid, ts) for vid, ts in clean.items()])
+            if cat is not None:
+                rows = [dict(r) for r in self._conn.execute(
+                    "SELECT video_id, creator, file FROM saved_videos")]
+                pairs = [(clean[r["video_id"]], "tiktok", _key(r["creator"]),
+                          r["file"], cat)
+                         for r in rows
+                         if r["video_id"] in clean and r.get("file")]
+                if pairs:
+                    self._conn.executemany(
+                        "UPDATE bookmarks SET created=? WHERE platform=?"
+                        " AND profile=? AND file=? AND category=?", pairs)
+            self._conn.commit()
+            return int(self._conn.total_changes - before)
+
+    def saved_count(self) -> int:
+        with self._lock:
+            return int(self._conn.execute(
+                "SELECT COUNT(*) FROM saved_videos").fetchone()[0] or 0)
+
+    def saved_rows(self, limit: int = 0) -> list[dict]:
+        """Ledger rows, newest saved first, for lookups and the UI."""
+        sql = ("SELECT video_id, creator, file, grabbed, saved_at FROM saved_videos"
+               " ORDER BY COALESCE(saved_at, grabbed) DESC")
+        args: list = []
+        if limit and limit > 0:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        with self._lock:
+            return [{"video_id": r["video_id"], "creator": r["creator"],
+                     "file": r["file"], "grabbed": r["grabbed"],
+                     "saved_at": r["saved_at"]}
+                    for r in self._conn.execute(sql, args)]
+
     def bookmark_categories(self) -> list[dict]:
         """The user's categories, in the order they made them, with counts."""
         with self._lock:
@@ -714,102 +898,222 @@ class ProfileDB:
         """Drop a category. Its bookmarks stay, uncategorised. Returns how many."""
         with self._lock:
             n = self._conn.execute(
-                "SELECT COUNT(*) FROM bookmarks WHERE category=?", (int(cid),)
-            ).fetchone()[0]
-            self._conn.execute("UPDATE bookmarks SET category=NULL WHERE category=?",
-                               (int(cid),))
+                "SELECT COUNT(DISTINCT profile || '|' || file) FROM bookmarks"
+                " WHERE category=?", (int(cid),)).fetchone()[0]
+            # The rows move to uncategorised (0). A post that is ALSO in another
+            # category keeps that filing -- this only drops the one being deleted.
+            # INSERT OR IGNORE first, so a post already filed as uncategorised
+            # does not collide with the primary key on the way across.
+            self._conn.execute(
+                "INSERT OR IGNORE INTO bookmarks (platform, profile, file, category, created)"
+                " SELECT platform, profile, file, 0, created FROM bookmarks"
+                " WHERE category=?", (int(cid),))
+            self._conn.execute("DELETE FROM bookmarks WHERE category=?", (int(cid),))
             self._conn.execute("DELETE FROM bookmark_categories WHERE id=?",
                                (int(cid),))
             self._conn.commit()
             return int(n or 0)
 
     def bookmarks(self, category=None) -> list[dict]:
-        """Every bookmark, newest first. `category` filters: an id, or "none"."""
-        sql = ("SELECT platform, profile, file, category, created FROM bookmarks")
+        """Every bookmarked POST, newest first. `category` filters: an id or "none".
+
+        A post can sit in several categories now, so this returns one row per
+        post (the newest filing wins for `created`) and lists its categories in
+        `categories`. Without the grouping a post filed twice would appear twice
+        in the collection and in any "all" view.
+        """
+        sql = "SELECT platform, profile, file, category, created FROM bookmarks"
         args: list = []
         if category == "none":
-            sql += " WHERE category IS NULL"
+            sql += " WHERE category=0"
         elif category not in (None, "", "all"):
-            sql += " WHERE category=?"
-            args.append(int(category))
+            try:
+                sql += " WHERE category=?"
+                args.append(int(category))
+            except (TypeError, ValueError):
+                pass
         sql += " ORDER BY created DESC"
         with self._lock:
-            return [dict(r) for r in self._conn.execute(sql, args)]
+            rows = [dict(r) for r in self._conn.execute(sql, args)]
+        seen: dict[tuple, dict] = {}
+        for r in rows:
+            key = (r["platform"], r["profile"], r["file"])
+            row = seen.get(key)
+            if row is None:
+                seen[key] = {**r, "categories": [r["category"]]}
+                continue
+            if r["category"] not in row["categories"]:
+                row["categories"].append(r["category"])
+            if (r["created"] or 0) > (row["created"] or 0):
+                row["created"] = r["created"]
+        out = []
+        for row in seen.values():
+            # Deterministic "first" category: the oldest id, not whichever row
+            # the date order happened to put first.
+            row["categories"].sort()
+            row["category"] = row["categories"][0] if row["categories"] else None
+            out.append(row)
+        return out
 
-    def bookmark_for(self, platform: str, profile: str, file: str) -> dict | None:
+    def bookmark_for(self, platform: str, profile: str, file: str) -> dict:
+        """Which categories this post is in. Always a dict, never None.
+
+        `category` is the first one, kept for callers that only want one;
+        `categories` is the whole list, which is what the picker's checkmarks
+        are drawn from.
+        """
+        plat = (platform or "instagram").lower()
         with self._lock:
-            row = self._conn.execute(
-                "SELECT platform, profile, file, category, created FROM bookmarks"
-                " WHERE platform=? AND profile=? AND file=?",
-                ((platform or "instagram").lower(), _key(profile),
-                 (file or "").strip())).fetchone()
-            return dict(row) if row else None
+            rows = self._conn.execute(
+                "SELECT category FROM bookmarks"
+                " WHERE platform=? AND profile=? AND file=? ORDER BY category",
+                (plat, _key(profile), (file or "").strip())).fetchall()
+        cats = [r["category"] for r in rows]
+        return {"bookmarked": bool(cats), "categories": cats,
+                "category": (cats[0] if cats else None)}
 
     def bookmark_keys(self, platform: str | None = None) -> dict:
-        """{(profile_lower, file): category_id} for painting tiles in one pass."""
+        """{(profile_lower, file): [category ids]} for painting tiles in one pass."""
         sql = "SELECT platform, profile, file, category FROM bookmarks"
         args: list = []
         if platform:
             sql += " WHERE platform=?"
             args.append(platform.lower())
         with self._lock:
-            return {(r["profile"], r["file"]): r["category"]
-                    for r in self._conn.execute(sql, args)}
+            rows = list(self._conn.execute(sql, args))
+        out: dict[tuple, list] = {}
+        for r in rows:
+            out.setdefault((r["profile"], r["file"]), []).append(r["category"])
+        return out
+
+    def bookmark_many(self, platform: str, rows: list[tuple], category=None,
+                      restamp: bool = True) -> int:
+        """Bookmark many (profile, file[, created]) pairs at once.
+
+        Returns how many were new. A bulk pass files everything into ONE
+        category (0 when none is given) and never touches a post's other
+        categories -- a saved-video sweep must not unfile something the user put
+        somewhere else by hand.
+
+        A row already in the SAME category is restamped with a date the row
+        actually carries, which is how a saved video's own save date (from the
+        export) replaces the moment the row happened to be written. A row with
+        NO date never moves an existing one.
+        """
+        plat = (platform or "instagram").lower()
+        cat = 0
+        if category not in (None, "", "none"):
+            try:
+                cat = int(category)
+            except (TypeError, ValueError):
+                cat = 0
+        now = time.time()
+        clean = []
+        for row in rows:
+            who, name = (list(row) + [None])[:2]
+            when = row[2] if len(row) > 2 else None
+            if not str(who or "").strip() or not str(name or "").strip():
+                continue
+            try:
+                ts = float(when) if when else None
+            except (TypeError, ValueError):
+                ts = None
+            clean.append((_key(str(who)), str(name).strip(), ts))
+        if not clean:
+            return 0
+        with self._lock:
+            before = self._conn.execute(
+                "SELECT COUNT(DISTINCT platform || '|' || profile || '|' || file)"
+                " FROM bookmarks WHERE platform=?", (plat,)).fetchone()[0]
+            self._conn.executemany(
+                "INSERT INTO bookmarks (platform, profile, file, category, created)"
+                " VALUES (?,?,?,?,?) ON CONFLICT(platform, profile, file, category)"
+                " DO NOTHING",
+                [(plat, p, f, cat, ts if ts is not None else now)
+                 for p, f, ts in clean])
+            if restamp:
+                dated = [(ts, plat, p, f, cat) for p, f, ts in clean
+                         if ts is not None]
+                if dated:
+                    self._conn.executemany(
+                        "UPDATE bookmarks SET created=? WHERE platform=? AND profile=?"
+                        " AND file=? AND category=?", dated)
+            self._conn.commit()
+            after = self._conn.execute(
+                "SELECT COUNT(DISTINCT platform || '|' || profile || '|' || file)"
+                " FROM bookmarks WHERE platform=?", (plat,)).fetchone()[0]
+            return int(after or 0) - int(before or 0)
 
     def set_bookmark(self, platform: str, profile: str, file: str,
                      on: bool = True, category=None) -> dict:
-        """Add or remove a bookmark. Returns the row it left behind (or None)."""
+        """Add or remove a bookmark, or one of its categories.
+
+        `on=False` with no category removes the post from every category; with a
+        category it only unticks that one. `on=True` files it into the given
+        category (0 = uncategorised) and leaves its other categories alone.
+        """
         plat = (platform or "instagram").lower()
         who = _key(profile)
         name = (file or "").strip()
         if not who or not name:
-            return {"bookmarked": False, "category": None}
-        with self._lock:
-            if not on:
-                self._conn.execute(
-                    "DELETE FROM bookmarks WHERE platform=? AND profile=? AND file=?",
-                    (plat, who, name))
-                self._conn.commit()
-                return {"bookmarked": False, "category": None}
-            cat = None
-            if category not in (None, "", "none"):
-                try:
-                    cat = int(category)
-                except (TypeError, ValueError):
-                    cat = None
-                if cat is not None:
-                    known = self._conn.execute(
-                        "SELECT 1 FROM bookmark_categories WHERE id=?", (cat,)
-                    ).fetchone()
-                    if not known:
-                        cat = None
-            self._conn.execute(
-                "INSERT INTO bookmarks (platform, profile, file, category, created)"
-                " VALUES (?,?,?,?,?)"
-                " ON CONFLICT(platform, profile, file) DO UPDATE SET category=excluded.category",
-                (plat, who, name, cat, time.time()))
-            self._conn.commit()
-            return {"bookmarked": True, "category": cat}
-
-    def set_bookmark_category(self, platform: str, profile: str, file: str,
-                              category) -> dict:
-        """Move one bookmark into a category (or none)."""
-        plat = (platform or "instagram").lower()
-        who = _key(profile)
-        name = (file or "").strip()
-        cat = None
+            return {"bookmarked": False, "category": None, "categories": []}
+        cat: int | None = None
         if category not in (None, "", "none"):
             try:
                 cat = int(category)
             except (TypeError, ValueError):
                 cat = None
         with self._lock:
-            cur = self._conn.execute(
-                "UPDATE bookmarks SET category=?"
-                " WHERE platform=? AND profile=? AND file=?",
-                (cat, plat, who, name))
+            if not on:
+                if cat is None:
+                    self._conn.execute(
+                        "DELETE FROM bookmarks WHERE platform=? AND profile=? AND file=?",
+                        (plat, who, name))
+                else:
+                    self._conn.execute(
+                        "DELETE FROM bookmarks WHERE platform=? AND profile=? AND file=?"
+                        " AND category=?", (plat, who, name, cat))
+                self._conn.commit()
+                return self.bookmark_for(plat, who, name)
+            if cat is None:
+                cat = 0
+            if cat:
+                known = self._conn.execute(
+                    "SELECT 1 FROM bookmark_categories WHERE id=?", (cat,)).fetchone()
+                if not known:
+                    cat = 0
+            self._conn.execute(
+                "INSERT INTO bookmarks (platform, profile, file, category, created)"
+                " VALUES (?,?,?,?,?) ON CONFLICT(platform, profile, file, category)"
+                " DO NOTHING", (plat, who, name, cat, time.time()))
             self._conn.commit()
-            return {"ok": cur.rowcount > 0, "category": cat}
+            return self.bookmark_for(plat, who, name)
+
+    def set_bookmark_category(self, platform: str, profile: str, file: str,
+                              category) -> dict:
+        """Put one bookmark in exactly this category (or none), replacing the rest."""
+        plat = (platform or "instagram").lower()
+        who = _key(profile)
+        name = (file or "").strip()
+        cat = 0
+        if category not in (None, "", "none"):
+            try:
+                cat = int(category)
+            except (TypeError, ValueError):
+                cat = 0
+        with self._lock:
+            had = self._conn.execute(
+                "SELECT COUNT(*) FROM bookmarks WHERE platform=? AND profile=? AND file=?",
+                (plat, who, name)).fetchone()[0]
+            self._conn.execute(
+                "DELETE FROM bookmarks WHERE platform=? AND profile=? AND file=?",
+                (plat, who, name))
+            if had:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO bookmarks (platform, profile, file, category, created)"
+                    " VALUES (?,?,?,?,?)", (plat, who, name, cat, time.time()))
+            self._conn.commit()
+            return {"ok": bool(had), "category": cat}
 
     def set_trashed(self, path: str, trashed: bool = True):
         with self._lock:
@@ -999,6 +1303,46 @@ class ProfileDB:
             r = cur.fetchone()
             return {"total": r["total"] or 0, "liked": r["liked"] or 0,
                     "trashed": r["trashed"] or 0}
+
+    # -- the people pass -------------------------------------------------
+    # One row per image file: 1 = somebody is in it, 0 = nobody. Read and write
+    # in bulk, because a profile can hold thousands of pictures and the pass
+    # would otherwise pay a query per file.
+
+    def people_known(self, folder: str) -> dict[str, tuple[int, int]]:
+        """{absolute path: (size when checked, has_people)} under `folder`.
+
+        One query for a whole profile. The size travels with the answer so the
+        caller can tell a checked file from one that was replaced since.
+        """
+        prefix = str(folder).rstrip("/") + "/"
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT path, size, people FROM people WHERE path LIKE ?",
+                (prefix + "%",)).fetchall()
+        return {r["path"]: (r["size"], r["people"]) for r in rows}
+
+    def people_set_many(self, rows: list[tuple]) -> None:
+        """rows: [(path, size, has_people, score)] -- one commit for the batch."""
+        if not rows:
+            return
+        now = time.time()
+        with self._lock:
+            self._conn.executemany(
+                "INSERT INTO people (path, size, people, score, checked) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET size=excluded.size, "
+                "people=excluded.people, score=excluded.score, "
+                "checked=excluded.checked",
+                [(p, int(sz), int(has), float(sc), now) for p, sz, has, sc in rows])
+            self._conn.commit()
+
+    def people_stats(self) -> dict:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT COUNT(*) n, COALESCE(SUM(people), 0) p FROM people").fetchone()
+        return {"checked": r["n"] or 0, "with_people": r["p"] or 0}
+
 
 
 _shared = None

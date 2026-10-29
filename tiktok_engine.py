@@ -13,6 +13,9 @@ Every option here maps onto a real yt-dlp flag -- see `TikTokSettings`. Anything
 not listed is not configurable, rather than silently ignored.
 """
 
+import datetime
+import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, asdict
@@ -164,13 +167,14 @@ def format_selector(quality: int) -> str:
 
 
 def _base_download_cmd(handle: str, dest: Path, archive: Path, count: int,
-                       s: TikTokSettings) -> list[str]:
+                       s: TikTokSettings, filename: str = '%(id)s.%(ext)s') -> list[str]:
     cmd = [
         YTDLP,
         '--no-warnings',
         '--newline',
-        # One file per video, named by ID so re-runs can't duplicate.
-        '-o', str(dest / '%(id)s.%(ext)s'),
+        # One file per video, named by ID so re-runs can't duplicate. A saved
+        # pass overrides this to put each video in its creator's own folder.
+        '-o', str(dest / filename),
         # Remember what we already have.
         '--download-archive', str(archive),
         '-f', format_selector(s.quality),
@@ -363,6 +367,338 @@ def build_download_cmd(handle: str, dest: Path, archive: Path,
     return cmd
 
 
+# ---------------------------------------------------------------------------
+# Saved videos, from TikTok's own data export
+#
+# TikTok's "Favorites" list is the one part of an account yt-dlp cannot list:
+# the web call behind it (/api/user/collect/item_list/) is refused for anything
+# but a signed request from TikTok's own page script. Measured here with a real
+# signed-in jar: unsigned -> 200 with an empty body, signed with X-Bogus ->
+# the same, browser TLS impersonation -> the same, and the site's own page
+# fetch inside a real browser -> 403. So the list is not scraped; it is read
+# from the export TikTok generates for the account holder, which carries every
+# saved video as a plain link. yt-dlp then downloads those links normally, so
+# everything downstream (archive, retries, gallery) is unchanged.
+# ---------------------------------------------------------------------------
+
+SAVED_HANDLE = "saved"
+
+# The photo-post fetcher. It runs on the interpreter that has yt-dlp installed,
+# because it reads the item detail through yt-dlp's own web extractor; the app's
+# venv has neither yt-dlp nor curl_cffi on purpose.
+PHOTO_TOOL = Path(__file__).resolve().parent / "tools" / "tiktok_photos.py"
+
+
+def photo_tool_python() -> str:
+    """Interpreter to run PHOTO_TOOL with: the yt-dlp venv's, when we can find it.
+
+    `YTDLP` here is normally a pipx shim (`~/.local/share/pipx/venvs/yt-dlp/bin/yt-dlp`),
+    so its sibling `python` is the one that can `import yt_dlp`. Anything else is
+    handed back as-is and the tool says plainly that yt-dlp is not importable,
+    rather than failing as if the network were the problem.
+    """
+    import sys
+    try:
+        exe = Path(shutil.which(YTDLP) or YTDLP).resolve()
+    except OSError:
+        return sys.executable
+    for cand in (exe.parent / "python", exe.parent / "python3"):
+        if cand.exists():
+            return str(cand)
+    return sys.executable
+
+
+def photo_posts(ids: list[str], cookies: str = "", out: Path | None = None,
+                limit: int = 0, delay: float = 2.2,
+                python: str | None = None) -> list[dict]:
+    """Run the photo tool over `ids` and return one row per id.
+
+    Streaming, not batched at the end: a long list is paced and each row is
+    printed as it is finished, so a caller can log progress and the process can
+    be stopped without losing what it already did.
+    """
+    todo = [str(i) for i in ids if str(i).isdigit()]
+    if not todo or out is None:
+        return []
+    cmd = [python or photo_tool_python(), str(PHOTO_TOOL),
+           "--out", str(out), "--delay", f"{max(0.0, float(delay)):.2f}"]
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
+    if limit and limit > 0:
+        cmd += ["--limit", str(int(limit))]
+    cmd += todo
+    rows: list[dict] = []
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=180 + int(len(todo)) * int(delay + 8))
+    except (OSError, subprocess.SubprocessError) as e:
+        return [{"error": f"could not run the photo tool: {type(e).__name__}: {e}"}]
+    for line in (proc.stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    if not rows and proc.returncode:
+        rows.append({"error": (proc.stderr or "").strip()[-300:] or
+                     f"photo tool exited {proc.returncode}"})
+    return rows
+
+SAVED_EXPORT_KEYS = re.compile(r"(favorit|favourite|saved|bookmark|collect)", re.I)
+# Rows carry either a watch link (tiktok.com/@who/video/<id>) or the share link
+# the app hands out (tiktokv.com/share/video/<id>). An export seen here was
+# share-link only, so a tiktok.com-only pattern read a full favourites list as
+# empty. Both hosts, any path, as long as it ends in /video/<id>.
+VIDEO_LINK = re.compile(
+    r"https?://(?:[\w-]+\.)*(?:tiktok\.com|tiktokv\.com)/[^\s\"'<>]*?/video/\d+")
+VIDEO_ID = re.compile(r"/video/(\d+)")
+
+
+def resolve_export(path) -> Path | None:
+    """The export JSON behind a path: the file itself, or the one inside a folder.
+
+    TikTok delivers the export as a folder (``TikTok_Data_<id>/``) holding
+    ``user_data_tiktok.json``, so a pasted folder is the normal case, not a
+    mistake. Look inside before calling the path wrong.
+    """
+    p = Path(str(path or "").strip()).expanduser()
+    if p.is_file():
+        return p
+    if p.is_dir():
+        direct = p / "user_data_tiktok.json"
+        if direct.is_file():
+            return direct
+        found = find_saved_exports([p], limit=1)
+        if found:
+            return Path(found[0]["path"])
+    return None
+
+
+def export_link(value) -> str:
+    """The first TikTok video link inside an export row, or ""."""
+    if isinstance(value, str):
+        m = VIDEO_LINK.search(value)
+        return m.group(0) if m else ""
+    if isinstance(value, dict):
+        # Rows look like {"Date": ..., "Link": "https://..."} but the key names
+        # have changed between export versions, so nothing is assumed.
+        for v in value.values():
+            found = export_link(v)
+            if found:
+                return found
+    return ""
+
+
+# A list that holds LIKES, not favourites. Both live under one "Likes and
+# Favorites" heading, and the likes list is called "ItemFavoriteList" -- which
+# contains the word "Favorite", so key matching alone pulled 6000 liked videos
+# into a 8094-video favourites list. The container's name is what separates
+# them ("Like List" / "LikeList"), and the heading itself must not count, since
+# it is called "Likes and Favorites".
+LIKES_CONTAINER = re.compile(r"like[\s_-]*(?:list|videos?)\b")
+
+
+def is_saved_list(path_parts: list[str]) -> bool:
+    """Whether a list found at this path holds saved videos, not likes."""
+    if any(LIKES_CONTAINER.search(p.lower()) for p in path_parts):
+        return False
+    key = path_parts[-1].lower() if path_parts else ""
+    return bool(SAVED_EXPORT_KEYS.search(key))
+
+
+def row_stamp(value) -> float | None:
+    """The timestamp on an export row, if it carries a usable one."""
+    if not isinstance(value, dict):
+        return None
+    for k, v in value.items():
+        if not isinstance(v, str) or not re.search(r"date|time", str(k), re.I):
+            continue
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d"):
+            try:
+                return datetime.datetime.strptime(v.strip()[:19], fmt).timestamp()
+            except ValueError:
+                continue
+    return None
+
+
+def saved_export_links(path: Path) -> tuple[list[str], dict]:
+    """Video links in a TikTok data export, plus where they were found.
+
+    The list is found by walking the document, not by a fixed key path: export
+    versions have moved it ("Your Activity" -> "Favorite Videos", "Likes and
+    Favorites" -> "Favorite Videos"), and a changed shape must not read as "you
+    have no saved videos". A likes list in the same file is excluded by the name
+    of the container it sits in.
+    """
+    import json
+
+    raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    data = json.loads(raw)
+
+    rows: list[tuple[float | None, int, str]] = []
+    seen: set[str] = set()
+
+    def add(item) -> None:
+        link = export_link(item)
+        if not link:
+            return
+        vid = VIDEO_ID.search(link)
+        key = vid.group(1) if vid else link
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append((row_stamp(item), len(rows), link))
+
+    def walk(node, parts: list[str]) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, parts + [str(k)])
+        elif isinstance(node, list):
+            if is_saved_list(parts):
+                for item in node:
+                    add(item)
+
+    walk(data, [])
+    how = "favorites list"
+    if not rows:
+        for link in VIDEO_LINK.findall(raw):
+            add(link)
+        how = "every video link in the file"
+
+    # Newest first, like every other job here. Which way the file runs is not
+    # fixed: one export seen here was already newest-first (reversing it put a
+    # year-old video at the top), the documented older one was ascending. The
+    # row timestamps decide, and a file without them keeps its own order.
+    if rows and all(ts is not None for ts, _, _ in rows):
+        rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    links = [link for _, _, link in rows]
+    # The date each video was SAVED, keyed by id. It is the only honest date for
+    # a saved video: the file's mtime says when we fetched it, and the export's
+    # row date says when the user saved it -- which is what a saved collection
+    # should be ordered by.
+    dates = {}
+    for ts, _, link in rows:
+        m = VIDEO_ID.search(link)
+        if ts and m:
+            dates[m.group(1)] = ts
+    return links, {"source": how, "handle": SAVED_HANDLE, "dates": dates}
+
+
+def export_looks_saved(path: Path) -> bool:
+    """Whether a JSON file is a TikTok export with saved videos in it."""
+    try:
+        if not Path(path).is_file() or Path(path).stat().st_size > 400_000_000:
+            return False
+        head = Path(path).read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeError):
+        return False
+    low = head.lower()
+    return ("tiktok" in low and
+            ("favorite videos" in low or "favoritevideolist" in low or
+             "favourites" in low or "likes and favorites" in low))
+
+
+def find_saved_exports(dirs: list[Path] | None = None, limit: int = 10) -> list[dict]:
+    """TikTok export files already sitting in the usual download folders."""
+    if dirs is None:
+        home = Path.home()
+        dirs = [home / "Downloads", home / "Documents", home / "Desktop"]
+    found: list[dict] = []
+    seen: set[Path] = set()
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        for p in sorted(d.rglob("*.json"), key=lambda x: x.name):
+            if p in seen or len(found) >= limit:
+                continue
+            seen.add(p)
+            if not export_looks_saved(p):
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            found.append({"path": str(p), "bytes": st.st_size, "mtime": st.st_mtime})
+    found.sort(key=lambda r: r["mtime"], reverse=True)
+    return found
+
+
+def build_saved_download_cmd(links_file: Path, root: Path, archive: Path,
+                             count: int = 0,
+                             settings: "TikTokSettings | None" = None) -> list[str]:
+    """yt-dlp over a file of video URLs instead of a profile page.
+
+    `root` is the TikTok archive root, not one folder: each video is written to
+    `<root>/<creator>/` so a saved video lands in that person's profile folder --
+    created if it is not there yet -- and the gallery shows it as theirs, the
+    same as if their profile had been queued. `%(uploader)s` is TikTok's
+    uniqueId (the handle); `uploader_id` is the numeric account id, so it would
+    name folders with a number.
+
+    Same options as a profile run, so a saved download honours the quality rung
+    and the container/thumbnail choices already set. The archive file stays in
+    one place for the whole saved list, because yt-dlp takes a single archive
+    per run; the ids it fetches are also copied into each creator's own archive
+    afterwards, so queueing that profile later does not re-download them.
+    """
+    s = settings or TikTokSettings()
+    cmd = _base_download_cmd("", root, archive, count, s,
+                             filename='%(uploader)s/%(id)s.%(ext)s')
+    jar = (s.cookies_file or "").strip()
+    if jar and Path(jar).is_file():
+        cmd += ['--cookies', jar]
+    else:
+        spec = (s.cookies_from_browser or "").strip()
+        if spec and spec.split(":", 1)[0].lower() in YTDLP_BROWSERS:
+            cmd += ['--cookies-from-browser', spec]
+    cmd += ['--batch-file', str(links_file)]
+    return cmd
+
+
+# yt-dlp says where a file is going before it fetches it, and says so again for
+# a merge or an already-present file. That line is how a saved run learns which
+# creator each video belongs to without a second request.
+DESTINATION_LINE = re.compile(
+    r"(?:Destination|Merging formats into|has already been downloaded)[:\s]+\s*(?P<path>.+?)"
+    r"(?:\s*\(|$)", re.I)
+
+
+def parse_destination(line: str) -> tuple[str, str, str] | None:
+    """(creator handle, video id, file path) from a yt-dlp destination line."""
+    m = DESTINATION_LINE.search(line or "")
+    if not m:
+        return None
+    path = m.group("path").strip().strip('"')
+    parts = re.split(r"[\\/]+", path)
+    if len(parts) < 2:
+        return None
+    name = parts[-1]
+    creator = parts[-2]
+    vid = name.split(".")[0]
+    if not vid.isdigit() or not creator or creator.startswith("."):
+        return None
+    return creator, vid, path
+
+
+# yt-dlp prints this for a post TikTok will not hand over, and its wording is
+# wrong: measured against a real browser on the same machine, the post itself is
+# gone ("Video currently unavailable") or region-locked, while every other TikTok
+# page loads fine from the same IP. Reporting it as an IP block sent the user
+# looking at their network for a problem that is the video's.
+UNAVAILABLE = re.compile(
+    r"(IP address is blocked|Video currently unavailable|"
+    r"item is not available|status_code.{0,6}(10204|2053))", re.I)
+
+
+def is_unavailable(line: str) -> bool:
+    """Whether this output line means the post itself is unavailable."""
+    return bool(UNAVAILABLE.search(line or ""))
+
+
 # Cookie names that carry an actual TikTok login. A jar full of tracking cookies
 # downloads nothing that needs a session, so these are what get counted and
 # reported -- "30 cookies" says nothing on its own.
@@ -502,6 +838,40 @@ def cookie_spec_problem(spec: str) -> str:
 _WARN = ('ERROR:', 'WARNING:', 'Unsupported URL', 'Unable to extract')
 
 
+# A yt-dlp failure about ONE post: "ERROR: [TikTok] 7638990020770139422: <reason>".
+_ERROR_ONE = re.compile(r"ERROR:\s*\[[^\]]*\]\s*(\d{6,25})\s*:\s*(.*)$")
+
+# Reasons TikTok gives that asking again cannot change: the post is gone, it is
+# private, or it has no video track at all. Everything else (timeouts, 429s,
+# connection resets, "unable to download webpage") is left retryable, because a
+# second run in an hour may well succeed.
+_PERMANENT_REASONS = (
+    "do not have permission",
+    "requested format is not available",
+    "video not available",
+    "not available",
+    "unavailable",
+    "private",
+    "removed",
+    "status code 10231",
+    "404",
+)
+
+
+def error_post(line: str) -> tuple[str, str] | None:
+    """(post id, reason) when this yt-dlp line is a failure about one post."""
+    m = _ERROR_ONE.search(line.strip())
+    if not m:
+        return None
+    return m.group(1), m.group(2).strip()
+
+
+def permanent_error(reason: str) -> bool:
+    """True when re-asking about this post is pointless."""
+    low = (reason or "").lower()
+    return any(mark in low for mark in _PERMANENT_REASONS)
+
+
 def classify(line: str) -> str | None:
     """Map a yt-dlp output line onto job progress. None means 'not interesting'."""
     s = line.strip()
@@ -570,6 +940,26 @@ def probe_private(handle: str, timeout: int = 75) -> bool | None:
         return False
     # Any other failure is not something we can classify.
     return None
+
+def list_ids(handle: str, count: int = 0, timeout: int = 150) -> list[str]:
+    """Every video id the profile posts, as a flat listing, newest first.
+
+    One request for the whole profile rather than one per post. `count` 0 means
+    all of them; a number means the newest N, exactly what a download run with
+    that setting would cover. An empty list is "could not tell", never "has no
+    posts" -- the caller must not treat it as an answer about the profile.
+    """
+    try:
+        proc = subprocess.run(
+            build_list_cmd(handle, count),
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [ln.strip() for ln in (proc.stdout or '').splitlines() if ln.strip().isdigit()]
+
 
 def profile_total(handle: str, timeout: int = 150) -> int:
     """How many videos the profile currently has, or 0 if unknown.

@@ -391,6 +391,450 @@ class WriteRouteTests(SandboxCase):
                          str(self.sb.bin_dir / "yt-dlp"))
 
 
+class SavedVideosTests(SandboxCase):
+    """The saved-videos pass reads a TikTok export; nothing here hits the network.
+
+    The export is a file the account holder downloads, so the fixture is written
+    into the sandbox's own tree and the routes are asked about it. The stub
+    yt-dlp means a queued job cannot download anything real.
+    """
+
+    def export_file(self, name="user_data_tiktok.json", rows=None, doc=None):
+        rows = rows if rows is not None else [
+            {"Date": "2024-01-01 10:00:00", "Link": "https://www.tiktok.com/@a/video/111"},
+            {"Date": "2024-02-01 10:00:00", "Link": "https://www.tiktok.com/@b/video/222"},
+            {"Date": "2024-03-01 10:00:00", "Link": "https://www.tiktok.com/@b/video/222"},
+        ]
+        path = self.sb.home / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc if doc is not None else {
+            "Your Activity": {"Favorite Videos": {"FavoriteVideoList": rows}}}))
+        return path
+
+    def test_share_links_count(self):
+        """The export hands out tiktokv.com/share/video/<id>, not watch links."""
+        path = self.export_file(rows=[
+            {"Date": "2026-10-27 20:57:45",
+             "Link": "https://www.tiktokv.com/share/video/7701400658804526366/"},
+            {"Date": "2026-10-26 11:00:00",
+             "Link": "https://www.tiktokv.com/share/video/7694113282067746051/"},
+        ])
+        dry = self.post_json("/api/tiktok/saved", {"path": str(path), "dry_run": True})
+        self.assertEqual(dry["count"], 2, dry)
+
+    def test_likes_are_not_favourites(self):
+        """Likes sit beside favourites under "Likes and Favorites"; only one counts."""
+        doc = {"Likes and Favorites": {
+            "Favorite Videos": {"FavoriteVideoList": [
+                {"Date": "2026-01-01 00:00:00",
+                 "Link": "https://www.tiktokv.com/share/video/111/"}]},
+            "Like List": {"ItemFavoriteList": [
+                {"date": "2026-01-02 00:00:00",
+                 "link": "https://www.tiktokv.com/share/video/222/"}]},
+        }}
+        path = self.export_file("likes.json", doc=doc)
+        dry = self.post_json("/api/tiktok/saved", {"path": str(path), "dry_run": True})
+        self.assertEqual(dry["count"], 1, "a liked video was counted as saved")
+
+    def test_newest_first(self):
+        import tiktok_engine as tt
+        path = self.export_file(rows=[
+            {"Date": "2024-01-01 10:00:00", "Link": "https://www.tiktok.com/@old/video/111"},
+            {"Date": "2025-01-01 10:00:00", "Link": "https://www.tiktok.com/@new/video/222"},
+        ])
+        links, _ = tt.saved_export_links(path)
+        self.assertIn("222", links[0], "the list is not newest-first: %r" % (links,))
+
+    def test_a_pasted_folder_resolves(self):
+        """TikTok delivers the export as a folder, so a folder has to work."""
+        path = self.export_file("TikTok_Data_123/user_data_tiktok.json")
+        dry = self.post_json("/api/tiktok/saved",
+                             {"path": str(path.parent), "dry_run": True})
+        self.assertIs(dry["ok"], True, dry)
+        self.assertEqual(dry["count"], 2)
+        self.assertTrue(dry["file"].endswith("user_data_tiktok.json"))
+
+    def test_dry_run_counts_without_queueing(self):
+        path = self.export_file()
+        dry = self.post_json("/api/tiktok/saved", {"path": str(path), "dry_run": True})
+        self.assert_keys(dry, ["ok", "count", "file", "source"], "/api/tiktok/saved dry run")
+        self.assertIs(dry["ok"], True)
+        self.assertEqual(dry["count"], 2, "duplicate links should count once")
+        self.assertEqual([j for j in self.get_json("/api/state")["jobs"]
+                          if j.get("kind") == "saved"], [],
+                         "a dry run queued a job")
+
+    def test_queue_creates_one_saved_job(self):
+        self.post_json("/api/pause", {"platform": "tiktok"})
+        self.addCleanup(self.sb.post, "/api/resume", {"platform": "tiktok"})
+        path = self.export_file()
+
+        queued = self.post_json("/api/tiktok/saved", {"path": str(path)})
+        self.assert_keys(queued, ["ok", "count", "queued"], "/api/tiktok/saved")
+        self.assertIs(queued["ok"], True)
+        self.assertEqual(queued["count"], 2)
+
+        jobs = [j for j in self.get_json("/api/state")["jobs"] if j.get("kind") == "saved"]
+        self.assertEqual(len(jobs), 1, "the saved job is not in /api/state: %r" % (jobs,))
+        self.assertEqual(jobs[0]["username"], "saved")
+        self.assertEqual(jobs[0]["platform"], "tiktok")
+
+        # Queuing the same file again must not add a second row.
+        self.post_json("/api/tiktok/saved", {"path": str(path)})
+        jobs = [j for j in self.get_json("/api/state")["jobs"] if j.get("kind") == "saved"]
+        self.assertEqual(len(jobs), 1, "re-queuing duplicated the saved job")
+
+    def test_missing_and_empty_files_are_refused(self):
+        missing = self.post_json("/api/tiktok/saved",
+                                 {"path": str(self.sb.home / "nope.json")})
+        self.assertIs(missing["ok"], False)
+        self.assertIn("No TikTok export at", missing["error"])
+
+        empty = self.export_file("empty.json", rows=[])
+        refused = self.post_json("/api/tiktok/saved", {"path": str(empty)})
+        self.assertIs(refused["ok"], False)
+        self.assertIn("no saved videos", refused["error"].lower())
+
+    def test_find_returns_a_list(self):
+        found = self.post_json("/api/tiktok/saved/find", {})
+        self.assert_keys(found, ["ok", "found"], "/api/tiktok/saved/find")
+        self.assertIsInstance(found["found"], list)
+
+
+class SavedLedgerTests(SandboxCase):
+    """The ledger and the bookmark category, over a throwaway archive tree."""
+
+    def engine(self):
+        import engine as E
+        return E.Engine(output_root=self.sb.output)
+
+    def test_ledger_remembers_ids_and_survives_a_refetch(self):
+        import profile_db as pdb
+        db = pdb.ProfileDB(self.sb.root / "ledger.db")
+        self.assertEqual(db.mark_saved([("111", "aaa", "111.mp4")]), 1)
+        self.assertIn("111", db.saved_ids())
+        # Recording it again is not a new row, and keeps the first grab time.
+        self.assertEqual(db.mark_saved([("111", "aaa", "111.mp4")]), 0)
+        self.assertEqual(db.saved_count(), 1)
+        db.close()
+
+    def test_bookmark_many_does_not_re_file_existing_bookmarks(self):
+        import profile_db as pdb
+        db = pdb.ProfileDB(self.sb.root / "bookmarks.db")
+        mine = db.add_bookmark_category("Mine")
+        db.set_bookmark("tiktok", "aaa", "111.mp4", True, mine["id"])
+        favs = db.add_bookmark_category("TikTok Favorites")
+        added = db.bookmark_many("tiktok", [("aaa", "111.mp4"), ("bbb", "222.mp4")],
+                                 favs["id"])
+        self.assertEqual(added, 1, "the bulk pass should only add the missing one")
+        # A post can now be in several categories at once, so the bulk pass ADDS
+        # a filing rather than moving the post: the user's own category is still
+        # there afterwards, which is the property this test is about.
+        rows = {(r["profile"], r["file"]): sorted(r["categories"]) for r in db.bookmarks()}
+        self.assertEqual(rows[("aaa", "111.mp4")], sorted([mine["id"], favs["id"]]))
+        self.assertEqual(rows[("bbb", "222.mp4")], [favs["id"]])
+        # And the same post appears under each category when filtered by one.
+        self.assertEqual(len(db.bookmarks(category=mine["id"])), 1)
+        self.assertEqual(len(db.bookmarks(category=favs["id"])), 2)
+        db.close()
+
+    def test_creator_folders_are_what_counts_as_having_it(self):
+        """A finished file in a creator folder is 'already here'; .part is not."""
+        import engine as E
+        tt_root = self.sb.output / "tiktok"
+        (tt_root / "creatorA").mkdir(parents=True, exist_ok=True)
+        (tt_root / "creatorA" / "123.mp4").write_bytes(b"x")
+        (tt_root / "creatorB").mkdir(parents=True, exist_ok=True)
+        (tt_root / "creatorB" / "456.mp4.part").write_bytes(b"x")
+        on_disk = E.tiktok_ids_on_disk(tt_root)
+        self.assertEqual(on_disk.get("123"), "creatorA")
+        self.assertNotIn("456", on_disk, "a half-written file counted as downloaded")
+
+    def test_destination_line_names_creator_and_id(self):
+        import tiktok_engine as tt
+        line = ("[download] Destination: /x/tiktok/missmixbackup/"
+                "7701400658804526366.mp4")
+        self.assertEqual(tt.parse_destination(line),
+                         ("missmixbackup", "7701400658804526366",
+                          "/x/tiktok/missmixbackup/7701400658804526366.mp4"))
+        self.assertIsNone(tt.parse_destination("[download] 100% of 1MiB"))
+        merged = '[Merger] Merging formats into "/x/tiktok/who/999.mp4"'
+        self.assertEqual(tt.parse_destination(merged)[:2], ("who", "999"))
+
+    def test_creators_are_queued_unless_the_switch_is_off(self):
+        """In-process engine, pointed at the sandbox: never at the live state."""
+        import engine as E
+        import profile_db as pdb
+
+        # Engine() reads its state path from a module global and the profile
+        # database from the shared factory, so both are repointed at the sandbox
+        # before it is built. Without this the test drives the live queue.
+        old_state = E.STATE_FILE
+        old_shared = E._shared_db
+        tmp_db = pdb.ProfileDB(self.sb.root / "toggle-profiles.db")
+        self.addCleanup(setattr, E, "STATE_FILE", old_state)
+        self.addCleanup(setattr, E, "_shared_db", old_shared)
+        self.addCleanup(tmp_db.close)
+        E.STATE_FILE = self.sb.root / "toggle-state.json"
+        E._shared_db = lambda: tmp_db
+
+        eng = self.engine()
+        job = E.Job(username="saved", kind="saved", platform="tiktok")
+        job.saved_creators = ["creatorone", "creatortwo"]
+        eng.jobs[job.id] = job
+        self.addCleanup(eng.save_state)
+
+        eng.settings = E.Settings.from_dict({**eng.settings.to_dict(),
+                                             "queue_saved_creators": False})
+        eng._queue_saved_creators(job)
+        self.assertEqual([j.username for j in eng.jobs.values()
+                          if j.platform == "tiktok" and j.kind != "saved"], [],
+                         "the switch was off and a profile was queued anyway")
+
+        eng.settings = E.Settings.from_dict({**eng.settings.to_dict(),
+                                             "queue_saved_creators": True})
+        eng._queue_saved_creators(job)
+        queued = {j.username for j in eng.jobs.values()
+                  if j.platform == "tiktok" and j.kind != "saved"}
+        self.assertEqual(queued, {"creatorone", "creatortwo"})
+
+        # Running it again must not duplicate the rows.
+        eng._queue_saved_creators(job)
+        self.assertEqual(len([j for j in eng.jobs.values()
+                              if j.platform == "tiktok" and j.kind != "saved"]), 2)
+
+
+class BookmarkDatesTests(SandboxCase):
+    """The date a bookmark is ordered by, and applying the export's own dates."""
+
+    def engine(self, db):
+        import engine as E
+        import profile_db as pdb
+        old_state, old_shared = E.STATE_FILE, E._shared_db
+        old_pdb = pdb._shared_db
+        self.addCleanup(setattr, E, "STATE_FILE", old_state)
+        self.addCleanup(setattr, E, "_shared_db", old_shared)
+        # `bookmarked_posts` reaches the database through profile_db's own
+        # factory, not the engine's alias, so both have to be repointed or the
+        # test reads the live collection.
+        self.addCleanup(setattr, pdb, "_shared_db", old_pdb)
+        E.STATE_FILE = self.sb.root / "dates-state.json"
+        E._shared_db = lambda: db
+        pdb._shared_db = lambda: db
+        return E.Engine(output_root=self.sb.output)
+
+    def test_a_saved_video_is_dated_by_when_it_was_saved(self):
+        import profile_db as pdb
+        db = pdb.ProfileDB(self.sb.root / "dates.db")
+        self.addCleanup(db.close)
+        tt = self.sb.output.parent / "tiktok"
+        (tt / "CreatorA").mkdir(parents=True, exist_ok=True)
+        (tt / "CreatorA" / "111.mp4").write_bytes(b"x")
+        # A liked/favourited file proves the section is resolved, not assumed.
+        (tt / "CreatorA" / "favorites").mkdir(exist_ok=True)
+        (tt / "CreatorA" / "favorites" / "222.mp4").write_bytes(b"x")
+        favs = db.add_bookmark_category("TikTok Favorites")
+        db.bookmark_many("tiktok", [("creatora", "111.mp4"),
+                                    ("creatora", "222.mp4")], favs["id"])
+        db.mark_saved([("111", "creatora", "111.mp4", 1_700_000_000)])
+
+        eng = self.engine(db)
+        posts = {p["items"][0]["file"]: p for p in eng.bookmarked_posts("all")}
+        self.assertEqual(set(posts), {"111.mp4", "222.mp4"},
+                         "a bookmark whose folder is spelled CreatorA was dropped")
+        self.assertEqual(posts["111.mp4"]["ts"], 1_700_000_000,
+                         "the ledger's save date is not the sort date")
+        self.assertEqual(posts["111.mp4"]["ts_src"], "saved")
+        self.assertTrue(posts["111.mp4"]["date"].startswith("2023-11-14"))
+        self.assertEqual(posts["111.mp4"]["section"], "main")
+        self.assertEqual(posts["222.mp4"]["section"], "favorites")
+        self.assertEqual(posts["222.mp4"]["ts_src"], "bookmarked",
+                         "a video with no export date must not claim one")
+
+    def test_an_undated_bulk_pass_does_not_move_a_known_date(self):
+        """A later pass that knows no date must not flatten the collection."""
+        import profile_db as pdb
+        db = pdb.ProfileDB(self.sb.root / "undated.db")
+        self.addCleanup(db.close)
+        favs = db.add_bookmark_category("TikTok Favorites")
+        db.bookmark_many("tiktok", [("creatora", "111.mp4", 1_700_000_000)],
+                         favs["id"])
+        db.bookmark_many("tiktok", [("creatora", "111.mp4"),
+                                    ("creatora", "222.mp4")], favs["id"])
+        rows = {r["file"]: r for r in db.bookmarks()}
+        self.assertAlmostEqual(rows["111.mp4"]["created"], 1_700_000_000,
+                              msg="an undated pass overwrote a date it did not know")
+        self.assertGreater(rows["222.mp4"]["created"], 1_700_000_000,
+                           "a new undated bookmark should still be dated now")
+
+    def test_restamp_dates_the_ledger_and_only_the_saved_category(self):
+        import profile_db as pdb
+        db = pdb.ProfileDB(self.sb.root / "restamp.db")
+        self.addCleanup(db.close)
+        mine = db.add_bookmark_category("Mine")
+        favs = db.add_bookmark_category("TikTok Favorites")
+        db.set_bookmark("tiktok", "creatora", "111.mp4", True, mine["id"])
+        db.bookmark_many("tiktok", [("creatora", "222.mp4"),
+                                    ("creatora", "333.mp4")], favs["id"])
+        db.mark_saved([("222", "creatora", "222.mp4"),
+                       ("333", "creatora", "333.mp4")])
+
+        moved = db.restamp_saved({"222": 1_700_000_000, "333": 1_600_000_000},
+                                 favs["id"])
+        self.assertEqual(moved, 4, "two ledger rows and two bookmarks should move")
+
+        rows = {r["file"]: r for r in db.bookmarks()}
+        self.assertAlmostEqual(rows["222.mp4"]["created"], 1_700_000_000)
+        self.assertAlmostEqual(rows["333.mp4"]["created"], 1_600_000_000)
+        self.assertNotAlmostEqual(rows["111.mp4"]["created"], 1_700_000_000,
+                                  msg="a bookmark in the user's own category was restamped")
+        saved = {r["video_id"]: r["saved_at"] for r in db.saved_rows()}
+        self.assertEqual(saved["222"], 1_700_000_000)
+        self.assertEqual(saved["333"], 1_600_000_000)
+
+
+class QueueClearTests(SandboxCase):
+    """"Clear queue" is a move to Finished, never a deletion."""
+
+    def test_clearing_the_queue_keeps_every_job(self):
+        import engine as E
+        import profile_db as pdb
+        old_state, old_shared = E.STATE_FILE, E._shared_db
+        self.addCleanup(setattr, E, "STATE_FILE", old_state)
+        self.addCleanup(setattr, E, "_shared_db", old_shared)
+        db = pdb.ProfileDB(self.sb.root / "clear.db")
+        self.addCleanup(db.close)
+        E.STATE_FILE = self.sb.root / "clear-state.json"
+        E._shared_db = lambda: db
+        eng = E.Engine(output_root=self.sb.output)
+        self.addCleanup(eng.save_state)
+
+        wanted = ("queued", "queued", "running", "done", "failed")
+        for i, st in enumerate(wanted):
+            j = E.Job(username="u%d" % i, platform="instagram")
+            j.status = st
+            eng.jobs[j.id] = j
+            if st == "queued":
+                eng.pending.append(j.id)
+
+        cleared, live = eng.clear_queue()
+        self.assertEqual(cleared, 2)
+        self.assertEqual(live, 1, "the job that is downloading must keep running")
+        self.assertEqual(len(eng.jobs), len(wanted),
+                         "clearing the queue deleted a job instead of finishing it")
+        self.assertEqual(sorted(j.status for j in eng.jobs.values()),
+                         ["cancelled", "cancelled", "done", "failed", "running"])
+        self.assertEqual(eng.pending, [],
+                         "a cleared job stayed in the pending order")
+
+
+class SavedPhotoPostTests(SandboxCase):
+    """A slideshow link becomes images in the creator's folder, once."""
+
+    def engine(self, db):
+        import engine as E
+        import profile_db as pdb
+        old_state, old_shared = E.STATE_FILE, E._shared_db
+        old_pdb = pdb._shared_db
+        self.addCleanup(setattr, E, "STATE_FILE", old_state)
+        self.addCleanup(setattr, E, "_shared_db", old_shared)
+        self.addCleanup(setattr, pdb, "_shared_db", old_pdb)
+        db_obj = db
+        E.STATE_FILE = self.sb.root / "photos-state.json"
+        E._shared_db = lambda: db_obj
+        pdb._shared_db = lambda: db_obj
+        return E.Engine(output_root=self.sb.output)
+
+    def test_a_slideshow_link_becomes_images_in_the_creators_folder(self):
+        import engine as E
+        import profile_db as pdb
+        import tiktok_engine as tt
+
+        db = pdb.ProfileDB(self.sb.root / "photos.db")
+        self.addCleanup(db.close)
+        eng = self.engine(db)
+        job = E.Job(username="saved", kind="saved", platform="tiktok")
+        eng.jobs[job.id] = job
+        self.addCleanup(eng.save_state)
+
+        tt_root = self.sb.output.parent / "tiktok"
+        (tt_root / "saved").mkdir(parents=True, exist_ok=True)
+        tmp = tt_root / "saved" / "photos"
+        tmp.mkdir(parents=True, exist_ok=True)
+        (tmp / "111.jpg").write_bytes(b"x")
+        (tmp / "111_2.jpg").write_bytes(b"x")
+        (tmp / "111.info.json").write_text('{"timestamp": 1700000000}')
+
+        rows = [{"id": "111", "status": 0, "author": "creatorA", "images": 2,
+                 "files": [str(tmp / "111.jpg"), str(tmp / "111_2.jpg")],
+                 "error": ""}]
+        seen = []
+
+        def fake_photo_posts(ids, **kw):
+            seen.append(list(ids))
+            return rows
+
+        old = tt.photo_posts
+        self.addCleanup(setattr, tt, "photo_posts", old)
+        tt.photo_posts = fake_photo_posts
+
+        link = "https://www.tiktokv.com/share/video/111/"
+        posts, images = eng._grab_saved_photos(job, tt_root, [link],
+                                               {"111": 1_700_000_000})
+        self.assertEqual((posts, images), (1, 2))
+        self.assertTrue((tt_root / "creatorA" / "111.jpg").is_file())
+        self.assertTrue((tt_root / "creatorA" / "111_2.jpg").is_file())
+        self.assertTrue((tt_root / "creatorA" / "111.info.json").is_file(),
+                        "the sidecar must travel with the images, or the post is undated")
+
+        saved = {r["video_id"]: r for r in db.saved_rows()}
+        self.assertEqual(saved["111"]["creator"], "creatora",
+                         "the ledger lowercases handles, as everywhere else")
+        self.assertEqual(saved["111"]["file"], "111.jpg")
+        self.assertEqual(saved["111"]["saved_at"], 1_700_000_000)
+        cat = db.add_bookmark_category("TikTok Favorites")
+        rows_bm = {r["file"]: r for r in db.bookmarks(cat["id"])}
+        self.assertIn("111.jpg", rows_bm)
+        self.assertEqual(rows_bm["111.jpg"]["created"], 1_700_000_000)
+
+        # Second run: the ledger answers "already have it", so the tool is not
+        # asked about the same link again.
+        eng._grab_saved_photos(job, tt_root, [link], {"111": 1_700_000_000})
+        self.assertEqual(seen, [["111"]], "a saved photo post was asked for twice")
+
+    def test_a_link_that_is_neither_video_nor_photo_is_recorded_not_retried(self):
+        import engine as E
+        import profile_db as pdb
+        import tiktok_engine as tt
+
+        db = pdb.ProfileDB(self.sb.root / "gone.db")
+        self.addCleanup(db.close)
+        eng = self.engine(db)
+        job = E.Job(username="saved", kind="saved", platform="tiktok")
+        eng.jobs[job.id] = job
+        self.addCleanup(eng.save_state)
+
+        tt_root = self.sb.output.parent / "tiktok"
+        (tt_root / "saved").mkdir(parents=True, exist_ok=True)
+        calls = []
+
+        def fake_photo_posts(ids, **kw):
+            calls.append(list(ids))
+            return [{"id": "999", "status": 10204, "author": "", "images": 0,
+                     "files": [], "error": ""}]
+
+        old = tt.photo_posts
+        self.addCleanup(setattr, tt, "photo_posts", old)
+        tt.photo_posts = fake_photo_posts
+
+        link = "https://www.tiktokv.com/share/video/999/"
+        self.assertEqual(eng._grab_saved_photos(job, tt_root, [link], {}), (0, 0))
+        self.assertTrue((tt_root / "saved" / ".not-photos.txt").is_file())
+        # Asked once: the next run reads the record instead of re-requesting it.
+        eng._grab_saved_photos(job, tt_root, [link], {})
+        self.assertEqual(calls, [["999"]])
+
+
 class SandboxHarnessTests(unittest.TestCase):
     """The sandbox's own promises, tested without a shared server."""
 
@@ -418,6 +862,316 @@ class SandboxHarnessTests(unittest.TestCase):
             if second is not None:
                 second.stop()
             first.stop()
+
+
+class ProfilePhotoPostTests(SandboxCase):
+    """A profile's slideshows become images in that profile's folder, once.
+
+    A normal profile pass is yt-dlp with `-f bv*+ba/b`, and a TikTok slideshow
+    offers no video format -- so the post leaves nothing at all. The photos are
+    in the same item detail blob, so the same tool takes them; what this proves
+    is that only posts with NO file are asked about, that the sidecar travels
+    with the images, and that a post which is neither video nor photo is asked
+    about exactly once.
+    """
+
+    def engine(self, db):
+        import engine as E
+        import profile_db as pdb
+        old_state, old_shared = E.STATE_FILE, E._shared_db
+        old_pdb = pdb._shared_db
+        self.addCleanup(setattr, E, "STATE_FILE", old_state)
+        self.addCleanup(setattr, E, "_shared_db", old_shared)
+        self.addCleanup(setattr, pdb, "_shared_db", old_pdb)
+        E.STATE_FILE = self.sb.root / "pphotos-state.json"
+        E._shared_db = lambda: db
+        pdb._shared_db = lambda: db
+        return E.Engine(output_root=self.sb.output)
+
+    def test_slideshows_in_a_profile_are_saved_and_videos_are_not_re_asked(self):
+        import engine as E
+        import profile_db as pdb
+        import tiktok_engine as tt
+
+        db = pdb.ProfileDB(self.sb.root / "pphotos.db")
+        self.addCleanup(db.close)
+        eng = self.engine(db)
+        job = E.Job(username="someone", platform="tiktok")
+        eng.jobs[job.id] = job
+        self.addCleanup(eng.save_state)
+
+        prof = self.sb.output.parent / "tiktok" / "someone"
+        prof.mkdir(parents=True, exist_ok=True)
+        (prof / "111.mp4").write_bytes(b"v")          # a downloaded video
+        (prof / "333.jpg").write_bytes(b"p")          # a slideshow, already here
+        (prof / "333_2.jpg").write_bytes(b"p")
+        (prof / "444.mp4").write_bytes(b"v")
+        (prof / ".not-photos.txt").write_text("444\n")  # proven: not a photo post
+
+        rows = [{"id": "222", "status": 0, "author": "someone", "images": 2,
+                 "files": [str(prof / ".photos" / "222.jpg"),
+                           str(prof / ".photos" / "222_2.jpg")], "error": ""}]
+        asked = []
+
+        def fake_list_ids(handle, count=0, timeout=150):
+            return ["111", "222", "333", "444", "555"]
+
+        def fake_photo_posts(ids, **kw):
+            asked.append([i for i in ids])
+            out = prof / ".photos"
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "222.jpg").write_bytes(b"i")
+            (out / "222_2.jpg").write_bytes(b"i")
+            (out / "222.info.json").write_text('{"id": "222"}')
+            # 555 is asked about and turns out to be nothing downloadable.
+            return rows + [{"id": "555", "status": 10204, "files": [],
+                            "images": 0, "error": ""}]
+
+        for name, fake in (("list_ids", fake_list_ids),
+                           ("photo_posts", fake_photo_posts)):
+            old = getattr(tt, name)
+            self.addCleanup(setattr, tt, name, old)
+            setattr(tt, name, fake)
+
+        posts, images = eng._grab_profile_photos(job, prof, 0)
+        self.assertEqual((posts, images), (1, 2))
+        self.assertEqual(asked, [["222", "555"]],
+                         "a post that already has a file (or a .mp4) was asked about")
+        self.assertTrue((prof / "222.jpg").is_file())
+        self.assertTrue((prof / "222_2.jpg").is_file())
+        self.assertTrue((prof / "222.info.json").is_file(),
+                        "the sidecar must travel with the images, or the post is undated")
+        self.assertEqual((prof / ".not-photos.txt").read_text().split(),
+                         ["444", "555"], "a proven non-photo post must be recorded")
+        self.assertFalse((prof / ".photos").exists(),
+                         "the temp folder should not be left in the archive")
+
+        # Second run: nothing new to ask about, so the tool is not called at all.
+        asked.clear()
+        self.assertEqual(eng._grab_profile_photos(job, prof, 0), (0, 0))
+        self.assertEqual(asked, [], "a profile photo pass re-asked about posts it had")
+
+
+class TaggedPostTests(SandboxCase):
+    """Posts somebody else made, which land in a folder via instaloader --tagged.
+
+    The only marker the archive has for them is the sidecar's owner, so these
+    tests pin that: same folder, same naming, and the one field that separates
+    "they posted this" from "they were tagged in this".
+    """
+
+    def engine(self, root):
+        import engine as E
+        import profile_db as pdb
+        old_state, old_shared = E.STATE_FILE, E._shared_db
+        old_pdb = pdb._shared_db
+        self.addCleanup(setattr, E, "STATE_FILE", old_state)
+        self.addCleanup(setattr, E, "_shared_db", old_shared)
+        self.addCleanup(setattr, pdb, "_shared_db", old_pdb)
+        db = pdb.ProfileDB(self.sb.root / "tagged.db")
+        self.addCleanup(db.close)
+        E.STATE_FILE = self.sb.root / "tagged-state.json"
+        E._shared_db = lambda: db
+        pdb._shared_db = lambda: db
+        eng = E.Engine(output_root=root)
+        eng.roots = [root]
+        self.addCleanup(eng.save_state)
+        return eng
+
+    @staticmethod
+    def post(folder, stamp, owner, parts=1):
+        """One post on disk: `parts` files plus the sidecar beside them."""
+        for n in range(1, parts + 1):
+            name = stamp if parts == 1 else "%s_%d" % (stamp, n)
+            (folder / (name + ".jpg")).write_bytes(b"x" * 100)
+        if owner is not None:
+            side = {"node": {"owner": {"username": owner}}}
+            (folder / (stamp + ".json")).write_text(json.dumps(side))
+
+    def test_only_posts_by_other_accounts_are_flagged_tagged(self):
+        root = self.sb.root / "tagged-archive"
+        folder = root / "taggedprofile"
+        folder.mkdir(parents=True)
+        self.post(folder, "2024-03-01_12-00-00_UTC", "taggedprofile")
+        self.post(folder, "2024-03-02_12-00-00_UTC", "brandco")
+        # A carousel's sidecar is <stamp>.json while its files are _1/_2, which
+        # is the case that breaks a "sidecar sits beside the file" assumption.
+        self.post(folder, "2024-03-03_12-00-00_UTC", "anotherbrand", parts=2)
+        self.post(folder, "2024-03-04_12-00-00_UTC", None)
+
+        eng = self.engine(root)
+        posts = eng.gallery_posts("taggedprofile", "main")
+        by_stamp = {p["ts"]: p for p in posts}
+        self.assertEqual(len(posts), 4)
+        flags = sorted((p["owner"], p["tagged"]) for p in posts)
+        self.assertEqual(flags, [("", False),
+                                 ("anotherbrand", True),
+                                 ("brandco", True),
+                                 ("taggedprofile", False)],
+                         "tagged posts must be exactly the ones owned elsewhere")
+        carousel = [p for p in posts if p["owner"] == "anotherbrand"][0]
+        self.assertEqual(carousel["count"], 2,
+                         "the carousel's parts were not grouped into one post")
+        self.assertTrue(by_stamp)
+
+    def test_the_all_view_keeps_the_flag_and_its_platform(self):
+        root = self.sb.root / "tagged-all"
+        folder = root / "someone"
+        (folder / "favorites").mkdir(parents=True)
+        self.post(folder / "favorites", "2024-04-01_12-00-00_UTC", "someone")
+        self.post(folder / "favorites", "2024-04-02_12-00-00_UTC", "othersite")
+
+        eng = self.engine(root)
+        # gallery_all serves the cross-profile views only (SUBDIRS = favourites,
+        # trash), so that is the section to exercise it with.
+        posts = eng.gallery_all("favorites")
+        mine = [p for p in posts if p["username"] == "someone"]
+        self.assertEqual(len(mine), 2, "the across-all view dropped a profile")
+        self.assertEqual(sum(1 for p in mine if p["tagged"]), 1)
+        for p in mine:
+            self.assertEqual(p["platform"], "instagram")
+            self.assertEqual(p["section"], "favorites")
+
+
+class PeoplePassTests(SandboxCase):
+    """The people pass: per-picture verdicts, per-profile runs, resumable."""
+
+    def engine(self, root):
+        import engine as E
+        import profile_db as pdb
+        old_state, old_shared = E.STATE_FILE, E._shared_db
+        old_pdb = pdb._shared_db
+        self.addCleanup(setattr, E, "STATE_FILE", old_state)
+        self.addCleanup(setattr, E, "_shared_db", old_shared)
+        self.addCleanup(setattr, pdb, "_shared_db", old_pdb)
+        db = pdb.ProfileDB(self.sb.root / "people.db")
+        self.addCleanup(db.close)
+        E.STATE_FILE = self.sb.root / "people-state.json"
+        E._shared_db = lambda: db
+        pdb._shared_db = lambda: db
+        eng = E.Engine(output_root=root)
+        eng.roots = [root]
+        self.addCleanup(eng.save_state)
+        return eng
+
+    def fake_probe(self, verdicts):
+        """Replace the model with a lookup: {filename fragment: has_people}."""
+        import engine as E
+        seen = []
+
+        def probe(path):
+            seen.append(path.name)
+            for frag, has in verdicts.items():
+                if frag in path.name:
+                    return (1, 0.9) if has else (0, 0.05)
+            return (0, 0.05)
+
+        old = E.people_probe
+        self.addCleanup(setattr, E, "people_probe", old)
+        E.people_probe = probe
+        return seen
+
+    def test_a_profile_is_scanned_once_and_posts_get_the_verdict(self):
+        root = self.sb.root / "people-archive"
+        folder = root / "ppl"
+        folder.mkdir(parents=True)
+        for stamp in ("2024-05-01_12-00-00_UTC",
+                      "2024-05-02_12-00-00_UTC",
+                      "2024-05-03_12-00-00_UTC"):
+            (folder / f"{stamp}.jpg").write_bytes(b"x" * 300)
+        (folder / "2024-05-04_12-00-00_UTC.mp4").write_bytes(b"v" * 300)
+
+        seen = self.fake_probe({"2024-05-01": True,
+                                "2024-05-02": False,
+                                "2024-05-03": False})
+        eng = self.engine(root)
+
+        first = eng.people_scan_profile("ppl")
+        self.assertEqual(first["checked"], 3, "only pictures are looked at")
+        self.assertEqual(first["people"], 1)
+        self.assertEqual(first["clean"], 2)
+
+        # Second run has nothing to do: the answers are already stored.
+        second = eng.people_scan_profile("ppl")
+        self.assertEqual(second["checked"], 0, "the pass redid work it had done")
+        self.assertEqual(len(seen), 3, "a picture was probed twice")
+
+        posts = {p["post"]: p for p in eng.gallery_posts("ppl", "main")}
+        self.assertIs(posts["2024-05-01_12-00-00_UTC"]["people"], True)
+        self.assertIs(posts["2024-05-02_12-00-00_UTC"]["people"], False)
+        self.assertIsNone(posts["2024-05-04_12-00-00_UTC"]["people"],
+                          "a video is not something the pass judged")
+
+    def test_a_replaced_picture_is_looked_at_again(self):
+        root = self.sb.root / "people-replace"
+        folder = root / "swap"
+        folder.mkdir(parents=True)
+        target = folder / "2024-06-01_12-00-00_UTC.jpg"
+        target.write_bytes(b"x" * 300)
+
+        seen = self.fake_probe({"2024-06-01": False})
+        eng = self.engine(root)
+        self.assertEqual(eng.people_scan_profile("swap")["checked"], 1)
+        self.assertEqual(eng.people_scan_profile("swap")["checked"], 0)
+
+        # Same name, different bytes: a different picture, so the old verdict
+        # cannot stand.
+        target.write_bytes(b"y" * 900)
+        self.assertEqual(eng.people_scan_profile("swap")["checked"], 1)
+        self.assertEqual(len(seen), 2)
+
+    def test_a_half_scanned_folder_never_reads_as_people_free(self):
+        root = self.sb.root / "people-half"
+        folder = root / "half"
+        folder.mkdir(parents=True)
+        (folder / "2024-07-01_12-00-00_UTC.jpg").write_bytes(b"x" * 200)
+        (folder / "2024-07-02_12-00-00_UTC_1.jpg").write_bytes(b"x" * 200)
+        (folder / "2024-07-02_12-00-00_UTC_2.jpg").write_bytes(b"x" * 200)
+
+        self.fake_probe({"2024-07-01": False, "2024-07-02": False})
+        eng = self.engine(root)
+        # Answer only the single-picture post by hand; the carousel stays unknown.
+        db = __import__("profile_db")._shared_db()
+        db.people_set_many([(str(folder / "2024-07-01_12-00-00_UTC.jpg"), 200, 0, 0.02)])
+
+        posts = {p["post"]: p for p in eng.gallery_posts("half", "main")}
+        self.assertIs(posts["2024-07-01_12-00-00_UTC"]["people"], False)
+        self.assertIsNone(posts["2024-07-02_12-00-00_UTC"]["people"],
+                          "a carousel with unknown parts was called people-free")
+
+
+class SavedFailureLedgerTests(SandboxCase):
+    """A refused saved link is remembered, so the next pass does not re-ask."""
+
+    def test_a_permanent_refusal_is_parsed_and_recorded_once(self):
+        import tiktok_engine as tt
+
+        line = ("ERROR: [TikTok] 7638990020770139422: You do not have permission "
+                "to view this post. Log into an account that has access.")
+        self.assertEqual(tt.error_post(line)[0], "7638990020770139422")
+        self.assertTrue(tt.permanent_error(tt.error_post(line)[1]))
+
+        # A throttle is not permanent: the next run may well work.
+        transient = "ERROR: [TikTok] 7638990020770139423: HTTP Error 429: Too Many Requests"
+        self.assertFalse(tt.permanent_error(tt.error_post(transient)[1]))
+
+        # A line about the whole page, not one post, is not a per-post verdict.
+        self.assertIsNone(tt.error_post("ERROR: Unable to download webpage: timed out"))
+
+    def test_the_failure_file_is_read_back_as_ids(self):
+        import engine as E
+
+        path = self.sb.root / "saved" / ".saved-failed.txt"
+        eng = E.Engine(output_root=self.sb.output)
+        self.addCleanup(eng.save_state)
+        eng._note_saved_failures(path, [("7638990020770139422", "permission"),
+                                        ("7638990020770139423", "format")])
+        text = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(text), 2)
+        ids = {ln.split("\t")[0] for ln in text}
+        self.assertEqual(ids, {"7638990020770139422", "7638990020770139423"})
+        # Three fields per line: id, reason, date -- so the file stays readable.
+        self.assertEqual(len(text[0].split("\t")), 3)
 
 
 if __name__ == "__main__":

@@ -531,9 +531,17 @@ def _mark_bookmarks(posts, profile: str | None = None) -> list[dict]:
         who = (profile or p.get("username") or "").strip().lower()
         key = (who, items[0]["file"])
         if key in keys:
+            cats = keys[key]
             p["bookmarked"] = 1
-            p["category"] = keys[key]
+            p["categories"] = cats
+            p["category"] = cats[0] if cats else None
     return posts
+
+
+def _pdb_id(link: str) -> str:
+    """The video id in an export link (kept out of the route bodies)."""
+    m = re.search(r"/video/(\d+)", link or "")
+    return m.group(1) if m else ""
 
 
 def _profile_db():
@@ -875,6 +883,10 @@ def _tt_raise_all(eng, step: int, scope: str = "finished") -> dict:
     with eng.lock:
         for job in eng.jobs.values():
             if getattr(job, "platform", "") != "tiktok":
+                continue
+            if getattr(job, "kind", "main") == "saved":
+                # The saved pass is a link list, not a profile: there is no
+                # "newest N" to raise, and a count here would silently cap it.
                 continue
             if scope == "finished" and job.status not in (
                     "done", "failed", "cancelled", "skipped"):
@@ -1742,6 +1754,10 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/gallery":
             # Profiles whose archive is finished and still on disk.
             return self._json({"profiles": get_engine().gallery_profiles()})
+        if p == "/api/people-scan":
+            # Read-only: what the pass is doing, and how much of the archive it
+            # has answered. The UI polls this while a scan runs.
+            return self._json(get_engine().people_scan_status())
         if p == "/api/links":
             # Which accounts stand for the same person. Gallery view only.
             db = _profile_db()
@@ -1816,26 +1832,36 @@ class Handler(BaseHTTPRequestHandler):
             allposts = get_engine().bookmarked_posts("all")
             cats = db.bookmark_categories()
             counts: dict = {}
+            uncat = 0
             for p in allposts:
-                counts[p.get("category")] = counts.get(p.get("category"), 0) + 1
+                # Category 0 IS uncategorised: a bookmark filed "nowhere" is a
+                # real row (it has to be, to be saved at all), so it counts
+                # towards "No category" rather than towards a category id 0.
+                got = [c for c in (p.get("categories") or []) if c]
+                if not got:
+                    uncat += 1
+                for cid in got:
+                    counts[cid] = counts.get(cid, 0) + 1
             for c in cats:
                 c["count"] = counts.get(c["id"], 0)
             if cat in ("", "all"):
                 posts = allposts
             elif cat == "none":
-                posts = [p for p in allposts if p.get("category") is None]
+                posts = [p for p in allposts
+                         if not [c for c in (p.get("categories") or []) if c]]
             else:
-                posts = [p for p in allposts if str(p.get("category")) == str(cat)]
+                posts = [p for p in allposts
+                         if str(cat) in [str(c) for c in (p.get("categories") or [])]]
             return self._json({
                 "categories": cats,
                 "category": cat,
                 "posts": posts,
                 "total": len(allposts),
-                "uncategorised": counts.get(None, 0),
+                "uncategorised": uncat,
                 # Keyed the same way a tile is, so a grid can paint its own
                 # bookmark buttons from one answer instead of asking per tile.
                 "keys": {"%s/%s" % (p["username"].lower(), p["items"][0]["file"]):
-                         p.get("category") for p in allposts},
+                         p.get("categories") or [] for p in allposts},
             })
         if p == "/api/dupes":
             # Read-only report from the last scan, plus where it has got to.
@@ -2241,6 +2267,83 @@ class Handler(BaseHTTPRequestHandler):
                 "urls": tiktok_handles.to_urls(handles, "tiktok"),
             })
 
+        if p == "/api/job-settings":
+            # One row's options, not the panel's. A queued job keeps the settings
+            # it was added with, so this is the only way to change what an
+            # existing download will actually run with.
+            return self._json(get_engine().set_job_settings(
+                str(body.get("id") or ""),
+                body.get("settings") or {},
+                reset=bool(body.get("reset")),
+                requeue=bool(body.get("requeue"))))
+
+        if p == "/api/tiktok/saved":
+            # Saved videos come from the account's own data export: TikTok's
+            # saved list is not readable by a scraper (see tiktok_engine), and
+            # the export carries every saved video as a plain link. A dry run
+            # reports the count first, so the number is known before anything
+            # is queued.
+            import tiktok_engine as _tt
+            path = str(body.get("path") or "").strip()
+            if not path:
+                return self._json({"ok": False, "error": "No file given."})
+            # A pasted folder (that is how TikTok delivers the export) resolves
+            # to the JSON inside it, so the normal case is not read as a typo.
+            f = _tt.resolve_export(path)
+            if f is None:
+                return self._json({"ok": False,
+                                   "error": f"No TikTok export at {path} "
+                                            "(looked for user_data_tiktok.json)."})
+            try:
+                links, meta = _tt.saved_export_links(f)
+            except Exception as e:
+                return self._json({"ok": False,
+                                   "error": f"Could not read that export: {type(e).__name__}: {e}"})
+            # What a run would actually fetch: everything in the export minus
+            # what the ledger already has. TikTok sends the same favourites again
+            # every export, so this is the number that matters, and it is cheap
+            # to work out -- no network, one database read.
+            try:
+                import profile_db as _pdb
+                have = _pdb._shared_db().saved_ids()
+            except Exception:
+                have = set()
+            ids = [i for i in (_pdb_id(l) for l in links) if i]
+            new = [i for i in ids if i not in have]
+            if body.get("dry_run"):
+                return self._json({"ok": True, "count": len(links),
+                                   "new": len(new), "already": len(links) - len(new),
+                                   "source": meta.get("source", ""),
+                                   "file": str(f),
+                                   "sample": [l.rsplit("/", 1)[-1] for l in links[:5]]})
+            if not links:
+                return self._json({"ok": False,
+                                   "error": "That export has no saved videos in it."})
+            try:
+                added, note = get_engine().add_saved(str(f), start=False)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            if not added and note and "Could not" in note:
+                return self._json({"ok": False, "error": note})
+            return self._json({"ok": True, "count": len(links),
+                               "new": len(new), "already": len(links) - len(new),
+                               "queued": len(added),
+                               "note": note, "file": str(f)})
+
+        if p == "/api/tiktok/saved/find":
+            # The export is a file the user has to download from TikTok's site,
+            # so the app looks for it in the usual places rather than asking
+            # them to type a path.
+            import tiktok_engine as _tt
+            rows = _tt.find_saved_exports()
+            for r in rows:
+                try:
+                    links, _ = _tt.saved_export_links(r["path"])
+                    r["count"] = len(links)
+                except Exception:
+                    r["count"] = 0
+            return self._json({"ok": True, "found": rows})
+
         if p == "/api/tiktok/more":
             # Raise how many videos one TikTok profile should have, and queue it
             # again if it had already finished. yt-dlp's archive file records
@@ -2256,6 +2359,11 @@ class Handler(BaseHTTPRequestHandler):
                 job = eng.jobs.get(job_id)
                 if job is None or getattr(job, "platform", "") != "tiktok":
                     return self._json({"ok": False, "error": "no such TikTok profile"})
+                if getattr(job, "kind", "main") == "saved":
+                    # A saved pass has no "newest N": every saved video is the
+                    # whole point, and a count would cap it without saying so.
+                    return self._json({"ok": False,
+                                       "error": "the saved pass always takes every saved video"})
                 current = int(getattr(job, "tiktok_count", 0) or 0)
                 # Never look the profile's total up here. A flat listing of a
                 # real profile measures ~89 seconds (1492 videos) and it would
@@ -2326,24 +2434,38 @@ class Handler(BaseHTTPRequestHandler):
             name = str(body.get("file") or "").strip().rsplit("/", 1)[-1]
             if not prof or not name:
                 return self._json({"ok": False, "error": "a post is needed"})
+            # `on` + `category` is a per-category switch now:
+            #   on=true,  category=id  -> tick that category
+            #   on=false, category=id  -> untick that category only
+            #   on=false, no category  -> remove the bookmark entirely
+            #   on=true,  no category  -> keep it, uncategorised
+            # Omitting `on` keeps the old flip behaviour for anything cached, but
+            # the UI always says what it means.
             if "on" in body or "bookmarked" in body:
                 on = bool(body.get("on", body.get("bookmarked")))
             else:
-                # No explicit state: this is the button, so flip what is there.
-                on = db.bookmark_for(plat, prof, name) is None
+                on = not db.bookmark_for(plat, prof, name).get("bookmarked")
             cat = body.get("category", "__keep__")
+            if cat == "__keep__":
+                # "Keep whatever it has": a save on an already-saved post is a
+                # no-op rather than a second filing as uncategorised, which would
+                # put the same post in two places.
+                if on:
+                    cur = db.bookmark_for(plat, prof, name)
+                    if cur.get("bookmarked"):
+                        return self._json({"ok": True, **cur,
+                                           "categories": db.bookmark_categories()})
+                    cat = 0
+                else:
+                    cat = None
             if not on:
-                db.set_bookmark(plat, prof, name, False)
-                return self._json({"ok": True, "bookmarked": False,
-                                   "category": None,
+                got = db.set_bookmark(plat, prof, name, False, cat)
+                return self._json({"ok": True, **got,
                                    # The picker draws "(n)" beside each category
                                    # from this answer, so the number moves as
                                    # soon as the write lands instead of staying
                                    # stale until a reload.
                                    "categories": db.bookmark_categories()})
-            if cat == "__keep__":
-                cur = db.bookmark_for(plat, prof, name)
-                cat = cur.get("category") if cur else None
             got = db.set_bookmark(plat, prof, name, True, cat)
             return self._json({"ok": True, **got,
                                "categories": db.bookmark_categories()})
@@ -2794,6 +2916,13 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/clear-finished":
             return self._json({"removed": get_engine().clear_finished()})
 
+        if p == "/api/clear-queue":
+            # Sends the waiting list to Finished. Nothing is deleted: the files
+            # on disk, the ledger and the archive lists are untouched, and a
+            # cleared job can be re-queued from Finished.
+            cleared, live = get_engine().clear_queue()
+            return self._json({"ok": True, "cleared": cleared, "running": live})
+
         if p == "/api/retry-all":
             return self._json({"requeued": get_engine().retry_all_failed()})
 
@@ -2883,6 +3012,23 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/settings":
             return self._json({"settings": get_engine().update_settings(body.get("settings") or {}).to_dict()})
+
+        # The people pass: one background scan over the archive, per profile and
+        # resumable, plus the filter it feeds. POST starts or stops it; the GET
+        # is what the button polls, so the page can show progress and survive a
+        # reload without starting a second scan.
+        if p == "/api/people-scan":
+            eng = get_engine()
+            action = str(body.get("action") or "").strip().lower()
+            if action == "stop":
+                return self._json(eng.people_scan_stop())
+            if action == "start":
+                try:
+                    workers = int(body.get("workers") or 4)
+                except (TypeError, ValueError):
+                    workers = 4
+                return self._json(eng.people_scan_start(workers))
+            return self._json(eng.people_scan_status())
 
         if p == "/api/session/select":
             ok = get_engine().set_session(str(body.get("username") or ""))
@@ -3042,6 +3188,16 @@ def main() -> int:
         except Exception:
             pass
     threading.Thread(target=_auto_backup, daemon=True, name="backup").start()
+    # Fill the profile-size cache before anyone opens the gallery. Sizing two
+    # thousand profile folders costs ~2.5 s of stat calls, and paying it inside
+    # the first /api/gallery request would look like a stalled page. Warm, the
+    # same call adds nothing measurable.
+    def _warm_sizes() -> None:
+        try:
+            eng.gallery_profiles()
+        except Exception:
+            pass
+    threading.Thread(target=_warm_sizes, daemon=True, name="sizes").start()
     # Resume queued work -- only when actually run as the server. Importing
     # this module must never start a worker against the user's real queue.
     eng.kick_if_work()

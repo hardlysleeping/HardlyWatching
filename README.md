@@ -560,6 +560,30 @@ and it is remembered: pasting your following list again will not add it back. It
 appears under **Excluded** with the reason, and **Restore** puts it back. Nothing
 is deleted by excluding; it is a memory, not a blacklist.
 
+**Saved videos.** The **Saved videos** card on the TikTok tab downloads every
+video saved on your own account. TikTok does not let a downloader list that
+collection — the call behind the Favorites tab only answers a signed request from
+TikTok's own page, and every unsigned or re-signed attempt is refused — so the
+list is read from the export TikTok makes for you instead (**Settings → Account →
+Download your data**, JSON). **Find my export** looks in Downloads, Documents and
+Desktop; **Check** counts the saved videos and says how many are new; **Add to
+queue** puts them in as one job called **Saved videos**.
+
+Each video is written into **its creator's own folder** (`tiktok/<handle>/`),
+created if that profile is not archived yet, so it shows up in the gallery as
+theirs — not as one anonymous pile. Two things stop a second export from
+re-downloading the lot: the app keeps a **ledger of every saved video it has
+taken** (`saved_videos` in `profiles.db`, which survives the file being moved or
+renamed) and it also skips anything already on disk. Everything it takes is filed
+under the bookmark category **TikTok Favorites**, so the whole collection is
+browsable in one place without disturbing bookmarks you made yourself.
+
+By default it also **adds each creator to the download queue** (newest 5 videos
+each) — a saved clip belongs to somebody's profile, and one video in an otherwise
+empty folder is not an archive. Handles already queued or excluded are skipped.
+The switch for that sits on the Saved videos card, so it can be turned off
+without turning off the saved pass.
+
 **yt-dlp options** are in Settings, mapped to real flags: video quality rung,
 container, format conversion, metadata/description/thumbnail files, embedded
 metadata and cover art, request spacing, retries, rate limit, date window, cookies

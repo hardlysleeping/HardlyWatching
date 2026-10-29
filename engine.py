@@ -25,6 +25,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import concurrent.futures
 import threading
 import time
 import uuid
@@ -34,6 +35,7 @@ from pathlib import Path
 # Where downloads and app state live. Overridable so this works on any machine
 # (and so no personal path is baked into the source).
 from profile_db import _shared_db
+import profile_db as _pdb
 
 
 def config_dir() -> Path:
@@ -179,6 +181,30 @@ DISK_WARN_PCT = 90.0
 DISK_STOP_PCT = 95.0
 DISK_RESERVE_MIN_GB = 2.0
 
+# The stop point is a SETTING, not a constant: filling a drive to 95% is the
+# sensible default, but the person who owns the drive may want 85% or 99% or no
+# limit at all. `disk_usage()` is called from the scheduler, the status route and
+# the download workers with only a path, so the live choice is kept here and
+# pushed in whenever the settings are loaded or patched (apply_disk_limits).
+# `off` disables the stop entirely -- the reserve check goes with it, because a
+# reserve that never stops anything is not a reserve, it is noise in the UI.
+_DISK_LIMITS = {"stop": DISK_STOP_PCT, "off": False, "warn": DISK_WARN_PCT}
+
+
+def apply_disk_limits(stop_pct=None, off=None) -> None:
+    """Point the disk guard at the configured limit (clamped to a sane range)."""
+    if stop_pct is not None:
+        try:
+            pct = float(stop_pct)
+        except (TypeError, ValueError):
+            pct = DISK_STOP_PCT
+        _DISK_LIMITS["stop"] = min(99.9, max(50.0, pct))
+    if off is not None:
+        _DISK_LIMITS["off"] = bool(off)
+    # Warn a little before the stop, and never above it -- a 60% limit with a
+    # 90% warning would never warn at all.
+    _DISK_LIMITS["warn"] = min(DISK_WARN_PCT, _DISK_LIMITS["stop"] - 5.0)
+
 
 def disk_usage(path) -> dict | None:
     """Usage of the volume holding `path`, or None when it is not reachable.
@@ -195,10 +221,16 @@ def disk_usage(path) -> dict | None:
     if not total:
         return None
     pct = u.used / total * 100.0
-    reserve = max(DISK_RESERVE_MIN_GB * 2 ** 30, total * (100.0 - DISK_STOP_PCT) / 100.0)
-    if pct >= DISK_STOP_PCT or u.free < reserve:
+    stop = _DISK_LIMITS["stop"]
+    warn = _DISK_LIMITS["warn"]
+    reserve = max(DISK_RESERVE_MIN_GB * 2 ** 30, total * (100.0 - stop) / 100.0)
+    if _DISK_LIMITS["off"]:
+        # No limit: still report warn, so a nearly full drive is visible, but
+        # never "stop" -- that is what the switch means.
+        level = "warn" if pct >= warn else "ok"
+    elif pct >= stop or u.free < reserve:
         level = "stop"
-    elif pct >= DISK_WARN_PCT:
+    elif pct >= warn:
         level = "warn"
     else:
         level = "ok"
@@ -211,6 +243,8 @@ def disk_usage(path) -> dict | None:
         "free_gb": round(u.free / 2 ** 30, 1),
         "total_gb": round(total / 2 ** 30, 1),
         "reserve_gb": round(reserve / 2 ** 30, 1),
+        "limit_pct": stop,
+        "limit_off": _DISK_LIMITS["off"],
         "level": level,
     }
 
@@ -784,7 +818,9 @@ CACHE_DB = cache_db_path()
 # file metadata -- so a parser fix would otherwise leave every old row valid and
 # in service forever. 2: TikTok dates come from the video's metadata.
 # 3: a photo with no other date uses its EXIF capture time.
-POSTS_RECIPE = 3
+# 4: each post carries `bytes`, so a grid can be ordered by size.
+# 5: each post carries `owner`/`tagged`, so tagged posts can be filtered.
+POSTS_RECIPE = 5
 
 
 class _Cache:
@@ -1116,6 +1152,174 @@ def _gallery_media(folder: Path) -> list[str]:
     _MEDIA_CACHE[key] = (stamp, names)
     _cache.put(key, stamp, names)
     return names
+
+
+# How big one profile is, for sorting the profile list by size.
+#
+# This is the one number in the gallery that no cached listing can answer:
+# file sizes are not stored anywhere, so it costs a real walk. Two things keep
+# that off the hot path. The answer is remembered per folder, so a list of 200
+# profiles walks each one once; and it is recomputed when the folder's file
+# COUNT changes (what a download, a delete or a favouriting move does) or after
+# PROFILE_BYTES_TTL, which is what catches a file being replaced in place.
+#
+# Measured: the whole archive (2,279 profiles, 441 GB) in 2.5 s, once, on this
+# drive; the warm path adds nothing measurable to /api/gallery.
+PROFILE_BYTES_TTL = 6 * 3600.0
+# folder -> (main-folder file count it was computed from, when, bytes)
+_PROFILE_BYTES: dict[str, tuple[int, float, int]] = {}
+# Comfortably above the profile count: this archive holds 2,279, and clearing
+# the dict on overflow (as the listing cache does) would make every request walk
+# every folder again -- measured 3.0 s per call when the cap was 1,024.
+_PROFILE_BYTES_MAX = 16384
+
+
+def _walk_bytes(folder: Path) -> int:
+    """Every file's size under `folder`, subfolders included. Never raises."""
+    total = 0
+    for dirpath, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                total += os.stat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
+# ---------------------------------------------------------------------------
+# The people pass: which pictures have somebody in them
+#
+# YOLOv8n, exported to ONNX, on the CPU. 12.8 MB of model, no torch, no GPU
+# stack: measured 36 ms an image here, so the whole archive (79,933 images) is
+# about an hour on one core and ~17 minutes on four. The point of it is the
+# opposite filter -- "show me the pictures with nobody in them", which is what a
+# folder of travel, food and interiors is full of and what you cannot ask for by
+# filename.
+#
+# It is a small model and it is honest about it: a backlit or motion-blurred
+# silhouette scores as no-person (measured on a real dark stage shot). So the
+# filter only ever shows pictures that were CLASSIFIED as clean; unknown is not
+# the same as clean and is never shown as such.
+PEOPLE_CONF = 0.25
+PEOPLE_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+PEOPLE_MODEL_PATHS = [
+    Path(os.environ.get("AI_PEOPLE_MODEL", "")) if os.environ.get("AI_PEOPLE_MODEL") else None,
+    Path.home() / ".ai-tools" / "models" / "yolov8n.onnx",
+    Path(__file__).resolve().parent / "models" / "yolov8n.onnx",
+]
+_PEOPLE_SESSION = None
+_PEOPLE_LOCK = threading.Lock()
+
+
+def people_model_path() -> Path | None:
+    """Where the detector lives, or None when it has not been installed."""
+    for p in PEOPLE_MODEL_PATHS:
+        if p and Path(p).is_file():
+            return Path(p)
+    return None
+
+
+def people_ready() -> bool:
+    """True when the pass can run: a model on disk and onnxruntime importable."""
+    if people_model_path() is None:
+        return False
+    try:
+        import onnxruntime  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _people_session():
+    """The ONNX session, built once per process. None when unavailable."""
+    global _PEOPLE_SESSION
+    with _PEOPLE_LOCK:
+        if _PEOPLE_SESSION is not None:
+            return _PEOPLE_SESSION
+        model = people_model_path()
+        if model is None:
+            return None
+        try:
+            import onnxruntime as ort
+        except Exception:
+            return None
+        try:
+            _PEOPLE_SESSION = ort.InferenceSession(
+                str(model), providers=["CPUExecutionProvider"])
+        except Exception:
+            _PEOPLE_SESSION = None
+        return _PEOPLE_SESSION
+
+
+def people_probe(path: Path) -> tuple[int, float] | None:
+    """(1 if somebody is in this picture else 0, best person score), or None.
+
+    None means "could not be looked at" -- an unreadable file, a format Pillow
+    cannot decode, or no model installed. Callers must keep that distinct from
+    0, or an unreadable picture would be shown as people-free.
+    """
+    sess = _people_session()
+    if sess is None:
+        return None
+    try:
+        from PIL import Image
+        import numpy as np
+    except Exception:
+        return None
+    try:
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            w, h = im.size
+            if not w or not h:
+                return None
+            scale = 640.0 / max(w, h)
+            size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
+            im = im.resize(size, Image.Resampling.BILINEAR)
+            canvas = Image.new("RGB", (640, 640), (114, 114, 114))
+            canvas.paste(im, ((640 - size[0]) // 2, (640 - size[1]) // 2))
+            arr = np.asarray(canvas, dtype=np.float32).transpose(2, 0, 1)[None] / 255.0
+    except Exception:
+        return None
+    try:
+        out = sess.run(None, {sess.get_inputs()[0].name: arr})[0][0]  # (84, 8400)
+    except Exception:
+        return None
+    try:
+        scores = out[4:]                    # 80 class scores per box
+        best_class = scores.argmax(axis=0)
+        best_score = scores.max(axis=0)
+        person = (best_class == 0) & (best_score >= PEOPLE_CONF)
+        if person.any():
+            return 1, float(best_score[person].max())
+        return 0, float(best_score.max())
+    except Exception:
+        return None
+
+
+def profile_bytes(folder: Path, nfiles: int = -1) -> int:
+    """Bytes of one profile folder: main/, favorites/ and trash/ together.
+
+    Layout files of ours (`.insta-index.json`) are counted -- this is "how much
+    of the disk is this person", not "how big is the archive media".
+
+    `nfiles` is the profile's main-folder media count, which the caller already
+    has; it is the invalidation key, so the warm path costs a dict lookup and no
+    syscalls at all. Every user action changes that number -- a download adds
+    files, trashing and favouriting move them out of main/, a restore moves them
+    back -- so it is a better stamp here than three more directory listings.
+    """
+    key = str(folder)
+    if nfiles < 0:
+        nfiles = len(_gallery_media(folder))
+    now = time.time()
+    hit = _PROFILE_BYTES.get(key)
+    if hit is not None and hit[0] == nfiles and (now - hit[1]) < PROFILE_BYTES_TTL:
+        return hit[2]
+    nbytes = _walk_bytes(folder)
+    if len(_PROFILE_BYTES) >= _PROFILE_BYTES_MAX:
+        _PROFILE_BYTES.clear()
+    _PROFILE_BYTES[key] = (nfiles, now, nbytes)
+    return nbytes
 
 
 def _parse_filename_date(name: str) -> float:
@@ -1575,6 +1779,44 @@ def root_for(self, username: str, platform: str = "instagram") -> Path | None:
     return None
 
 
+def _post_owner(folder: Path, stamp: str, platform: str = "instagram") -> str:
+    """The account that actually posted this, or "" when the sidecar has none.
+
+    A profile's folder holds two kinds of post: the ones they made, and the ones
+    they were tagged in -- instaloader's `--tagged` pass writes those into the
+    same folder under a normal post name. The sidecar is the only marker that
+    tells them apart: `node.owner.username` for Instagram, yt-dlp's
+    `uploader`/`creator` for TikTok. Comparing it with the folder's own name is
+    what "this is a tagged post" means here.
+
+    Read per POST, from the post's own sidecar, because a carousel's parts are
+    `<stamp>_1.jpg`, `_2`... while its sidecar is `<stamp>.json` -- looking
+    beside each part would find nothing for anything with more than one file.
+    """
+    for name in (f"{stamp}.json", f"{stamp}.info.json"):
+        try:
+            raw = (folder / name).read_bytes()
+        except OSError:
+            continue
+        try:
+            blob = json.loads(raw) or {}
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(blob, dict):
+            continue
+        node = blob.get("node")
+        if not isinstance(node, dict):
+            node = blob          # TikTok sidecars have no "node" wrapper
+        owner = node.get("owner")
+        who = owner.get("username") if isinstance(owner, dict) else ""
+        if not who:
+            who = (blob.get("uploader") or blob.get("creator")
+                   or blob.get("channel") or "")
+        if isinstance(who, str) and who.strip():
+            return who.strip()
+    return ""
+
+
 def gallery_posts(self, username: str, section: str = "main",
                   platform: str = "instagram") -> list[dict]:
     """Group one section's media into posts, carousel parts in order.
@@ -1614,7 +1856,10 @@ def gallery_posts(self, username: str, section: str = "main",
         hit = _cache.get_posts(str(folder), stamp)
         if hit is not None:
             hit.sort(key=lambda p: p["ts"])
-            return hit
+            # Decorated after the cache: the people verdicts live in profiles.db
+            # and change when the scan runs, so baking them into the cached row
+            # would freeze "unknown" until the folder itself changed.
+            return self._attach_people(folder, hit)
 
     # Group filenames first (see group_into_posts), then describe each file. The
     # grouping is by post, not by extension, so a carousel that mixes photos and
@@ -1627,19 +1872,30 @@ def gallery_posts(self, username: str, section: str = "main",
             # but the grouping counted them, so a carousel claimed more parts
             # than it had and the viewer walked dead slots -- a blank box, or a
             # photo silently skipped between two others.
+            #
+            # The size comes from the same stat: the grid can be ordered by how
+            # big a post is, and paying for a second stat later would be a
+            # per-file cost on every request.
             try:
-                if (folder / name).stat().st_size == 0:
-                    continue
+                fsize = (folder / name).stat().st_size
             except OSError:
+                continue
+            if fsize == 0:
                 continue
             info = _media_info(folder, name, platform)
             info["part"] = part
+            info["bytes"] = fsize
             grouped.setdefault(stamp_name, []).append(info)
 
     posts = []
+    me = (username or "").strip().lower()
     for stamp_name, items in grouped.items():
         items.sort(key=lambda i: i["part"])
         first = items[0]
+        # Who actually posted it. instaloader's --tagged pass drops other
+        # people's posts into this folder, so "owner is not this profile" is the
+        # only way the gallery can tell a tagged post from one they made.
+        owner = _post_owner(folder, stamp_name, platform)
         # Only the fields the grid and viewer actually read are kept per item.
         # _media_info() also produces ts/date/caption/title/post, but every one
         # of those is already on the post below and measured identical to it
@@ -1665,10 +1921,56 @@ def gallery_posts(self, username: str, section: str = "main",
             "items": [{"file": i["file"], "kind": i["kind"], "part": i["part"]}
                       for i in items],
             "count": len(items),
+            # How big the post is on disk: every part's bytes added up. One
+            # number per post, not per part -- a tile stands for the whole post,
+            # and repeating it on each part was the payload mistake this dict
+            # already made once (see the comment above).
+            "bytes": sum(i.get("bytes") or 0 for i in items),
+            # Who posted it, and therefore whether this folder only has it
+            # because the profile was tagged. `tagged` is the flag the grid
+            # filters on; `owner` is what the tile shows so the filter is not
+            # asking to be taken on trust.
+            "owner": owner,
+            "tagged": bool(owner) and owner.lower() != me,
         })
     posts.sort(key=lambda p: p["ts"])
     if stamp is not None:
         _cache.put_posts(str(folder), stamp, posts)
+    return self._attach_people(folder, posts)
+
+
+def _attach_people(self, folder: Path, posts: list[dict]) -> list[dict]:
+    """Tag each post with `people`: True, False, or None when not looked at.
+
+    The verdicts are per FILE in profiles.db; a post is the sum of its pictures:
+    anybody in any part means the post has people. Three rules keep it honest:
+
+      * a post with a video part is None, not False -- the pass only looks at
+        pictures, and calling a video "no people" would be a guess;
+      * a part with no verdict is None, so a half-scanned folder never shows as
+        "nobody here";
+      * a verdict recorded for a different file SIZE is ignored -- the picture
+        was replaced, so the old answer is about a different image.
+
+    Read once per folder, so decorating a 2,700-post grid is one query.
+    """
+    try:
+        known = _pdb._shared_db().people_known(str(folder))
+    except Exception:
+        known = {}
+    for p in posts:
+        verdicts: list[int] | None = [] if known else None
+        if verdicts is not None:
+            for item in p.get("items") or []:
+                if item.get("kind") != "image":
+                    verdicts = None       # a clip: not something the pass judged
+                    break
+                rec = known.get(str(folder / item.get("file", "")))
+                if rec is None or (item.get("bytes") and rec[0] != item["bytes"]):
+                    verdicts = None       # never looked at, or replaced since
+                    break
+                verdicts.append(rec[1])
+        p["people"] = None if verdicts is None else bool(any(verdicts))
     return posts
 
 
@@ -2167,6 +2469,10 @@ def gallery_profiles(self) -> list[dict]:
             "platform": platform,
             "id": job.id if job else username,
             "count": len(media),
+            # How much disk this person's archive takes. Costs a walk of the
+            # folder the first time and is remembered after that; see
+            # profile_bytes(). The grid sorts by it.
+            "bytes": profile_bytes(folder, len(media)),
             "posts": job.posts if job else len(media),
             "root": str(folder.parent),
             "status": status,
@@ -2228,6 +2534,9 @@ def gallery_profiles(self) -> list[dict]:
         folded.add(child_key)
         prim["count"] = prim.get("count", 0) + child.get("count", 0)
         prim["posts"] = prim.get("posts", 0) + child.get("posts", 0)
+        # A card that stands for two accounts is as big as both of them, or the
+        # size sort would rank a merged person by half their archive.
+        prim["bytes"] = prim.get("bytes", 0) + child.get("bytes", 0)
         prim.setdefault("merged", []).append(child["username"])
         if child["platform"] != prim["platform"]:
             prim.setdefault("merged_platforms", []).append(child["platform"])
@@ -2302,6 +2611,46 @@ def liked_posts(self) -> list[dict]:
     return out
 
 
+def _handle_folders(self, platform: str = "instagram") -> dict:
+    """{lowercased handle: (root folder, its own spelling)} for one platform.
+
+    Built with one scandir per root, for the whole list at once. Resolving a
+    handle used to scan the archive root per row, and the bookmark view asks
+    about every row: 6,754 bookmarks meant 6,754 scandirs of a 2,000-folder
+    directory before a single tile was described, which measured as 5.8s of a
+    /api/bookmarks request. First root wins, exactly like root_for(), so the two
+    cannot disagree about which copy is the archive.
+    """
+    out: dict[str, tuple[Path, str]] = {}
+    for root in self.roots:
+        bases = tiktok_roots(root) if platform == "tiktok" else [root]
+        for base in bases:
+            try:
+                with os.scandir(base) as it:
+                    for entry in it:
+                        try:
+                            if not entry.is_dir():
+                                continue
+                        except OSError:
+                            continue
+                        out.setdefault(entry.name.lower(), (base, entry.name))
+            except OSError:
+                continue
+    return out
+
+
+def _folder_sections(base: Path) -> tuple[set, set, set]:
+    """The displayable file names in a profile's main, favorites/ and trash/.
+
+    One cached directory listing per folder (the same `_gallery_media` the
+    gallery itself draws from), instead of three `resolve()`s per bookmark, each
+    of which hits the disk on a mount where that is the expensive part.
+    """
+    return (set(_gallery_media(base)),
+            set(_gallery_media(base / FAVORITES_DIR)),
+            set(_gallery_media(base / TRASH_DIR)))
+
+
 def bookmarked_posts(self, category=None) -> list[dict]:
     """Every bookmarked post, newest bookmark first, shaped like a gallery post.
 
@@ -2310,46 +2659,143 @@ def bookmarked_posts(self, category=None) -> list[dict]:
     into favourites/ or moved to trash, because the section is resolved from where
     the file is now rather than remembered when it was saved. A bookmark whose
     file has since been deleted stays in the database but has no tile here.
+
+    Each post carries the date it should be ordered by: for a video that came in
+    through a TikTok saved-videos pass, when the user SAVED it (the export's own
+    row date, kept in the ledger), otherwise when the bookmark was made. The
+    file's mtime says only when we fetched it, which is not a date anything
+    should be sorted by.
     """
     import profile_db as _pdb
     video_exts = {".mp4", ".mov", ".webm", ".m4v", ".mkv"}
+    db = _pdb._shared_db()
+    saved_at: dict[tuple[str, str], float] = {}
+    for r in db.saved_rows():
+        when, f = r.get("saved_at"), str(r.get("file") or "")
+        if when and f:
+            saved_at[(str(r.get("creator") or "").lower(), f)] = float(when)
     out = []
-    for row in _pdb._shared_db().bookmarks(category):
+    folders: dict[str, dict] = {}
+    listings: dict[tuple[str, str], tuple[set, set, set]] = {}
+    for row in db.bookmarks(category):
         name = str(row.get("file") or "").rsplit("/", 1)[-1]
         plat = str(row.get("platform") or "instagram").lower()
         stored = str(row.get("profile") or "")
         if not name or not stored:
             continue
-        # The folder's own spelling: the bookmark stores the handle lowercased.
-        who = self._real_profile_name(stored, plat)
-        if not who:
+        if plat not in folders:
+            folders[plat] = self._handle_folders(plat)
+        hit = folders[plat].get(stored.lower())
+        if not hit:
             continue
+        base = hit[0] / hit[1]
+        key = (plat, str(base))
+        lists = listings.get(key)
+        if lists is None:
+            lists = listings[key] = _folder_sections(base)
         section = None
-        for cand in ("", FAVORITES_DIR, TRASH_DIR):
-            if self.resolve_media(who, name, cand, plat) is not None:
-                section = cand or "main"
+        for cand, names in zip(("main", FAVORITES_DIR, TRASH_DIR), lists):
+            if name in names:
+                section = cand
                 break
+        if section is None:
+            # Not in the listing. Either the file is gone (trash cleared, or
+            # removed by hand) or it is there in a shape the listing leaves out
+            # (an interrupted download's zero-byte placeholder). Ask the slow,
+            # exact way before treating the bookmark as dead -- deleting a
+            # bookmark over a file that is really there is not recoverable.
+            for cand in ("", FAVORITES_DIR, TRASH_DIR):
+                if self.resolve_media(hit[1], name, cand, plat) is not None:
+                    section = cand or "main"
+                    break
         if section is None:
             # The account's folder is here but the file is in none of the three
             # places a post can be: it was deleted (trash cleared, or removed by
             # hand). A bookmark pointing at nothing is not something the user can
             # act on, so it goes -- but only when the folder proves the archive is
             # readable, never when an unplugged drive makes every file look gone.
-            _pdb._shared_db().set_bookmark(plat, stored, name, False)
+            db.set_bookmark(plat, stored, name, False)
             continue
         ext = os.path.splitext(name)[1].lower()
+        when = saved_at.get((stored.lower(), name))
+        ts = float(when or row.get("created") or 0)
         out.append({
             "post": os.path.splitext(name)[0],
-            "username": who,
+            "username": hit[1],
             "platform": plat,
-            "ts": float(row.get("created") or 0),
+            "ts": ts,
+            # What that date is: "saved" (the export's row date for a saved
+            # video) or "bookmarked" (when the bookmark was made). The UI shows
+            # it instead of the file's own timestamp, which only says when the
+            # download finished.
+            "ts_src": "saved" if when else "bookmarked",
+            "date": (datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+                     .strftime("%Y-%m-%d %H:%M UTC") if ts else ""),
             "section": section,
             "items": [{"file": name, "part": 1,
                        "kind": "video" if ext in video_exts else "image"}],
-            # Marks the tile as saved, and carries the category it is filed under.
+            # Marks the tile as saved, and carries every category it is filed
+            # under -- a post can sit in more than one, and the picker draws a
+            # checkmark per category from this list.
             "bookmarked": 1,
-            "category": row.get("category"),
+            "category": (row.get("categories") or [None])[0],
+            "categories": row.get("categories") or [],
         })
+    return out
+
+
+def _profile_folders(self) -> list[tuple[str, str, Path]]:
+    """Every profile folder that exists on disk: [(username, platform, path)].
+
+    The archive is the folders, not the queue. Anything that answers "across all
+    profiles" -- the Liked and Trash views, emptying trash -- was walking
+    `self.jobs` instead, which meant a folder with no job behind it (a creator
+    adopted out of a saved TikTok pass, an archive copied in by hand, a profile
+    whose job is failed/cancelled rather than done) was invisible to it. The
+    folder holds the files, so the folder is what gets walked.
+
+    First root wins, exactly like root_for(), so a stray second copy can never
+    double-count a profile. Hidden entries (`.Trash-1000`, `.photos`) are
+    skipped, and `tiktok/` is not a profile -- its children are.
+    """
+    out: list[tuple[str, str, Path]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _note(name: str, platform: str, folder: Path) -> None:
+        key = (name.lower(), platform)
+        if not name or name.startswith(".") or key in seen:
+            return
+        seen.add(key)
+        out.append((name, platform, folder))
+
+    for root in list(self.roots):
+        try:
+            with os.scandir(root) as it:
+                for entry in it:
+                    try:
+                        if not entry.is_dir():
+                            continue
+                    except OSError:
+                        continue
+                    if entry.name == "tiktok":
+                        continue      # its children are TikTok profiles, below
+                    _note(entry.name, "instagram", Path(entry.path))
+        except OSError:
+            continue
+        for tt_dir in tiktok_roots(root):
+            if not tt_dir.is_dir():
+                continue
+            try:
+                with os.scandir(tt_dir) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_dir():
+                                _note(entry.name, "tiktok", Path(entry.path))
+                        except OSError:
+                            continue
+            except OSError:
+                pass
+            break
     return out
 
 
@@ -2363,16 +2809,25 @@ def gallery_all(self, section: str) -> list[dict]:
     liking a clip there records a flag instead of moving the file, so walking the
     folders alone would leave most of the user's likes out. One heart means one
     list, and it should not matter where the heart was tapped.
+
+    Both halves are read from the FOLDERS, with each profile's own platform, so a
+    TikTok profile's trash and favourites appear here too. Walking jobs with the
+    default platform dropped every TikTok folder (root_for then looked under the
+    Instagram root and found nothing) and every profile whose job was not exactly
+    `done`, which is why All Trash could be empty while profile trash was full.
     """
     if section not in SUBDIRS:
         return []
-    with self.lock:
-        done = {j.username for j in self.jobs.values() if j.status == "done"}
     out = []
-    for username in sorted(done):
-        for p in self.gallery_posts(username, section):
+    for username, platform, _folder in self._profile_folders():
+        try:
+            posts = self.gallery_posts(username, section, platform)
+        except Exception:
+            continue
+        for p in posts:
             p["section"] = section
             p["username"] = username
+            p.setdefault("platform", platform)
             out.append(p)
     if section == FAVORITES_DIR:
         # A clip can be in both halves -- liked as a flag and later moved into
@@ -2392,14 +2847,207 @@ def gallery_all(self, section: str) -> list[dict]:
     return out
 
 
+def people_scan_profile(self, username: str, platform: str = "instagram",
+                        workers: int = 4) -> dict:
+    """Look at every unclassified picture in ONE profile's main folder.
+
+    One profile is the unit of work, deliberately: it is small enough to be
+    stopped between two profiles without losing anything, and the verdicts are
+    written to profiles.db as they are produced, so an interrupted pass resumes
+    at the first picture it has not seen. Nothing is ever recomputed for a file
+    that is already answered at the same size.
+    """
+    out = {"profile": username, "platform": platform, "checked": 0,
+           "clean": 0, "people": 0, "skipped": 0, "seconds": 0.0}
+    folder = self.root_for(username, platform)
+    if folder is None or not folder.is_dir():
+        return out
+    names = [n for n in _gallery_media(folder)
+             if Path(n).suffix.lower() in PEOPLE_IMG_EXTS]
+    if not names:
+        return out
+    db = _pdb._shared_db()
+    try:
+        known = db.people_known(str(folder))
+    except Exception:
+        known = {}
+    todo: list[tuple[Path, int]] = []
+    for n in names:
+        p = folder / n
+        try:
+            sz = p.stat().st_size
+        except OSError:
+            continue
+        rec = known.get(str(p))
+        if rec is not None and rec[0] == sz:
+            continue                  # answered already, same bytes
+        todo.append((p, sz))
+    if not todo:
+        return out
+
+    started = time.time()
+    batch: list[tuple] = []
+    workers = max(1, min(8, int(workers or 1)))
+
+    def flush() -> None:
+        nonlocal batch
+        if batch:
+            try:
+                db.people_set_many(batch)
+            except Exception:
+                pass
+            batch = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        # Submit in windows, not all at once: `with ThreadPoolExecutor` waits for
+        # every queued future on exit, so handing it 6,753 files meant a stop
+        # request sat unanswered until the whole profile finished. A window is
+        # workers x 16 -- enough to keep every worker fed, small enough that a
+        # stop lands within a second.
+        window = workers * 16
+        for start in range(0, len(todo), window):
+            if self.people_scan_stopped():
+                break
+            chunk = todo[start:start + window]
+            futures = {ex.submit(people_probe, p): (p, sz) for p, sz in chunk}
+            for fut in concurrent.futures.as_completed(futures):
+                if self.people_scan_stopped():
+                    break
+                p, sz = futures[fut]
+                try:
+                    res = fut.result()
+                except Exception:
+                    res = None
+                if res is None:
+                    out["skipped"] += 1
+                    continue
+                batch.append((str(p), sz, res[0], res[1]))
+                out["checked"] += 1
+                if res[0]:
+                    out["people"] += 1
+                else:
+                    out["clean"] += 1
+                if len(batch) >= 40:
+                    flush()
+    flush()
+    out["seconds"] = round(time.time() - started, 2)
+    return out
+
+
+def people_scan_stopped(self) -> bool:
+    """True when the running pass has been asked to stop."""
+    return bool(self._people_scan.get("stop"))
+
+
+def people_scan_status(self) -> dict:
+    """Everything the UI needs to draw the scan: running, progress, totals."""
+    st = dict(self._people_scan)
+    try:
+        st["totals"] = _pdb._shared_db().people_stats()
+    except Exception:
+        st["totals"] = {"checked": 0, "with_people": 0}
+    st["ready"] = people_ready()
+    st["model"] = str(people_model_path() or "")
+    return st
+
+
+def _people_worker(self, workers: int = 4) -> None:
+    """Walk the archive one profile at a time, classifying pictures.
+
+    Resumable by construction rather than by bookkeeping: a profile whose
+    pictures are all answered produces an empty to-do list and is skipped in
+    milliseconds, so after an interruption the pass runs through the finished
+    ones and continues at the first unfinished picture.
+    """
+    st = self._people_scan
+    try:
+        profiles = self._profile_folders()
+        st["profiles_total"] = len(profiles)
+        st["profiles_done"] = 0
+        for username, platform, _folder in profiles:
+            if st.get("stop"):
+                break
+            st["profile"] = f"{platform}:{username}"
+            try:
+                res = self.people_scan_profile(username, platform, workers)
+            except Exception as exc:
+                st["error"] = f"{username}: {exc}"
+                res = {}
+            st["checked"] += int(res.get("checked") or 0)
+            st["clean"] += int(res.get("clean") or 0)
+            st["with_people"] += int(res.get("people") or 0)
+            st["skipped"] += int(res.get("skipped") or 0)
+            st["profiles_done"] += 1
+    except Exception as exc:
+        st["error"] = str(exc)
+    finally:
+        st["running"] = False
+        st["stop"] = False
+        st["profile"] = ""
+        st["finished"] = time.time()
+
+
+def people_scan_start(self, workers: int = 4) -> dict:
+    """Start the pass, or return the running one. Needs a model + onnxruntime."""
+    if not people_ready():
+        return {"running": False, "ready": False,
+                "error": "onnxruntime or the model is missing"}
+    with self.lock:
+        if self._people_scan.get("running"):
+            return self.people_scan_status()
+        self._people_scan.update({
+            "running": True, "stop": False, "error": "",
+            "profile": "", "checked": 0, "clean": 0, "with_people": 0,
+            "skipped": 0, "profiles_done": 0, "profiles_total": 0,
+            "started": time.time(), "finished": 0.0,
+        })
+    threading.Thread(target=self._people_worker, args=(workers,),
+                     daemon=True, name="people-scan").start()
+    return self.people_scan_status()
+
+
+def people_scan_stop(self) -> dict:
+    """Ask the pass to stop at the next picture. Progress is already stored."""
+    with self.lock:
+        if self._people_scan.get("running"):
+            self._people_scan["stop"] = True
+    return self.people_scan_status()
+
+
+def _note_saved_failures(self, path: Path, rows: list[tuple[str, str]]) -> None:
+    """Append "<id>\\t<reason>\\t<date>" lines to the saved pass's failure list.
+
+    One line per post TikTok has refused. It exists so a saved export is walked
+    once, not every run: yt-dlp's own archive records successes only, so without
+    this the same dead links are re-asked forever. Append-only and human-editable
+    on purpose -- deleting a line is how you retry one post (a login that fixes a
+    permission error, for instance).
+    """
+    if not rows:
+        return
+    stamp = time.strftime("%Y-%m-%d")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for post_id, reason in rows:
+                reason = " ".join((reason or "").split())[:160]
+                fh.write(f"{post_id}\t{reason}\t{stamp}\n")
+    except OSError:
+        pass
+
+
 def clear_trash(self) -> tuple[int, list[str]]:
-    """Delete every trashed file across all profiles. Returns (n, errors).
+    """Empty every profile's trash/ folder. Returns (n, errors).
 
     Only files inside a profile's own trash/ subfolder are touched, symlinks
     are skipped rather than followed, and each removed media file takes its
     sidecar siblings (json/txt) with it.
 
-    Each deleted media file leaves a 0-byte placeholder of the same name in
+    "Empty" means MOVED TO THE SYSTEM TRASH BIN (see _to_desktop_trash), not
+    unlinked: a mistake stays recoverable until that bin is emptied, and on a
+    removable drive the bytes are not free until it is. The UI says so.
+
+    Each emptied media file leaves a 0-byte placeholder of the same name in
     the profile's main folder. instaloader's fast-update decides a post is
     already downloaded purely by `os.path.isfile` on the expected filename, so
     the placeholder stops a later run from re-downloading what you deleted.
@@ -2408,16 +3056,10 @@ def clear_trash(self) -> tuple[int, list[str]]:
     """
     removed = 0
     errors: list[str] = []
-    with self.lock:
-        # Platform per job: the same handle can be archived on both, in different
-        # folders, so resolving without it looked only under Instagram and a
-        # TikTok profile's trash was never cleared at all.
-        targets = [(j.username, getattr(j, "platform", "instagram") or "instagram")
-                   for j in self.jobs.values()]
-    for username, platform in targets:
-        root = self.root_for(username, platform)
-        if root is None:
-            continue
+    # Every profile FOLDER, not every job -- see _profile_folders(). Keying this
+    # on self.jobs meant a folder with no job behind it could never have its
+    # trash emptied by the button, however many times it was pressed.
+    for username, platform, root in self._profile_folders():
         trash = root / TRASH_DIR
         if not trash.is_dir():
             continue
@@ -2592,7 +3234,7 @@ def disk_blocks(self, root=None) -> str:
     if u["level"] != "stop":
         return ""
     return (f"{u['free_gb']} GB free on {u['path']} ({u['used_pct']}% used) — "
-            f"at the {DISK_STOP_PCT:.0f}% limit of {u['total_gb']} GB")
+            f"at the {u['limit_pct']:.0f}% limit of {u['total_gb']} GB")
 
 
 def add_root(self, path: str) -> tuple[bool, str]:
@@ -3116,7 +3758,6 @@ class Settings:
     captions: bool = True
     metadata_json: bool = True
     compress_json: bool = False
-    comments: bool = False
     geotags: bool = False
 
     # which posts
@@ -3149,6 +3790,12 @@ class Settings:
     # yt-dlp options. Stored as a flat dict so the settings panel can treat them
     # like any other row, and validated on load by TikTokSettings itself.
     tiktok: dict = field(default_factory=dict)
+
+    # Saved videos: queue the creator of every saved video as a profile job, so
+    # a folder holding one faved clip also gets the rest of that person's
+    # videos. A switch, not a rule -- grabbing thousands of profiles is a big
+    # side effect to impose on someone who only wanted the clips they saved.
+    queue_saved_creators: bool = True
 
     def __post_init__(self):
         # Fill the yt-dlp block with its defaults so the settings panel shows
@@ -3183,6 +3830,13 @@ class Settings:
     # is off. There is no password, so "on" means "anyone on this network".
     lan_access: bool = False
 
+    # How full the drive may get before downloads stop. 95 is the default (a 5%
+    # reserve), but the owner of the drive decides: raise it to use more space,
+    # lower it to keep more headroom, or switch the limit off entirely. Off is a
+    # real choice, not a hidden constant -- nothing else in the app stops a run.
+    disk_stop_pct: float = 95.0
+    disk_limit_off: bool = False
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -3205,6 +3859,16 @@ class Settings:
                     continue
                 try:
                     setattr(s, k, int(v))
+                except (TypeError, ValueError):
+                    pass
+            elif isinstance(cur, float):
+                # float fields were silently dropped: there was no branch for
+                # them, so a patched autocheck_hours or disk_stop_pct from the UI
+                # was ignored and the old value looked like it had been saved.
+                if isinstance(v, bool):
+                    continue
+                try:
+                    setattr(s, k, float(v))
                 except (TypeError, ValueError):
                     pass
             elif isinstance(cur, str):
@@ -3234,6 +3898,9 @@ class Job:
     kind: str = "main"  # "main" | "reels" | "tagged" — extra passes run as follow-up jobs
     platform: str = "instagram"  # "instagram" (instaloader) | "tiktok" (yt-dlp)
     tiktok_count: int = 0  # 0 = all; otherwise newest N videos
+    saved_export: str = ""  # kind="saved": the TikTok data-export file to read
+    saved_creators: list[str] = field(default_factory=list)  # who a saved run found
+    saved_queued: list[str] = field(default_factory=list)    # ...and already queued
     private: bool = False  # TikTok profile yt-dlp reported as not visible
     tiktok_total: int = 0  # how many videos the profile has; 0 = not known yet
     parent_id: str | None = None  # for a reels job: the main job it follows
@@ -3292,6 +3959,91 @@ def has_profile_pic(folder: Path) -> bool:
         return False
 
 
+def _archive_count(path: Path) -> int:
+    """How many videos an archive file records, for a pass with no folder of its own."""
+    try:
+        return sum(1 for line in Path(path).read_text(encoding="utf-8",
+                                                      errors="replace").splitlines()
+                   if line.strip())
+    except OSError:
+        return 0
+
+
+SAVED_CATEGORY = "TikTok Favorites"
+
+# How many leftover links one saved run will ask TikTok about for photo posts.
+# ~2s each, so this is roughly ten minutes of a run: enough to make progress on
+# a few thousand leftovers over a few runs, small enough that a run never looks
+# hung. The rest is picked up next time, and answered links are recorded.
+PHOTO_LIMIT = 300
+SAVED_QUEUE_COUNT = 5   # "newest N" for a creator picked up from a saved video
+VIDEO_SUFFIXES = (".mp4", ".mkv", ".webm", ".mov")
+
+
+def tiktok_ids_on_disk(tt_root: Path) -> dict[str, str]:
+    """Video id -> the creator folder holding it, for everything already archived.
+
+    A finished file is what "we already have this" means: a `.part` left by an
+    interrupted run is not a file, so it does not stop the next attempt.
+    """
+    out: dict[str, str] = {}
+    try:
+        folders = [p for p in Path(tt_root).iterdir() if p.is_dir()]
+    except OSError:
+        return out
+    for folder in folders:
+        if folder.name.startswith(".") or folder.name == "saved":
+            # `saved/` holds this pass's own bookkeeping; an older build also
+            # dropped videos there. Those are adopted into creator folders
+            # instead (see adopt_flat_saved), so they must not count as a
+            # profile that already has the video.
+            continue
+        try:
+            for f in folder.iterdir():
+                if f.suffix.lower() in VIDEO_SUFFIXES:
+                    out.setdefault(f.stem, folder.name)
+        except OSError:
+            continue
+    return out
+
+
+def adopt_flat_saved(tt_root: Path) -> int:
+    """Move videos an earlier build left in `<root>/saved/` to their creator.
+
+    The first version of the saved pass wrote every video into one folder. The
+    creator is in the sidecar yt-dlp wrote beside each file, so those videos can
+    join the rest of that person's videos rather than being fetched a second time
+    or left behind as an anonymous pile. Anything without a readable sidecar is
+    left exactly where it is.
+    """
+    import json
+
+    flat = Path(tt_root) / "saved"
+    if not flat.is_dir():
+        return 0
+    moved = 0
+    for media in sorted(flat.glob("*")):
+        if media.suffix.lower() not in VIDEO_SUFFIXES:
+            continue
+        vid = media.stem
+        try:
+            meta = json.loads((flat / f"{vid}.info.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        creator = str(meta.get("uploader") or "").strip()
+        if not creator or creator.startswith(".") or "/" in creator:
+            continue
+        dest = Path(tt_root) / creator
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in flat.glob(f"{vid}.*"):
+                f.replace(dest / f.name)
+            moved += 1
+        except OSError:
+            continue
+    return moved
+
+
 class Engine:
     """Single background worker with a mutable, reorderable queue."""
 
@@ -3330,6 +4082,15 @@ class Engine:
         self.disk_blocked: dict[str, str] = {"instagram": "", "tiktok": ""}
         self.stop_requested = False
         self.settings = Settings()
+        # Live state of the people pass. Not persisted: the work it has done is
+        # in profiles.db per file, so a restart loses nothing but the counters,
+        # and pressing the button again continues where it stopped.
+        self._people_scan: dict = {
+            "running": False, "stop": False, "error": "", "profile": "",
+            "checked": 0, "clean": 0, "with_people": 0, "skipped": 0,
+            "profiles_done": 0, "profiles_total": 0,
+            "started": 0.0, "finished": 0.0,
+        }
         self.active_session: str | None = None  # chosen instaloader session
         # Sessions the user has locked out (a flagged account cooling off).
         # Persisted, so a restart cannot quietly put that account back to work;
@@ -3390,9 +4151,26 @@ class Engine:
     # have to be bound here to be reachable as methods at all.
     profile_family = profile_family
     _real_profile_name = _real_profile_name
+    # One scandir per root for the whole bookmark list, instead of one per row.
+    _handle_folders = _handle_folders
     timeline = timeline
     timeline_month = timeline_month
     gallery_all = gallery_all
+    # One walk of the archive per "across all profiles" call: the folders, not
+    # the jobs. Must be bound here to be reachable as self._profile_folders().
+    _profile_folders = _profile_folders
+    # The people pass: per-profile, resumable, and its verdicts live in
+    # profiles.db (see profile_db.people_*). Bound here like every other
+    # module-level gallery method, or self.people_scan_start() is an
+    # AttributeError at request time rather than at import.
+    people_scan_profile = people_scan_profile
+    people_scan_start = people_scan_start
+    people_scan_stop = people_scan_stop
+    people_scan_status = people_scan_status
+    people_scan_stopped = people_scan_stopped
+    _note_saved_failures = _note_saved_failures
+    _people_worker = _people_worker
+    _attach_people = _attach_people
     clear_trash = clear_trash
     list_tombstones = list_tombstones
     remove_tombstone = remove_tombstone
@@ -3458,6 +4236,9 @@ class Engine:
             return
         try:
             self.settings = Settings.from_dict(d.get("settings", {}))
+            # The disk guard is module state read by workers that only have a
+            # path, so the saved choice has to be pushed into it on every load.
+            apply_disk_limits(self.settings.disk_stop_pct, self.settings.disk_limit_off)
             self.active_session = d.get("active_session") or None
             self.locked_sessions = [str(u) for u in (d.get("locked_sessions") or []) if u]
             sr = d.get("session_rejected")
@@ -3511,6 +4292,16 @@ class Engine:
             for jid, j in self.jobs.items():
                 if j.status == "queued" and jid not in self.pending:
                     self.pending.append(jid)
+            # A saved pass is one thing the user started, not one profile among
+            # hundreds: leaving it at its stored position after a restart put it
+            # behind 500 profiles and it looked like it had vanished. It goes to
+            # the front so it finishes, and so it can be seen in a 10-row page.
+            saved_first = [jid for jid in self.pending
+                           if self.jobs.get(jid) and self.jobs[jid].kind == "saved"
+                           and self.jobs[jid].status == "queued"]
+            if saved_first:
+                self.pending = saved_first + [jid for jid in self.pending
+                                              if jid not in saved_first]
         except Exception:
             pass
 
@@ -3677,6 +4468,9 @@ class Engine:
                 block.update(patch["tiktok"])
                 merged["tiktok"] = block
             self.settings = Settings.from_dict(merged)
+            # Applies immediately: the scheduler asks disk_usage() before every
+            # job, so raising the limit resumes a stopped queue without a restart.
+            apply_disk_limits(self.settings.disk_stop_pct, self.settings.disk_limit_off)
             cur = self.settings
         self.save_state()
         return cur
@@ -3843,6 +4637,421 @@ class Engine:
         self.save_state()
         self.last_raised = raised
         return added, skipped
+
+    def set_job_settings(self, job_id: str, patch: dict | None = None,
+                         reset: bool = False, requeue: bool = False) -> dict:
+        """Change the options ONE job runs with.
+
+        A job carries its own copy of the settings it was added with, which is why
+        editing the global panel never reached a row already in the queue. The
+        patch is stored on the job and merged over the global defaults when the
+        command line is built; `reset` drops the job's own copy instead, so it
+        follows the panel again. A finished job is only re-armed when asked,
+        because changing options on something already downloaded should not
+        silently start another run.
+        """
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return {"ok": False, "error": "no such job"}
+            if reset:
+                job.settings = None
+            else:
+                cur = dict(job.settings or {})
+                incoming = dict(patch or {})
+                # The yt-dlp block merges key by key, like the global one: a
+                # shallow update would drop every other TikTok option.
+                if isinstance(incoming.get("tiktok"), dict):
+                    block = dict(cur.get("tiktok") or {})
+                    block.update(incoming["tiktok"])
+                    incoming["tiktok"] = block
+                cur.update(incoming)
+                job.settings = cur
+            if requeue and job.status in ("done", "failed", "cancelled", "skipped"):
+                job.status = "queued"
+                job.finished_at = None
+                job.error = ""
+                job.fatal = False
+                job.message = "queued with new settings"
+                if job.id not in self.pending:
+                    self.pending.append(job.id)
+        self.save_state()
+        return {"ok": True, "job": job.to_dict()}
+
+    def _grab_saved_photos(self, job: Job, tt_root: Path, links: list[str],
+                           saved_dates: dict[str, float]) -> tuple[int, int]:
+        """Take the photo posts (slideshows) a saved pass could not download.
+
+        yt-dlp can only offer such a post as an audio-only format, so the app's
+        `-f bv*+ba/b` selector skips it and the post leaves no trace -- no file,
+        no error, nothing in the log. The images are in the same item detail
+        blob yt-dlp already reads, so `tools/tiktok_photos.py` asks for it
+        through the same extractor and writes the slides into the creator's
+        folder as `<id>.jpg`, `<id>_2.jpg`, ... plus the `<id>.info.json` sidecar
+        the gallery dates a post by.
+
+        Bounded on purpose: at ~2s a post (they are rate limited) an unbounded
+        pass over a few thousand leftovers would look like a hung job, so this
+        takes PHOTO_LIMIT per run and the next run continues where it stopped.
+        A link that turns out to be neither a video nor a photo is recorded in
+        `.not-photos.txt` so it is not re-requested on every run.
+
+        Returns (posts, images).
+        """
+        import tiktok_engine as tt
+        db = _shared_db()
+        book = Path(tt_root) / tt.SAVED_HANDLE
+        gone_file = book / ".not-photos.txt"
+        try:
+            gone = {ln.strip() for ln in gone_file.read_text(encoding="utf-8",
+                                                            errors="replace").splitlines()
+                    if ln.strip()}
+        except OSError:
+            gone = set()
+        on_disk = set(tiktok_ids_on_disk(tt_root))
+        already = db.saved_ids()
+        todo: list[str] = []
+        for link in links:
+            m = tt.VIDEO_ID.search(link) if hasattr(tt, "VIDEO_ID") else None
+            if not m:
+                continue
+            vid = m.group(1)
+            if vid in already or vid in on_disk or vid in gone:
+                continue
+            todo.append(vid)
+        if not todo:
+            return 0, 0
+
+        self._log(job, f"{len(todo)} link(s) with no video — checking them for "
+                       f"photo posts (a TikTok slideshow has no video to fetch)")
+        tmp = book / "photos"
+        try:
+            rows = tt.photo_posts(todo, cookies=self._photo_cookies(),
+                                  out=tmp, limit=PHOTO_LIMIT)
+        except Exception as e:
+            self._log(job, f"! photo posts: {type(e).__name__}: {e}")
+            return 0, 0
+        if not rows:
+            return 0, 0
+        if rows[0].get("error") and len(rows) == 1:
+            self._log(job, f"! photo posts: {rows[0]['error']}")
+            return 0, 0
+
+        posts = images = 0
+        pairs: list[tuple] = []
+        ledger: list[tuple] = []
+        fresh: list[str] = []
+        for row in rows:
+            vid = str(row.get("id") or "")
+            files = [Path(f) for f in (row.get("files") or [])]
+            creator = str(row.get("author") or "").strip()
+            if not files or not creator:
+                if vid:
+                    fresh.append(vid)
+                continue
+            dest = Path(tt_root) / creator
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
+            moved = 0
+            for src in files:
+                try:
+                    shutil.move(str(src), str(dest / src.name))
+                    moved += 1
+                except OSError:
+                    continue
+            if not moved:
+                continue
+            side = Path(str(files[0]).rsplit(".", 1)[0] + ".info.json")
+            if side.exists():
+                try:
+                    side.replace(dest / side.name)
+                except OSError:
+                    pass
+            posts += 1
+            images += moved
+            ledger.append((vid, creator, files[0].name, saved_dates.get(vid)))
+            pairs.append((creator, files[0].name, saved_dates.get(vid)))
+            # So queueing that creator later does not fetch it again -- yt-dlp
+            # would only fail on it, but the archive is also what "have I got
+            # this?" is answered from.
+            try:
+                arch = Path(tt.archive_path(tt_root, creator))
+                arch.parent.mkdir(parents=True, exist_ok=True)
+                with arch.open("a", encoding="utf-8") as fh:
+                    fh.write(f"tiktok {vid}\n")
+            except OSError:
+                pass
+
+        if ledger:
+            try:
+                db.mark_saved(ledger)
+            except Exception as e:
+                self._log(job, f"! could not record the photo posts: {e}")
+            cat = db.add_bookmark_category(SAVED_CATEGORY)
+            if cat:
+                try:
+                    db.bookmark_many("tiktok", pairs, cat["id"])
+                except Exception:
+                    pass
+            self._log(job, f"{posts} photo post(s), {images} image(s) into "
+                           f"creator folders")
+        if fresh:
+            try:
+                book.mkdir(parents=True, exist_ok=True)
+                with gone_file.open("a", encoding="utf-8") as fh:
+                    for vid in fresh:
+                        fh.write(f"{vid}\n")
+            except OSError:
+                pass
+            self._log(job, f"{len(fresh)} link(s) are neither a video nor a photo "
+                           f"— recorded so they are not asked for again")
+        left = len(todo) - len(rows)
+        if left > 0:
+            self._log(job, f"{left} more to check on the next run (this pass "
+                           f"stopped after {PHOTO_LIMIT} on purpose)")
+        return posts, images
+
+    def _grab_profile_photos(self, job: Job, target_dir: Path,
+                             count: int = 0) -> tuple[int, int]:
+        """Take the photo posts a profile download could not fetch.
+
+        Same mechanism as the saved pass, aimed at a profile: yt-dlp walks the
+        profile's posts and can only offer a slideshow as an audio-only format,
+        so `-f bv*+ba/b` skips it and the post leaves nothing behind. The images
+        live in the item detail blob yt-dlp already reads, so
+        `tools/tiktok_photos.py` asks for it and writes `<id>.jpg`,
+        `<id>_2.jpg`, ... plus the `<id>.info.json` sidecar.
+
+        The candidates are the posts with NO file of their own in the profile
+        folder, which on a normal profile is a short list: everything yt-dlp
+        downloaded is already there, so what is left is the slideshows plus
+        posts TikTok will not serve. A post proven to be neither is written to
+        `.not-photos.txt` and never asked about again, because the alternative
+        is re-asking every run forever.
+
+        Bounded by PHOTO_LIMIT per run on purpose -- a post costs ~2.5 s at
+        TikTok's rate limit, and an unbounded pass would look like a hung job.
+        Returns (posts, images).
+        """
+        import tiktok_engine as tt
+        ids = tt.list_ids(job.username, count)
+        if not ids:
+            return 0, 0
+        # What this folder already holds, by the id each name starts with. A
+        # video is `<id>.mp4`, a downloaded slideshow is `<id>.jpg` + `_2`...,
+        # and either way the id is answered -- so the id being present in ANY
+        # form is the test, not a specific extension.
+        have: set[str] = set()
+        try:
+            for entry in os.scandir(target_dir):
+                if not entry.is_file():
+                    continue
+                have.add(entry.name.split(".", 1)[0].split("_", 1)[0])
+        except OSError:
+            return 0, 0
+        gone_file = target_dir / ".not-photos.txt"
+        try:
+            gone = {ln.strip() for ln in
+                    gone_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if ln.strip()}
+        except OSError:
+            gone = set()
+        todo = [i for i in ids if i not in have and i not in gone]
+        if not todo:
+            return 0, 0
+        asked = todo[:PHOTO_LIMIT]
+        self._log(job, f"{len(todo)} post(s) have no file — checking them for photo "
+                       f"posts (a TikTok slideshow has no video to fetch)")
+        tmp = target_dir / ".photos"
+        try:
+            rows = tt.photo_posts(asked, cookies=self._photo_cookies(),
+                                  out=tmp, limit=PHOTO_LIMIT)
+        except Exception as e:
+            self._log(job, f"! photo posts: {type(e).__name__}: {e}")
+            return 0, 0
+        if not rows:
+            return 0, 0
+        if rows[0].get("error") and len(rows) == 1:
+            self._log(job, f"! photo posts: {rows[0]['error']}")
+            return 0, 0
+
+        posts = images = 0
+        fresh: list[str] = []
+        for row in rows:
+            vid = str(row.get("id") or "")
+            files = [Path(f) for f in (row.get("files") or [])]
+            if not files:
+                if vid:
+                    fresh.append(vid)     # asked, and it is not a photo post
+                continue
+            moved = 0
+            for src in files:
+                try:
+                    shutil.move(str(src), str(target_dir / src.name))
+                    moved += 1
+                except OSError:
+                    continue
+            if not moved:
+                continue
+            side = Path(str(files[0]).rsplit(".", 1)[0] + ".info.json")
+            if side.exists():
+                try:
+                    side.replace(target_dir / side.name)
+                except OSError:
+                    pass
+            posts += 1
+            images += moved
+        try:
+            tmp.rmdir()          # only ever holds what we just moved out of it
+        except OSError:
+            pass
+        if posts:
+            self._log(job, f"{posts} photo post(s), {images} image(s) saved")
+        if fresh:
+            try:
+                with gone_file.open("a", encoding="utf-8") as fh:
+                    for vid in fresh:
+                        fh.write(f"{vid}\n")
+            except OSError:
+                pass
+        left = len(todo) - len(asked)
+        if left > 0:
+            self._log(job, f"{left} more to check on the next run (this pass "
+                           f"stopped after {PHOTO_LIMIT} on purpose)")
+        return posts, images
+
+    def _photo_cookies(self) -> str:
+        """The cookie jar the photo tool should carry, if there is one."""
+        try:
+            s = self.settings.tiktok
+            for cand in (getattr(s, "cookies_file", ""), ""):
+                if cand:
+                    p = Path(str(cand)).expanduser()
+                    if p.is_file():
+                        return str(p)
+        except Exception:
+            pass
+        default = Path.home() / ".config" / "hardlywatching" / "tiktok-cookies.txt"
+        return str(default) if default.is_file() else ""
+
+    def _bookmark_saved(self, job: Job) -> None:
+        """File everything in the saved ledger under one bookmark category.
+
+        The videos are split into creator folders as they land, so the single
+        place to see them all is a category the app makes on its own:
+        "TikTok Favorites". Existing bookmarks keep their own category -- a
+        bulk pass must not re-file something the user already put somewhere.
+        """
+        db = _shared_db()
+        rows = db.saved_rows()
+        if not rows:
+            return
+        cat = db.add_bookmark_category(SAVED_CATEGORY)
+        if not cat:
+            return
+        added = db.bookmark_many(
+            "tiktok",
+            [(r["creator"], r["file"], r.get("saved_at")) for r in rows],
+            cat["id"])
+        self._log(job, f"{len(rows)} saved videos filed under the bookmark "
+                       f"category “{SAVED_CATEGORY}” ({added} new)")
+
+    def _queue_saved_creators(self, job: Job) -> None:
+        """Queue everyone a saved run just found, unless they are already known.
+
+        A saved video belongs to somebody's profile, and one video in an
+        otherwise empty folder is not an archive -- so the creator is queued like
+        any other profile, at the app's usual "newest 5". Handles already queued
+        or archived are skipped (yt-dlp's archive means a re-run only fetches what
+        is missing), and anyone the user excluded stays excluded.
+        """
+        found = [str(c).strip().lstrip("@") for c in (job.saved_creators or [])
+                 if str(c).strip()]
+        done = {str(c).lower() for c in (job.saved_queued or [])}
+        creators = [c for c in found if c.lower() not in done]
+        if not creators:
+            return
+        if not getattr(self.settings, "queue_saved_creators", True):
+            self._log(job, f"{len(creators)} creator(s) not queued — "
+                           f"“Add these creators to the queue” is off")
+            return
+        db = _shared_db()
+        blocked = {str(h).lower() for h in db.excluded("tiktok")}
+        targets = [c for c in creators if c.lower() not in blocked]
+        if not targets:
+            self._log(job, "no creators to queue (all excluded)")
+            return
+        for h in targets:
+            try:
+                db.record("tiktok", h, source="saved")
+            except Exception:
+                pass
+        try:
+            added, _skipped = self.add_tiktok(targets, count=SAVED_QUEUE_COUNT,
+                                             start=False, excluded=blocked)
+        except Exception as e:
+            self._log(job, f"! could not queue the creators: {type(e).__name__}: {e}")
+            return
+        job.saved_queued = sorted(done | {c.lower() for c in targets})
+        self._log(job, f"{len(added)} creator(s) added to the queue at newest "
+                       f"{SAVED_QUEUE_COUNT} ({len(targets) - len(added)} already queued, "
+                       f"{len(blocked)} excluded)")
+
+    def add_saved(self, export: str, start: bool = False) -> tuple[list[Job], str]:
+        """Queue the saved-videos pass for a TikTok data export.
+
+        There is only ever one such job: it is a list of links, not a person, so
+        queuing it twice would download the same set again under a second row.
+        A finished one is re-armed with the new file so "export again, queue
+        again" picks up whatever was saved since last time -- yt-dlp's archive
+        is what makes that a no-op for video already on disk.
+        """
+        import tiktok_engine as tt
+
+        path = Path(str(export or "").strip()).expanduser()
+        resolved = tt.resolve_export(path)
+        if resolved is None:
+            return [], "That file does not exist."
+        path = resolved
+        try:
+            links, _ = tt.saved_export_links(path)
+        except Exception as e:
+            return [], f"Could not read that export: {type(e).__name__}: {e}"
+        if not links:
+            return [], "That export has no saved videos in it."
+
+        with self.lock:
+            job = next((j for j in self.jobs.values()
+                        if j.platform == "tiktok" and j.kind == "saved"
+                        and j.status != "cancelled"), None)
+            if job is None:
+                job = Job(username=tt.SAVED_HANDLE, kind="saved", platform="tiktok")
+                root = self._existing_root(tt.SAVED_HANDLE, "tiktok")
+                if root is not None:
+                    job.root = str(root)
+                self.jobs[job.id] = job
+                added = [job]
+            else:
+                added = []
+                if job.status == "done":
+                    job.status = "queued"
+                    job.finished_at = None
+                    job.error = ""
+            job.saved_export = str(path)
+            job.tiktok_total = len(links)
+            job.message = f"{len(links)} saved videos"
+            if job.status in ("done", "failed", "cancelled", "queued") and job.id not in self.pending:
+                self.pending.append(job.id)
+            if job.status in ("failed", "cancelled"):
+                job.status = "queued"
+                job.finished_at = None
+                job.error = ""
+        if start:
+            self._kick()
+        self.save_state()
+        return added, f"{len(links)} saved videos"
 
     def remove(self, job_id: str) -> bool:
         """Remove a job. Running jobs are cancelled first.
@@ -4112,6 +5321,39 @@ class Engine:
                 self.jobs.pop(jid, None)
         self.save_state()
         return len(gone)
+
+    def clear_queue(self) -> tuple[int, int]:
+        """Send every WAITING job to Finished without deleting anything.
+
+        The queue is a plan, not an archive: 1,700 profiles queued for later is
+        normal, and there was no way to say "not now" other than removing jobs
+        one at a time (which also excludes the handle). These become
+        `cancelled`, which the UI already lists under Finished and can re-queue
+        from -- the files already downloaded, the ledger and the archive lists
+        are untouched.
+
+        A job that is running or retrying is left alone: it is mid-download, and
+        "clear the queue" is about what has not started. Returns
+        (cleared, still running).
+        """
+        now = time.time()
+        cleared = 0
+        with self.lock:
+            for jid, j in self.jobs.items():
+                if j.status != "queued":
+                    continue
+                j.status = "cancelled"
+                j.message = "queue cleared"
+                j.finished_at = now
+                j.error = ""
+                cleared += 1
+            self.pending[:] = [jid for jid in self.pending
+                               if jid in self.jobs
+                               and self.jobs[jid].status in ("queued", "retrying")]
+            live = sum(1 for j in self.jobs.values()
+                       if j.status in ("running", "retrying"))
+        self.save_state()
+        return cleared, live
 
     def retry_all_failed(self) -> int:
         n = 0
@@ -4956,7 +6198,18 @@ class Engine:
         return d
 
     def snapshot(self) -> dict:
-        jobs = [self._job_summary(j) for j in self._order()]
+        with self.lock:
+            # The job's real place in the run order. The UI needs it: it filters
+            # and searches the waiting list client-side, so the top RESULT is
+            # not the top of the queue, and a card that guessed from its row
+            # number claimed to be first (and hid the buttons that would have
+            # promoted it). 1-based; 0 means "not in the run order".
+            qpos = {jid: i + 1 for i, jid in enumerate(self.pending)}
+        jobs = []
+        for j in self._order():
+            d = self._job_summary(j)
+            d["qpos"] = qpos.get(j.id, 0)
+            jobs.append(d)
         with self.lock:
             pending_count = len(self.pending)
             # The removed-jobs archive is capped at 500 entries and each carries
@@ -5455,6 +6708,11 @@ class Engine:
         """
         import tiktok_engine as tt
 
+        # Ids this run already knows TikTok refuses (filled from .saved-failed.txt
+        # for a saved pass). Declared here so the output loop can consult it for
+        # either kind of job without an unbound name.
+        failed: set[str] = set()
+
         if not tt.available():
             self._set(job, status="failed", finished_at=time.time(),
                       error="yt-dlp is not installed",
@@ -5480,7 +6738,8 @@ class Engine:
         # without this the tile has no face. Already cached means already done, so
         # a retry costs a stat rather than a request.
         try:
-            self.tiktok_avatar(job.username, fetch=True)
+            if job.kind != "saved":
+                self.tiktok_avatar(job.username, fetch=True)
         except Exception:
             pass    # a missing picture must never fail a download
         target_dir = tt_root / job.username
@@ -5498,6 +6757,149 @@ class Engine:
             except OSError:
                 pass
         archive = tt.archive_path(tt_root, job.username)
+
+        # A saved pass has no profile page behind it: the links come from the
+        # account holder's own data export, and yt-dlp is handed them as a list.
+        links_file: Path | None = None
+        saved_cat: int | None = None
+        saved_dates: dict[str, float] = {}
+        if job.kind == "saved":
+            export = Path(job.saved_export or "").expanduser()
+            resolved = tt.resolve_export(export)
+            if resolved is None:
+                self._set(job, status="failed", finished_at=time.time(), fatal=True,
+                          error="the TikTok export file is gone",
+                          message="export file missing — pick it again")
+                return
+            export = resolved
+            try:
+                links, meta = tt.saved_export_links(export)
+            except Exception as e:
+                self._set(job, status="failed", finished_at=time.time(), fatal=True,
+                          error=f"could not read the export: {type(e).__name__}: {e}",
+                          message="export unreadable")
+                return
+            if not links:
+                self._set(job, status="failed", finished_at=time.time(), fatal=True,
+                          error="no saved videos found in that export",
+                          message="export has no saved videos")
+                return
+            links_file = target_dir / ".saved-links.txt"
+            job.tiktok_total = len(links)
+            self._log(job, f"saved videos: {len(links)} links from "
+                           f"{export.name} ({meta.get('source', 'favorites list')})")
+
+            # The date each video was SAVED, keyed by id, straight from the
+            # export's own row. It is the only honest date for a saved video:
+            # the file's mtime says when we fetched it. Applied to what is
+            # already recorded before anything else below, because a second
+            # export has nothing new to fetch -- that early return is the common
+            # case, and it must still leave the collection correctly dated.
+            saved_dates = {str(k): float(v)
+                           for k, v in (meta.get("dates") or {}).items()}
+            if saved_dates:
+                cat = _shared_db().add_bookmark_category(SAVED_CATEGORY)
+                moved = _shared_db().restamp_saved(saved_dates,
+                                                   (cat or {}).get("id"))
+                if moved:
+                    self._log(job, f"dated {moved} already-recorded video(s) "
+                                   f"by when they were saved")
+
+            # Skip everything this pass has already dealt with. The ledger is
+            # what makes a second export cheap: TikTok sends the same favourites
+            # again every time, and the files themselves are now scattered across
+            # creator folders, so a folder listing alone cannot answer "have I
+            # got this one?".
+            db = _shared_db()
+            already = db.saved_ids()
+            # Anything an earlier build left in `saved/` joins its creator first,
+            # so it is neither re-fetched nor counted as a stranger's folder.
+            adopted = adopt_flat_saved(tt_root)
+            if adopted:
+                self._log(job, f"moved {adopted} earlier saved video(s) into their "
+                               f"creator folders")
+            on_disk = tiktok_ids_on_disk(tt_root)
+            # Links already proven to be neither a video nor a photo. They were
+            # asked about once by the photo pass; handing them to yt-dlp again on
+            # every run buys the same "unavailable" answer a thousand times.
+            dead_file = Path(tt_root) / tt.SAVED_HANDLE / ".not-photos.txt"
+            try:
+                dead = {ln.strip() for ln in dead_file.read_text(
+                    encoding="utf-8", errors="replace").splitlines() if ln.strip()}
+            except OSError:
+                dead = set()
+            # Posts yt-dlp has already been refused: gone, private, or with no
+            # video track. yt-dlp's own archive only records SUCCESSES, so without
+            # this file every run walked the same dead links again -- thousands of
+            # two-second page fetches, run after run, which is why a saved pass
+            # looked like it started from the beginning each time. Format lines:
+            # <id> TAB <reason> TAB <date>, and deleting a line retries that post.
+            failed_file = Path(tt_root) / tt.SAVED_HANDLE / ".saved-failed.txt"
+            try:
+                failed = {ln.split("\t")[0].strip()
+                          for ln in failed_file.read_text(
+                              encoding="utf-8", errors="replace").splitlines()
+                          if ln.strip()}
+            except OSError:
+                failed = set()
+            keep: list[str] = []
+            skipped = 0
+            gone = 0
+            freshly_seen: list[tuple[str, str, str]] = []
+            for link in links:
+                m = tt.VIDEO_ID.search(link)
+                vid = m.group(1) if m else ""
+                if not vid:
+                    keep.append(link)
+                    continue
+                if vid in already:
+                    skipped += 1
+                    continue
+                if vid in dead or vid in failed:
+                    gone += 1
+                    continue
+                if vid in on_disk:
+                    # Already archived (by an earlier run, or by that creator's
+                    # own profile job): record it and leave it alone.
+                    creator = on_disk[vid]
+                    freshly_seen.append((vid, creator, f"{vid}.mp4",
+                                         saved_dates.get(vid)))
+                    skipped += 1
+                    continue
+                keep.append(link)
+            if freshly_seen:
+                db.mark_saved(freshly_seen)
+            if skipped:
+                self._log(job, f"{skipped} already here ({len(already)} in the ledger), "
+                               f"{len(keep)} to fetch")
+            if gone:
+                self._log(job, f"{gone} link(s) skipped — already checked: either TikTok "
+                               f"has neither a video nor a photo for them, or it has "
+                               f"refused the post (see {failed_file.name})")
+            if not keep:
+                self._set(job, status="done", finished_at=time.time(),
+                          posts=len(links), total_files=len(links), total_bytes=0,
+                          message="nothing new — every saved video is already here")
+                self._bookmark_saved(job)
+                self.save_state()
+                return
+            links = keep
+            links_file = target_dir / ".saved-links.txt"
+            try:
+                links_file.write_text("\n".join(links) + "\n", encoding="utf-8")
+            except OSError as e:
+                self._set(job, status="failed", finished_at=time.time(), fatal=True,
+                          error=f"could not write the link list: {e}",
+                          message="could not write the link list")
+                return
+            # The category exists from the first second of the run, empty if need
+            # be: waiting until the end meant a run of thousands of videos showed
+            # nothing in Bookmarks for hours, which reads as "it didn't work".
+            try:
+                cat = _shared_db().add_bookmark_category(SAVED_CATEGORY)
+                saved_cat = int(cat["id"]) if cat else None
+            except Exception:
+                saved_cat = None
 
         count = int(getattr(job, "tiktok_count", 0) or 0)
         if job.attempts >= job.max_attempts:
@@ -5531,8 +6933,11 @@ class Engine:
         if count <= 0 and getattr(ttset, "chunk_all", False):
             chunk = max(1, int(getattr(ttset, "chunk_size", 25) or 25))
 
-        cmd = tt.build_download_cmd(job.username, target_dir, archive, count,
-                                    settings=ttset)
+        cmd = (tt.build_saved_download_cmd(links_file, tt_root, archive, count,
+                                           settings=ttset)
+               if links_file is not None
+               else tt.build_download_cmd(job.username, target_dir, archive, count,
+                                          settings=ttset))
         self._log(job, f"$ {' '.join(cmd)}")
         self._set(job, message=f"attempt {job.attempts}/{job.max_attempts}")
 
@@ -5553,6 +6958,16 @@ class Engine:
         warned = False
         disk_stopped = ""
         seen = 0
+        # Failures worth remembering, for a saved pass only: a profile pass has
+        # yt-dlp's own archive and a whole account behind it, while a saved list
+        # is a fixed set of links that never changes, so the same dead ones would
+        # come back forever.
+        new_failures: list[tuple[str, str]] = []
+        failed_file: Path | None = (Path(tt_root) / tt.SAVED_HANDLE
+                                    / ".saved-failed.txt") if links_file is not None else None
+        saved_files: dict[tuple[str, str], str] = {}   # (creator, id) -> path
+        unavailable = 0                                 # posts TikTok no longer serves
+        pending_marks: list[tuple[str, str]] = []      # bookmarks waiting for a flush
         for line in (proc.stdout or []):
             if self.cancel_current["tiktok"] or self.stop_requested:
                 break
@@ -5571,13 +6986,71 @@ class Engine:
             if not line:
                 continue
             kind = tt.classify(line)
+            if links_file is not None:
+                # Which creator each video belongs to, taken from yt-dlp's own
+                # destination line -- no second request per video.
+                hit = tt.parse_destination(line)
+                if hit:
+                    saved_files[(hit[0], hit[1])] = hit[2]
+                    # Tag as it goes, not only at the end: the whole point is
+                    # seeing the collection in one place while it is still being
+                    # sorted into everyone's own folder.
+                    if saved_cat:
+                        pending_marks.append((hit[0], f"{hit[1]}.mp4",
+                                              saved_dates.get(hit[1])))
+                        if len(pending_marks) >= 20:
+                            try:
+                                _shared_db().bookmark_many("tiktok", pending_marks,
+                                                           saved_cat)
+                            except Exception:
+                                pass
+                            pending_marks.clear()
+                        # Whoever has shown up so far joins the queue now, so a
+                        # long saved pass does not leave their profiles until
+                        # the very end.
+                        job.saved_creators = sorted(
+                            {c for (c, _v) in saved_files}, key=str.lower)
+                        self._queue_saved_creators(job)
             if kind == "started-file":
                 downloaded += 1
                 self._set(job, posts=downloaded, last_line=line[:200])
             elif kind == "progress":
                 self._set(job, last_line=line[:200])
+            elif tt.is_unavailable(line):
+                # A refusal about one post. Recorded as it happens, not at the
+                # end, so stopping or crashing mid-run still keeps the answer --
+                # and the next run skips it instead of asking TikTok again. It
+                # stays in this branch, not one of its own, or the counting and
+                # the one-time note below would never run.
+                post_id, reason = tt.error_post(line) or ("", "")
+                if failed_file is not None and post_id and tt.permanent_error(reason):
+                    if post_id not in failed:
+                        failed.add(post_id)
+                        new_failures.append((post_id, reason))
+                        if len(new_failures) >= 20:
+                            self._note_saved_failures(failed_file, new_failures)
+                            new_failures.clear()
+                # Not a network fault and not this IP: TikTok will not serve this
+                # post (removed, private, or region-locked). Counted, said once in
+                # plain words, and never retried as if it were a throttle.
+                unavailable += 1
+                if unavailable == 1:
+                    self._log(job, "note: TikTok will not serve some of these posts; "
+                                   "yt-dlp calls that an IP block, but the post itself "
+                                   "is unavailable (removed or region-locked)")
+                continue
             elif kind == "warn":
                 warned = True
+                # A slideshow (no video track) and a private post both arrive
+                # here. Neither is worth asking about again on the next run.
+                post_id, reason = tt.error_post(line) or ("", "")
+                if failed_file is not None and post_id and tt.permanent_error(reason):
+                    if post_id not in failed:
+                        failed.add(post_id)
+                        new_failures.append((post_id, reason))
+                        if len(new_failures) >= 20:
+                            self._note_saved_failures(failed_file, new_failures)
+                            new_failures.clear()
                 # yt-dlp says this for a profile it cannot see. Record it on the
                 # job so the queue can show it in red: it is not a temporary
                 # failure, and retrying it will never succeed.
@@ -5588,6 +7061,10 @@ class Engine:
                 self._log(job, line)
             else:
                 self._log(job, line)
+
+        if new_failures and failed_file is not None:
+            self._note_saved_failures(failed_file, new_failures)
+            new_failures.clear()
 
         rc = proc.wait()
         with self.lock:
@@ -5617,6 +7094,93 @@ class Engine:
 
         files = len(list(target_dir.glob("*.mp4")))
         total_bytes = sum(p.stat().st_size for p in target_dir.glob("*.mp4"))
+
+        if links_file is not None:
+            if saved_cat and pending_marks:
+                try:
+                    _shared_db().bookmark_many("tiktok", pending_marks, saved_cat)
+                except Exception:
+                    pass
+                pending_marks.clear()
+            # A saved pass writes into each creator's own folder, so the count
+            # that decides "done" is not a folder listing here: it is what the
+            # run actually fetched, plus what earlier saved runs already had.
+            creators: dict[str, list[str]] = {}
+            for (creator, vid), _path in saved_files.items():
+                creators.setdefault(creator, []).append(vid)
+            # Copy the ids into each creator's own archive, so queueing that
+            # profile later fetches their other videos instead of re-downloading
+            # what the saved pass already put in their folder.
+            for creator, ids in creators.items():
+                try:
+                    arch = Path(tt.archive_path(tt_root, creator))
+                    arch.parent.mkdir(parents=True, exist_ok=True)
+                    have = set()
+                    if arch.is_file():
+                        for row in arch.read_text(encoding="utf-8", errors="replace").splitlines():
+                            if row.strip():
+                                have.add(row.strip().rsplit(" ", 1)[-1])
+                    with arch.open("a", encoding="utf-8") as fh:
+                        for vid in ids:
+                            if vid not in have:
+                                fh.write(f"tiktok {vid}\n")
+                except OSError:
+                    continue
+            known_creators = {j.username.lower() for j in self.jobs.values()
+                              if j.platform == "tiktok" and j.kind != "saved"}
+            job.saved_creators = sorted(creators, key=str.lower)
+            # The ledger is the record of what this pass has taken, and it is
+            # what a later export is filtered against -- the files themselves are
+            # now spread across creator folders, and may be moved from there.
+            try:
+                _shared_db().mark_saved([(vid, creator, f"{vid}.mp4",
+                                          saved_dates.get(vid))
+                                         for (creator, vid) in saved_files])
+            except Exception as e:
+                self._log(job, f"! could not record the saved ledger: "
+                               f"{type(e).__name__}: {e}")
+            files = len(saved_files) or _archive_count(archive)
+            total_bytes = 0
+            for _path in saved_files.values():
+                try:
+                    total_bytes += Path(_path).stat().st_size
+                except OSError:
+                    continue
+            if creators:
+                self._log(job, f"{len(saved_files)} videos into {len(creators)} creator "
+                               f"folders ({len([c for c in creators if c.lower() not in known_creators])} "
+                               f"not in the queue yet)")
+
+            # Photo posts, before the "nothing downloaded" verdict below: a link
+            # list made only of slideshows downloads no video at all, and that
+            # is not a failed run once their images are here.
+            try:
+                photo_posts, photo_images = self._grab_saved_photos(
+                    job, tt_root, links or [], saved_dates)
+            except Exception as e:
+                photo_posts = photo_images = 0
+                self._log(job, f"! photo posts: {type(e).__name__}: {e}")
+            if photo_posts:
+                files = (files or 0) + photo_posts
+                job.total_files = (job.total_files or 0) + photo_posts
+        else:
+            # A profile pass: the same sweep, aimed at whatever yt-dlp could not
+            # fetch. A slideshow has no video, so without this a profile keeps
+            # only its videos and the photos are silently absent -- which is what
+            # "am I grabbing all the photos?" came down to. Bounded per run; the
+            # ids already on disk are never asked about.
+            try:
+                photo_posts, photo_images = self._grab_profile_photos(
+                    job, target_dir, count)
+            except Exception as e:
+                photo_posts = photo_images = 0
+                self._log(job, f"! photo posts: {type(e).__name__}: {e}")
+            if photo_posts:
+                files = (files or 0) + photo_posts
+                job.total_files = (job.total_files or 0) + photo_posts
+                total_bytes = sum(
+                    p.stat().st_size for p in target_dir.iterdir()
+                    if p.is_file() and p.suffix.lower() in GALLERY_EXTS)
 
         if rc != 0 and files == 0:
             # A private profile is fatal, not a failure worth retrying, and the
@@ -5655,9 +7219,17 @@ class Engine:
             self.save_state()
             return
 
+        done_msg = "done"
+        if warned:
+            done_msg = "done, some videos skipped"
+        if unavailable:
+            done_msg += f", {unavailable} unavailable on TikTok"
         self._set(job, status="done", finished_at=time.time(),
                   posts=files, total_files=files, total_bytes=total_bytes,
-                  message=("done, some videos skipped" if warned else "done"))
+                  message=done_msg)
+        if links_file is not None:
+            self._bookmark_saved(job)
+            self._queue_saved_creators(job)
         self.save_state()
 
     def _process(self, job: Job) -> None:
@@ -5876,8 +7448,6 @@ class Engine:
             cmd.append("--no-metadata-json")
         if not s.captions:
             cmd.append("--no-captions")
-        if s.comments:
-            cmd.append("--comments")
         if s.geotags:
             cmd.append("--geotags")
 

@@ -3,7 +3,127 @@
 Notable changes to HardlyWatching. Format follows [Keep a Changelog](https://keepachangelog.com/);
 versioning is [SemVer](https://semver.org/).
 
-## [Unreleased]
+### Added
+
+- **A picture of a person, or not.** A local detector (YOLOv8n as ONNX, 12.8 MB,
+  CPU only, no torch) marks every photo as "somebody in it" or "nobody". It runs
+  from the gallery bar one profile at a time and saves each answer as it goes, so
+  stopping or restarting loses nothing and a second run continues where the first
+  stopped. The profile grid then offers a **No people** chip. Unknown is never
+  shown as clean: a picture that has not been looked at, or that sits in a post
+  with a video part, is left out of that filter rather than counted as empty.
+- **Bookmarks can sit in more than one category.** The picker is a checkbox list
+  with a ✓ per category; a post can be in several, and the collection counts it
+  under each one.
+- **A back button.** Opening a profile from Bookmarks, Liked, All Trash, Timeline
+  or the profile list puts a floating **← where you were** button on the screen,
+  and it returns to that view at the scroll position you left it at.
+- **The disk limit is a setting.** Settings → Disk space: stop at a chosen
+  percentage (95 by default, which keeps a 5% reserve) or switch the limit off
+  entirely. It applies on the next check, so raising it resumes a stopped queue
+  without a restart.
+- **Tagged posts are a filter.** A profile grid can be narrowed to the posts
+  somebody else made — the ones an `--tagged` pass dropped into the folder —
+  which nothing on a tile used to say. Each tagged tile carries the account that
+  made it.
+- **Size is an order, at both levels.** The profile list sorts by name, post
+  count or disk size; inside a profile the posts sort by date or by the size of
+  their files. Cards show `count · size` and size badges appear only while that
+  order is on, so the order is checkable without cluttering the grid.
+
+### Fixed
+
+- **A refused saved link is remembered.** yt-dlp's archive records successes
+  only, so a saved export re-sent the same dead links every run and each pass
+  walked thousands of them again. Refusals are now written to
+  `.saved-failed.txt` as they happen (gone, private, no video track) and skipped
+  next time; throttles and timeouts are deliberately not recorded, so they are
+  retried.
+- **One tap can no longer lose a bookmark.** The 🔖 button on a saved post used to
+  unsave it silently. It now opens the category list, where unticking is
+  deliberate and a separate **Remove bookmark** row does the whole thing.
+- **All Trash and All Liked walk the folders, not the queue.** They listed jobs,
+  so a profile whose job was not exactly `done` (a creator adopted from a saved
+  pass, an archive copied in by hand) was missing from both views, and TikTok
+  folders were looked for under the Instagram root.
+- **Emptying trash reaches every profile.** It looped over jobs, so a folder with
+  no job behind it could never be emptied however many times the button was
+  pressed.
+- **A float setting could not be saved.** `Settings.from_dict` had no branch for
+  floats, so anything numeric-with-a-decimal point — the disk limit, the autocheck
+  interval — was silently dropped and the old value looked saved.
+- **Profile photo passes.** Slideshow posts (no video track at all) are fetched on
+  every profile download, not only on saved-list imports, and a post that is
+  neither video nor photo is asked about once instead of every run.
+
+## [0.4.0] — 2026-10-29
+
+### Removed
+
+- **Comment grabbing is gone.** `--comments` (an extra Instagram request per
+  post, writing `<stamp>_comments.json` beside every post) is not a supported
+  feature: the setting is no longer in Options, the flag is never passed, and
+  the field is gone from `Settings` so a stored `comments: true` cannot turn it
+  back on. Existing `*_comments.json` sidecars were deleted from the archive;
+  media and post metadata were untouched.
+
+### Added
+
+- **From a post to the person.** The photo viewer now carries two marks in its
+  bar: a portrait that opens that account's page in the gallery, and the
+  platform's own mark (TikTok / Instagram) that opens them on the site. Both read
+  the handle from the post on screen, so stepping through a carousel or into
+  another profile's photos cannot open the wrong person.
+- **Saved videos keep their saved date.** The export's per-row date is stored with
+  each saved video (`saved_videos.saved_at`) and written onto its bookmark, so
+  TikTok Favorites reads in the order things were actually saved instead of in
+  the order they happened to be downloaded. Rows already written are restamped
+  when the same export is read again.
+- **One order chip instead of a row of them.** Bookmarks, All/Liked/Trash and a
+  profile's own grid each had "↓ Newest" and "↑ Oldest" as two buttons you had to
+  compare; the order is one axis, so it is one chip now — tap it and it walks
+  newest → oldest → (random, where shuffling makes sense) and round again.
+- **Saved videos (TikTok).** The TikTok tab has a **Saved videos** card that
+  downloads every video saved on the signed-in account. TikTok refuses to list
+  that collection for anything but its own page — measured here, with a real
+  signed-in cookie jar: the favorite/collect endpoint answers an empty body
+  unsigned, the same signed with X-Bogus, the same through browser TLS
+  impersonation, and 403 from the site's own fetch inside a real browser — so
+  the links are read from the account's data export (**Settings → Account →
+  Download your data**) instead. The file is found for you in Downloads,
+  Documents or Desktop, or pasted in (a pasted folder resolves to the JSON
+  inside it); **Check** counts its saved videos and how many are new before
+  anything is queued. Both export shapes are read: watch links and the
+  `tiktokv.com/share/video/<id>` links a real export actually carries, with the
+  likes list excluded rather than counted as favourites, and newest first
+  whatever order the file happens to use.
+- **Each saved video lands in its creator's own folder**, `tiktok/<handle>/`,
+  created when that profile is not archived yet — so the gallery shows it as
+  theirs, and a later profile job for that creator carries on in the same place.
+  The ids a saved run fetches are copied into that creator's own
+  `.yt-dlp-archive.txt`, so queueing the profile afterwards does not re-fetch
+  what is already on disk.
+- **One ledger, so an export is only fetched once.** `saved_videos` in
+  `profiles.db` records every saved video id with the creator folder it went to.
+  TikTok sends the same favourites in every export, so the next one is filtered
+  against that ledger (and against files already on disk) instead of re-grabbing
+  thousands of videos; the ledger is a record, not a folder listing, so it holds
+  even after the files are moved or renamed. **Check** reports the split: total,
+  already grabbed, still to fetch.
+- **The whole collection in one place.** Everything the saved pass takes is filed
+  under the bookmark category **TikTok Favorites**, created on first use, so the
+  videos are browsable together even though they live in different profiles.
+  Bookmarks you made yourself keep their own category — the bulk pass only adds
+  what is missing.
+- **Each creator is added to the queue**, newest 5 videos, once their videos are
+  in — so a folder holding one faved clip fills out with the rest of that
+  person's videos instead of staying a single file. Handles already queued or
+  excluded are skipped. It is a switch on the Saved videos card
+  (`queue_saved_creators`), on by default; turning it off leaves the saved pass
+  working exactly the same.
+- **Videos an earlier build left in `tiktok/saved/`** are moved into their
+  creator's folder on the next saved run, using the sidecar yt-dlp wrote, rather
+  than being fetched twice or left as an anonymous pile.
 
 ## [0.3.7] — 2026-10-25
 
