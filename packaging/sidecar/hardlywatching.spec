@@ -54,6 +54,17 @@ for _name in WEB_ASSETS:
     else:
         print(f"WARNING: web asset missing from the source tree: {_src}")
 
+# The TikTok photo-post fetcher is a SCRIPT, not an import: tiktok_engine runs it
+# as `python tools/tiktok_photos.py`, because it needs yt-dlp's extractor and the
+# app's venv has no yt-dlp. In a frozen bundle __file__ sits inside _internal/,
+# so the same relative path has to exist there or the photo pass silently has no
+# tool. Keep the layout: <bundle>/tools/tiktok_photos.py.
+_photo_tool = os.path.join(ROOT, "tools", "tiktok_photos.py")
+if os.path.isfile(_photo_tool):
+    datas.append((_photo_tool, "tools"))
+else:
+    print(f"WARNING: the TikTok photo tool is missing: {_photo_tool}")
+
 # The licence travels with the binaries; the archive root already carries it.
 if os.path.isfile(os.path.join(ROOT, "LICENSE")):
     datas.append((os.path.join(ROOT, "LICENSE"), "."))

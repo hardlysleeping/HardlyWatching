@@ -61,6 +61,23 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertNotEqual(targets, "all")
         self.assertNotIn("appimage", [t.lower() for t in targets])
 
+    def test_the_photo_tool_ships_with_the_bundles(self) -> None:
+        # tools/tiktok_photos.py is run as a SCRIPT (it needs yt-dlp's extractor),
+        # so being importable is not enough: the file itself has to be in the
+        # frozen sidecar at <bundle>/tools/tiktok_photos.py and in the flatpak.
+        # Without it the TikTok photo pass has no tool and finds no photos, in
+        # the one build nobody tests before shipping.
+        self.assertTrue((REPO / "tools" / "tiktok_photos.py").is_file())
+
+        spec = (REPO / "packaging" / "sidecar" / "hardlywatching.spec").read_text(encoding="utf-8")
+        self.assertIn('"tiktok_photos.py"', spec)
+        self.assertIn('"tools"', spec.split('"tiktok_photos.py"', 1)[1][:200],
+                      "the spec must put the tool at tools/tiktok_photos.py, the path "
+                      "tiktok_engine.PHOTO_TOOL builds from __file__")
+
+        flatpak = (REPO / "flatpak" / "io.github.hardlysleeping.HardlyWatching.json").read_text(encoding="utf-8")
+        self.assertIn("tools/tiktok_photos.py", flatpak)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -389,22 +389,48 @@ SAVED_HANDLE = "saved"
 PHOTO_TOOL = Path(__file__).resolve().parent / "tools" / "tiktok_photos.py"
 
 
+_PHOTO_PY: str | None = None
+
+
+def _imports_ytdlp(py: str) -> bool:
+    """True when `py -c 'import yt_dlp'` works. Cheap enough to ask once."""
+    try:
+        r = subprocess.run([py, "-c", "import yt_dlp"],
+                           capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
 def photo_tool_python() -> str:
-    """Interpreter to run PHOTO_TOOL with: the yt-dlp venv's, when we can find it.
+    """A Python that can run PHOTO_TOOL, i.e. one that can `import yt_dlp`.
 
     `YTDLP` here is normally a pipx shim (`~/.local/share/pipx/venvs/yt-dlp/bin/yt-dlp`),
-    so its sibling `python` is the one that can `import yt_dlp`. Anything else is
-    handed back as-is and the tool says plainly that yt-dlp is not importable,
-    rather than failing as if the network were the problem.
+    so its sibling `python` is the one that can `import yt_dlp`. The frozen
+    desktop bundle has no Python of its own -- sys.executable is the server
+    binary, which cannot run a script -- so the shim is the only lead, then any
+    python3 on PATH. The answer is asked once and remembered.
     """
+    global _PHOTO_PY
+    if _PHOTO_PY:
+        return _PHOTO_PY
     import sys
+    cands: list[Path] = []
+    if not getattr(sys, "frozen", False):
+        cands.append(Path(sys.executable))
     try:
         exe = Path(shutil.which(YTDLP) or YTDLP).resolve()
+        cands += [exe.parent / "python", exe.parent / "python3"]
     except OSError:
-        return sys.executable
-    for cand in (exe.parent / "python", exe.parent / "python3"):
-        if cand.exists():
-            return str(cand)
+        pass
+    for name in ("python3", "python"):
+        w = shutil.which(name)
+        if w:
+            cands.append(Path(w))
+    for cand in cands:
+        if cand.exists() and _imports_ytdlp(str(cand)):
+            _PHOTO_PY = str(cand)
+            return _PHOTO_PY
     return sys.executable
 
 
@@ -420,7 +446,14 @@ def photo_posts(ids: list[str], cookies: str = "", out: Path | None = None,
     todo = [str(i) for i in ids if str(i).isdigit()]
     if not todo or out is None:
         return []
-    cmd = [python or photo_tool_python(), str(PHOTO_TOOL),
+    if not PHOTO_TOOL.is_file():
+        return [{"error": f"the photo tool is missing: {PHOTO_TOOL}"}]
+    py = python or photo_tool_python()
+    import sys
+    if not python and getattr(sys, "frozen", False) and py == sys.executable:
+        return [{"error": "the photo pass needs a Python with yt-dlp installed "
+                           "(pipx install yt-dlp); this build has none to run it with"}]
+    cmd = [py, str(PHOTO_TOOL),
            "--out", str(out), "--delay", f"{max(0.0, float(delay)):.2f}"]
     if cookies:
         cmd += ["--cookies", str(cookies)]
