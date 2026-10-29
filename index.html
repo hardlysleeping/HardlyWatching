@@ -369,8 +369,14 @@
      whatever width the card has. Fixed-width boxes overflowed the narrow
      finished column and pushed "all" past the card edge; equal columns cannot
      overflow, at any window width. */
-  .ttcount{margin-top:7px}
-  .ttcount .tthead{display:flex;align-items:baseline;gap:6px;margin-bottom:4px;min-width:0}
+  /* One row: the label and its number, then the six steppers sharing whatever
+     width is left. Two stacked rows made every TikTok card ~26px taller than an
+     Instagram card (148 vs 122 at 780px), so the queue's rhythm changed the
+     moment you switched platform. Wrapping is the fallback for a card too
+     narrow to hold both, never the default. */
+  .ttcount{margin-top:7px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .ttcount .tthead{display:flex;align-items:baseline;gap:6px;min-width:0;margin:0;
+                   flex:0 0 auto}
   .ttcount .ttwhat{font-size:10.5px;color:var(--muted);text-transform:uppercase;
                    letter-spacing:.03em;white-space:nowrap}
   .ttcount .ttnout{font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums;
@@ -378,7 +384,8 @@
                    text-overflow:ellipsis;min-width:0}
   /* Steppers are deliberately quiet: the number is the thing to read, and six
      button-shaped boxes at full weight made a single card shout. */
-  .ttcount .ttgrp{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px}
+  .ttcount .ttgrp{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;
+                  flex:1 1 190px;min-width:0}
   .ttcount .ttgrp button{padding:1px 0;font-size:10.5px;line-height:1.55;min-width:0;
                   background:transparent;border:1px solid var(--line-2);
                   color:var(--muted);border-radius:6px;white-space:nowrap;
