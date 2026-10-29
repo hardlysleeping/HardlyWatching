@@ -160,9 +160,28 @@
   .settings{scroll-margin-top:calc(env(safe-area-inset-top) + 10px)}
   .sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));
     gap:4px 22px;padding:4px 0 15px}
-  .sgroup{grid-column:1/-1;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;
-    color:var(--muted);margin:12px 0 4px;font-weight:700}
-  .sgroup:first-child{margin-top:0}
+  /* A group heading is the thing that makes a 50-row panel scannable, so it is a
+     full-width rule with the name on it and one plain line underneath saying
+     what the group is for. It also owns the anchor the jump row points at. */
+  .sgroup{grid-column:1/-1;display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;
+    margin:22px 0 2px;padding-top:11px;border-top:1px solid var(--line);
+    font-size:12px;text-transform:uppercase;letter-spacing:.07em;
+    color:var(--text);font-weight:700;scroll-margin-top:6px}
+  .sgroup:focus{outline:none}
+  .sgroup .sgdesc{text-transform:none;letter-spacing:0;font-weight:400;
+    color:var(--muted);font-size:12px}
+  .sgroup.jumpflash{animation:rowhit 1.2s ease-out}
+  /* The jump row: one chip per group, in the same order as the panel, so a group
+     can be reached without scrolling past the ones before it. */
+  .sjump{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:9px 0 10px;
+    border-bottom:1px solid var(--line)}
+  .sjump .sjlabel{font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+    color:var(--muted);font-weight:700;margin-right:2px}
+  .sjump a{font-size:12px;line-height:1;color:var(--text);text-decoration:none;
+    border:1px solid var(--line);border-radius:999px;padding:5px 10px;
+    background:var(--panel-2);white-space:nowrap}
+  .sjump a:hover,.sjump a:focus-visible{border-color:var(--accent);color:var(--accent);
+    outline:none}
   .tog{display:flex;align-items:center;gap:9px;padding:4px 0;font-size:13.5px;cursor:pointer}
   .tog input{appearance:none;width:34px;height:19px;background:#0e1117;border:1px solid var(--line);
     border-radius:999px;position:relative;cursor:pointer;flex:none;transition:background .15s}
@@ -1495,7 +1514,15 @@ some.profile
       <button class="small" id="showAdv">Show advanced</button>
       <button class="small" id="resetSettings">Reset to defaults</button>
     </div>
-    <div class="sgroup" style="margin-top:0">Where files are stored</div>
+    <!-- Jump row: one chip per group, built by buildJump() from the group
+         headings themselves (these two, plus the ones buildSettings() renders)
+         so the chips can never drift out of order with the panel. -->
+    <div class="sjump" id="setJump" role="navigation" aria-label="Jump to a group of settings"></div>
+
+    <div class="sgroup" id="sg-files" tabindex="-1" data-jump="Files &amp; folders">
+      <span class="sgname">Files and folders</span>
+      <span class="sgdesc">where new downloads are written, and which folders the gallery reads</span>
+    </div>
     <div class="hint" style="margin:0 0 10px">
       Downloads are saved into the <b>downloads folder</b>. The gallery shows
       everything in every folder listed below, so old archives can stay on other
@@ -1530,7 +1557,16 @@ some.profile
         <button class="small" id="rootAdd">Add archive folder…</button>
       </div>
     </div>
-    <div class="sgroup" style="margin-top:18px">App</div>
+    <div class="sgrid" id="sgrid"></div>
+    <div class="hint" id="noMatch" style="display:none;padding-bottom:14px">
+      No settings match that filter.
+    </div>
+    <!-- Last, because it is set once and never touched again: the app-level
+         switch that has nothing to do with what gets downloaded. -->
+    <div class="sgroup" id="sg-app" tabindex="-1" data-jump="This app">
+      <span class="sgname">This app</span>
+      <span class="sgdesc">whether the downloader runs by itself when you log in</span>
+    </div>
     <div class="foldcard">
       <div class="foldcard-head">
         <b>Start on login</b>
@@ -1544,10 +1580,6 @@ some.profile
         <button class="small" id="autostartBtn">…</button>
         <span class="hint" id="autostartState" style="align-self:center"></span>
       </div>
-    </div>
-    <div class="sgrid" id="sgrid"></div>
-    <div class="hint" id="noMatch" style="display:none;padding-bottom:14px">
-      No settings match that filter.
     </div>
   </details>
 <details class="settings" id="backupCard">
@@ -2152,8 +2184,22 @@ let paused=false, settings=null, adv=false, lastHash="";
 
 /* ---------- settings panel ---------- */
 
+/* Every setting, grouped into the sections a person actually scans for. The
+   order of the groups is how often they are changed -- what gets downloaded
+   first, the one-time connection settings last -- not the order the downloader
+   happens to define the options in. A group entry carries the heading's anchor
+   id (the jump row points at it) and the one-line note printed under the name,
+   so a heading cannot be added without saying what it is for. */
 const SPEC = [
-  {group:"What to download"},
+  {group:"Disk space", id:"sg-disk", jump:"Disk space",
+   note:"how full a drive may get before the queue stops"},
+  // The stop point was a constant in the engine, so the only way to use the last
+  // 5% of a drive (or to keep more headroom) was to edit the code. It is a
+  // setting now, applied on the next check rather than at the next restart.
+  {k:"disk_stop_pct", l:"Stop at this % used", d:"default 95, which keeps a 5% reserve. Lower it for more headroom, raise it to use more of the drive.", t:"num", flag:"(app)"},
+  {k:"disk_limit_off", l:"No disk limit", d:"ignore the percentage above and keep downloading until the drive itself refuses the write", t:"bool", flag:"(app)"},
+  {group:"Which parts of a profile", id:"sg-parts", jump:"Profile parts",
+   note:"the sections of a profile that get queued"},
   {k:"posts", l:"Posts", d:"regular feed posts", t:"bool", flag:"(default)"},
   {k:"profile_pic", l:"Profile picture", d:"avatar + bio metadata", t:"bool", flag:"--no-profile-pic"},
   {k:"stories", l:"Stories", d:"current stories (needs login)", t:"bool", flag:"--stories"},
@@ -2161,37 +2207,41 @@ const SPEC = [
   {k:"reels", l:"Reels", d:"queued as a separate job after the main download", t:"bool", flag:"--reels", note:true},
   {k:"tagged", l:"Tagged posts", d:"posts they're tagged in", t:"bool", flag:"--tagged"},
   {k:"igtv", l:"IGTV", d:"older long-form videos", t:"bool", flag:"--igtv"},
-  {group:"Media"},
+  {group:"Which files to save", id:"sg-files-save", jump:"File types",
+   note:"the files written for each post — media, captions and data"},
   {k:"pictures", l:"Pictures", d:"images in posts", t:"bool", flag:"--no-pictures"},
   {k:"videos", l:"Videos", d:"video files", t:"bool", flag:"--no-videos"},
   {k:"video_thumbnails", l:"Video thumbnails", d:"extra jpg per video", t:"bool", flag:"--no-video-thumbnails"},
-  {group:"Metadata"},
   {k:"captions", l:"Captions", d:"txt file per post", t:"bool", flag:"--no-captions"},
   {k:"metadata_json", l:"JSON metadata", d:"full data per post", t:"bool", flag:"--no-metadata-json"},
   {k:"geotags", l:"Geotags", d:"slower — extra request per post", t:"bool", flag:"--geotags"},
   {k:"compress_json", l:"Compress JSON", d:".xz instead of readable json", t:"bool", flag:"--no-compress-json"},
-  {group:"Which posts"},
+  {group:"Which posts, how many", id:"sg-which", jump:"Which posts",
+   note:"stop a profile at a number of posts, or skip what is already archived"},
   {k:"fast_update", l:"Only new posts", d:"skip already-downloaded (recommended)", t:"bool", flag:"--fast-update"},
   {k:"latest_stamps", l:"Remember what's archived", d:"keeps tracking even if you move the folder to another drive", t:"bool", flag:"--latest-stamps", note2:true},
   {k:"count", l:"Max posts per profile", d:"0 = unlimited", t:"num", flag:"--count"},
   {k:"post_filter", l:"Post filter", d:"python expr, e.g. viewer_has_liked", t:"str", flag:"--post-filter"},
   {k:"storyitem_filter", l:"Story filter", d:"python expr", t:"str", flag:"--storyitem-filter"},
-  {group:"How"},
+  {group:"Timing & automation", id:"sg-timing", jump:"Timing",
+   note:"how long to wait between profiles, and what the queue does when it runs dry"},
   {k:"between_profiles", l:"Seconds between profiles", d:"600 = 10 min. Longer is much safer", t:"num", flag:"(app)"},
   {k:"between_tiktok", l:"Seconds between TikTok profiles", d:"own timer, so TikTok pacing can't stall Instagram. 600 = 10 min", t:"num", flag:"(app)"},
-  {group:"Disk space"},
-  // The stop point was a constant in the engine, so the only way to use the last
-  // 5% of a drive (or to keep more headroom) was to edit the code. It is a
-  // setting now, applied on the next check rather than at the next restart.
-  {k:"disk_stop_pct", l:"Stop at this % used", d:"default 95, which keeps a 5% reserve. Lower it for more headroom, raise it to use more of the drive.", t:"num", flag:"(app)"},
-  {k:"disk_limit_off", l:"No disk limit", d:"ignore the percentage above and keep downloading until the drive itself refuses the write", t:"bool", flag:"(app)"},
-  {group:"TikTok (yt-dlp)"},
+  {k:"autocheck", l:"Check for new posts automatically", d:"when nothing is queued, look for new posts on every archived profile", t:"bool", flag:"(app)"},
+  {k:"autocheck_hours", l:"Only if idle for (hours)", d:"won't check more often than this. 0 = off", t:"num", flag:"(app)"},
+  {k:"hold_after_limit", l:"Stay paused after a rate limit", d:"when Instagram's cooldown ends, keep the queue paused until you press Resume. off = resume the moment the timer runs out", t:"bool", flag:"(app)"},
+  {group:"TikTok: what to fetch", id:"sg-tt-what", jump:"TikTok (what)",
+   note:"how much of a profile each turn takes, and which videos it reaches"},
   // Queue behaviour rather than a format option, but it belongs here: this is
   // where "videos per profile" lives, which is the setting it changes the meaning
   // of.
   {k:"tiktok.chunk_all", l:"\"All\" a slice at a time", d:"while a profile is set to all, fetch 25 videos a turn, then send it to the back of the queue so the next profile gets a turn. Off = all means the whole profile in one go.", t:"bool", flag:"--max-downloads", dotted:true},
   {k:"tiktok.chunk_size", l:"Videos a turn", d:"how many each turn fetches while the slice toggle above is on", t:"num", flag:"--max-downloads", dotted:true},
   {k:"tiktok.quality", l:"Video quality", d:"TikTok rung: 540, 720 or 1080. 0 = best available", t:"num", flag:"-f", dotted:true},
+  {k:"tiktok.date_after", l:"Only videos on/after", d:"--dateafter YYYYMMDD. blank = no limit", t:"str", flag:"--dateafter", dotted:true},
+  {k:"tiktok.date_before", l:"Only videos on/before", d:"--datebefore YYYYMMDD. blank = no limit", t:"str", flag:"--datebefore", dotted:true},
+  {group:"TikTok: files & metadata", id:"sg-tt-files", jump:"TikTok (files)",
+   note:"the container, and the extra files written beside each video"},
   {k:"tiktok.merge_container", l:"Merge into", d:"--merge-output-format", t:"str", flag:"--merge-output-format", dotted:true},
   {k:"tiktok.recode", l:"Re-encode to", d:"--recode-video, blank = never re-encode", t:"str", flag:"--recode-video", dotted:true},
   {k:"tiktok.write_info_json", l:"Write metadata JSON", d:"--write-info-json", t:"bool", flag:"--write-info-json", dotted:true},
@@ -2199,19 +2249,17 @@ const SPEC = [
   {k:"tiktok.write_thumbnail", l:"Write thumbnail", d:"--write-thumbnail", t:"bool", flag:"--write-thumbnail", dotted:true},
   {k:"tiktok.embed_metadata", l:"Embed metadata", d:"--embed-metadata", t:"bool", flag:"--embed-metadata", dotted:true},
   {k:"tiktok.embed_thumbnail", l:"Embed cover art", d:"--embed-thumbnail", t:"bool", flag:"--embed-thumbnail", dotted:true},
+  {group:"TikTok: connection", id:"sg-tt-net", jump:"TikTok (connection)",
+   note:"pacing, retries, and the cookies or proxy it connects through"},
   {k:"tiktok.sleep_requests", l:"Sleep between requests (s)", d:"--sleep-requests. 0 = none", t:"num", flag:"--sleep-requests", dotted:true},
   {k:"tiktok.sleep_interval", l:"Sleep before each download (s)", d:"--sleep-interval. 0 = none", t:"num", flag:"--sleep-interval", dotted:true},
   {k:"tiktok.retries", l:"Retries", d:"--retries", t:"num", flag:"--retries", dotted:true},
   {k:"tiktok.fragment_retries", l:"Fragment retries", d:"--fragment-retries", t:"num", flag:"--fragment-retries", dotted:true},
   {k:"tiktok.limit_rate", l:"Rate limit", d:"--limit-rate, e.g. 5M. blank = unlimited", t:"str", flag:"--limit-rate", dotted:true},
-  {k:"tiktok.date_after", l:"Only videos on/after", d:"--dateafter YYYYMMDD. blank = no limit", t:"str", flag:"--dateafter", dotted:true},
-  {k:"tiktok.date_before", l:"Only videos on/before", d:"--datebefore YYYYMMDD. blank = no limit", t:"str", flag:"--datebefore", dotted:true},
   {k:"tiktok.cookies_from_browser", l:"Cookies from browser", d:"--cookies-from-browser, e.g. firefox, or firefox:/path/to/profile for a Firefox fork. blank = none. The button above fills this in.", t:"str", flag:"--cookies-from-browser", dotted:true},
   {k:"tiktok.proxy", l:"Proxy", d:"--proxy. Blank = direct. A Cloudflare Worker URL works too, e.g. my-proxy.workers.dev", t:"str", flag:"--proxy", dotted:true},
-  {group:"When the queue is empty"},
-  {k:"autocheck", l:"Check for new posts automatically", d:"when nothing is queued, look for new posts on every archived profile", t:"bool", flag:"(app)"},
-  {k:"autocheck_hours", l:"Only if idle for (hours)", d:"won't check more often than this. 0 = off", t:"num", flag:"(app)"},
-  {k:"hold_after_limit", l:"Stay paused after a rate limit", d:"when Instagram's cooldown ends, keep the queue paused until you press Resume. off = resume the moment the timer runs out", t:"bool", flag:"(app)"},
+  {group:"Advanced download options", id:"sg-adv", jump:"Advanced",
+   note:"how the downloader talks to the site — the defaults suit almost everyone"},
   {k:"max_connection_attempts", l:"Connection attempts", d:"retries per request", t:"num", flag:"--max-connection-attempts"},
   {k:"request_timeout", l:"Request timeout (s)", d:"per connection", t:"num", flag:"--request-timeout"},
   {k:"sanitize_paths", l:"Sanitize filenames", d:"safe on all systems", t:"bool", flag:"--sanitize-paths"},
@@ -2262,6 +2310,13 @@ function refreshSettings(){
     }
     el.style.display = any ? "" : "none";
   });
+  // ...and a jump chip only while its heading does, so the row never offers a
+  // jump to a group that the platform switch or the filter has emptied.
+  const jump = $("setJump");
+  if(jump) jump.querySelectorAll("a").forEach((a)=>{
+    const t = document.getElementById(a.dataset.target);
+    a.style.display = (!t || t.style.display !== "none") ? "" : "none";
+  });
   const nm = $("noMatch");
   if(nm) nm.style.display = shown ? "none" : "";
 }
@@ -2308,19 +2363,26 @@ function buildSettings(){
     "latest_stamps","count","post_filter","storyitem_filter","between_profiles",
     "max_connection_attempts","request_timeout","sanitize_paths","resume","iphone","slide"];
   $("sgrid").innerHTML = SPEC.map((s)=>{
-    if(s.group) return `<div class="sgroup" data-group="${esc(s.group)}" data-plat="both">${esc(s.group)}</div>`;
+    if(s.group) return `<div class="sgroup" id="${esc(s.id||"")}" tabindex="-1"
+      data-group="${esc(s.group)}" data-plat="both" data-jump="${esc(s.jump||s.group)}">
+      <span class="sgname">${esc(s.group)}</span>
+      <span class="sgdesc">${esc(s.note||"")}</span></div>`;
     const plat = s.k.startsWith("tiktok.") ? "tiktok"
       : IG_ONLY.includes(s.k) ? "ig" : "both";
+    // The key is part of the search text: it is what a link elsewhere in the UI
+    // knows a row by (openDiskLimit looks for "disk_stop_pct"), and typing a key
+    // is a reasonable way to find its row.
+    const terms = esc((s.k+" "+s.l+" "+(s.d||"")+" "+(s.flag||"")+" "+(s.group||"")).toLowerCase());
     const hint = s.note ? `<div class="hint" style="color:var(--warn);font-size:11.5px;margin-top:4px">
         Queued as its own job just after this profile finishes.</div>` : "";
     if(s.t==="bool"){
       return `<label class="tog" data-row="${esc(s.k)}" data-plat="${plat}"
-        data-terms="${esc((s.l+" "+(s.d||"")+" "+(s.flag||"")+" "+(s.group||"")).toLowerCase())}">
+        data-terms="${terms}">
         <input type="checkbox" data-k="${s.k}" data-t="bool">
         <span>${esc(s.l)}<small>${esc(s.d||"")}</small></span></label>`;
     }
     return `<div class="num" data-row="${esc(s.k)}" data-plat="${plat}"
-      data-terms="${esc((s.l+" "+(s.d||"")+" "+(s.flag||"")+" "+(s.group||"")).toLowerCase())}">
+      data-terms="${terms}">
       <span style="min-width:0">${esc(s.l)}
         <small class="hint" style="display:block">${esc(s.d||"")}</small></span>
       <input type="text" data-k="${s.k}" data-t="${s.t}" style="margin-left:auto"
@@ -2350,6 +2412,44 @@ function buildSettings(){
       toast("Saved");
     };
   });
+  buildJump();
+}
+
+/* The jump row at the top of the panel. It is built from the group headings in
+   the order they appear in the panel -- not from a second hand-kept list -- so a
+   group cannot be added, renamed or reordered without its chip following. A chip
+   for a group that is currently empty (other platform, or filtered out) is
+   hidden by refreshSettings(), which already knows which headings are showing. */
+function buildJump(){
+  const box = $("settingsBox"), wrap = $("setJump");
+  if(!box || !wrap) return;
+  const heads = [...box.querySelectorAll(".sgroup")].filter(h => h.id);
+  wrap.innerHTML = `<span class="sjlabel">Jump to</span>` + heads.map((h)=>{
+    const label = h.dataset.jump || (h.querySelector(".sgname") || h).textContent.trim();
+    return `<a href="#${esc(h.id)}" data-target="${esc(h.id)}">${esc(label)}</a>`;
+  }).join("");
+  wrap.querySelectorAll("a").forEach((a)=>{
+    a.onclick = (e)=>{ e.preventDefault(); jumpToSection(a.dataset.target); };
+  });
+}
+
+/* Scroll a group heading to the top of the dialog's scroll area. The heading is
+   inside .dlg-body, which is the thing that scrolls, so scrollIntoView moves
+   that and leaves the dialog's own header where it is. */
+function jumpToSection(id){
+  const el = document.getElementById(id);
+  if(!el || el.style.display === "none") return;
+  // Scroll the panel's own scroll box rather than the window: the heading lives
+  // inside .dlg-body, and an animated scroll would need animation frames that a
+  // hidden tab or an embedded webview never delivers -- the chip would look dead.
+  const box = el.closest(".dlg-body") || document.scrollingElement;
+  if(box){
+    const r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+    box.scrollTop += Math.round(r.top - b.top) - 8;
+  }
+  el.classList.add("jumpflash");
+  setTimeout(()=>el.classList.remove("jumpflash"), 1200);
+  try{ el.focus({preventScroll:true}); }catch(e){ el.focus(); }
 }
 
 /* Filter the settings list by any word in the label, description or flag. The
