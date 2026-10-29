@@ -2852,6 +2852,13 @@ class Handler(BaseHTTPRequestHandler):
                 ok = get_engine().move(jid, int(body.get("delta", 0)))
             return self._json({"ok": ok})
 
+        if p == "/api/demote":
+            # Send a job to the back of its platform's queue. A running job is
+            # stopped first and re-queued behind everything else; whatever is
+            # first then starts straight away.
+            ok, msg = get_engine().demote(body.get("id", ""))
+            return self._json({"ok": ok, "message": msg})
+
         if p == "/api/gallery/trash/clear":
             # Permanent. Requires an explicit confirm token in the body.
             if body.get("confirm") != "DELETE":

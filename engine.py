@@ -4629,6 +4629,12 @@ class Engine:
         # back in the queue instead of marking it cancelled. Transient: a pause
         # is not persisted (see `pause`).
         self.pause_current: dict[str, bool] = {"instagram": False, "tiktok": False}
+        # Jobs the user pushed to the back while they were downloading. The run
+        # has to be abandoned first (that is what cancel_current does), and the
+        # run's own exit path sets "cancelled" -- so the id is remembered here
+        # and the worker turns it back into a queued job at the END of the run.
+        # Doing it at request time would be overwritten a second later.
+        self.demote_ids: set[str] = set()
         self.paused = False          # Instagram: user pause, or a 429
         self.tt_paused = False       # TikTok: user pause only
         # Set while a platform is refusing to start work because a drive is
@@ -6031,6 +6037,69 @@ class Engine:
     def move_top(self, job_id: str) -> bool:
         return self.move_to(job_id, 0)
 
+    def demote(self, job_id: str) -> tuple[bool, str]:
+        """Send a job to the back of its platform's queue -- running or not.
+
+        For a RUNNING job this has to abandon the run first: the child process
+        is terminated exactly the way Remove does it, and the job is remembered
+        in `demote_ids` so the worker's exit path turns it back into a queued
+        job at the end of everything else instead of leaving it cancelled. The
+        attempt it burned is returned, because being moved is not a failure, and
+        the pacing gap is skipped so the next profile starts immediately rather
+        than a couple of minutes later.
+
+        Everything else in the queue moves up by one for free: the worker takes
+        the front of `self.pending`, so whatever is first becomes the running
+        download as soon as this run lets go.
+        """
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                return False, "no such job"
+            platform = getattr(job, "platform", "instagram") or "instagram"
+            if job.status == "running":
+                self.demote_ids.add(job_id)
+                self.cancel_current[platform] = True
+                self._terminate_proc(platform)
+                self.current[platform] = None
+                job.message = "moving to the back of the queue…"
+                return True, "moved to the back — the next one starts now"
+            if job.status in ("queued", "retrying"):
+                runnable = [jid for jid in self.pending
+                            if self.jobs.get(jid)
+                            and self.jobs[jid].status in ("queued", "retrying")]
+                if job_id in runnable:
+                    runnable.remove(job_id)
+                runnable.append(job_id)
+                self._rewrite_pending(runnable)
+                job.message = "moved to the back of the queue by you"
+                self.save_state()
+                return True, "moved to the back of the queue"
+            return False, f"that job is {job.status} — only a waiting or running one can be moved back"
+
+    def _finish_demoted(self, platform: str, job) -> None:
+        """Turn a run the user moved back into a queued job at the end.
+
+        Split out of the worker's exit path so it can be tested without a child
+        process: the run marked the job cancelled on its way out, and this is
+        the correction. Must be called with the job's run already over.
+        """
+        self.demote_ids.discard(job.id)
+        job.attempts = max(0, job.attempts - 1)
+        self._set(job, status="queued", finished_at=0.0, error="",
+                  message="moved to the back of the queue by you")
+        with self.lock:
+            runnable = [jid for jid in self.pending
+                        if self.jobs.get(jid)
+                        and self.jobs[jid].status == "queued"]
+            if job.id in runnable:
+                runnable.remove(job.id)
+            runnable.append(job.id)
+            self._rewrite_pending(runnable)
+        # Nothing was downloaded on purpose, so do not make the user sit through
+        # the pacing gap before the next one starts.
+        self._skip_gap[platform] = True
+
     def clear_finished(self) -> int:
         with self.lock:
             gone = [jid for jid, j in self.jobs.items()
@@ -7418,6 +7487,12 @@ class Engine:
                 # Paused mid-profile? Then the job goes back in the queue rather
                 # than being written off as cancelled.
                 self._requeue_paused(platform, job)
+                # Pushed to the back mid-run: the run's exit path marked it
+                # cancelled, so undo that here and place it behind everything
+                # still waiting. The attempt it just burned is given back --
+                # being moved is not a failure.
+                if job.id in self.demote_ids:
+                    self._finish_demoted(platform, job)
                 self._set(job, last_run_seconds=round(time.time() - t0, 1))
                 self.save_state()
 

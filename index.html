@@ -3970,6 +3970,14 @@ function cardHtml(j, pos, qpos){
     const running = j.status==="running"||j.status==="retrying";
 
     const btns=[];
+    // The running job gets the same move-to-the-back the waiting ones have.
+    // It is the one case the arrows could not cover: there is no row order to
+    // move a download within, so this stops it, puts it behind everything
+    // waiting and lets the next profile start at once.
+    if(running){
+      btns.push(`<button class="icon" data-demote="${j.id}"
+        title="Stop this and put it at the back of the queue — the next waiting profile starts now">⤓</button>`);
+    }
     // Every waiting job can be promoted, not just the first few: moving
     // something to the top is the whole point of a priority queue.
     if(isQ){
@@ -4341,6 +4349,19 @@ function wireCards(container){
     const r = await post("/api/requeue",{id:b.dataset.requeue});
     if(r.ok === false) showErr("Could not re-queue that");
     else toast("Re-queued");
+    tick();
+  }));
+  on("[data-demote]", b=>b.onclick=()=>busy(b, async()=>{
+    // A running download cannot be re-ordered, so this is a stop-and-requeue:
+    // say so before it happens, not after.
+    const ok = window.confirm("Move this download to the back of the queue?\n\n"
+      + "It stops now, the next waiting profile starts, and this one goes behind "
+      + "everything else. What it already downloaded stays on disk and is not "
+      + "downloaded again.");
+    if(!ok) return;
+    const r = await post("/api/demote", {id: b.dataset.demote});
+    if(r.ok === false) showErr(r.error || "Could not move that back");
+    else toast(r.message || "Moved to the back of the queue");
     tick();
   }));
   on("[data-remove]", b=>b.onclick=()=>busy(b, async()=>{
