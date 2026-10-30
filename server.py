@@ -3297,10 +3297,50 @@ class Handler(BaseHTTPRequestHandler):
             # The only removal path. It is the same move-to-trash the gallery
             # uses, so every copy lands in that profile's Trash section and can
             # be restored from there -- this never unlinks a file.
+            #
+            # One rule is enforced here, not just in the page: a group of
+            # identical files always keeps at least one copy in main. The page
+            # sends the group membership with the request, and a batch that
+            # would move every main copy of a group is refused outright. This
+            # is the bug that put BOTH copies of a post into Trash and left the
+            # profile showing neither.
             eng = get_engine()
             items = body.get("items") or []
             if not isinstance(items, list) or len(items) > 500:
                 return self._json({"ok": False, "error": "bad items"})
+
+            def _key(profile, platform, name):
+                return f"{profile}|{platform}|{name}"
+
+            group_main: dict[str, set] = {}
+            for g in (body.get("groups") or []):
+                if not isinstance(g, dict):
+                    continue
+                sha = str(g.get("sha") or "")
+                main = {str(x) for x in (g.get("main") or []) if str(x)}
+                if sha and main:
+                    group_main[sha] = main
+            # Everything the batch intends to move, per group, before any file
+            # is touched.
+            moving: dict[str, set] = {}
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                sha = str(it.get("sha") or "")
+                if not sha:
+                    continue
+                who = clean_profile_name(str(it.get("profile") or "")) or ""
+                name = str(it.get("file") or "").rsplit("/", 1)[-1]
+                plat = str(it.get("platform") or "instagram").lower()
+                if who and name:
+                    moving.setdefault(sha, set()).add(_key(who, plat, name))
+            refused: dict[str, str] = {}
+            for sha, keys in moving.items():
+                main = group_main.get(sha)
+                if main and not (main - keys):
+                    refused[sha] = ("that would leave no copy in main — "
+                                    "one copy of every group is always kept")
+
             done, skipped, errors = 0, 0, []
             for it in items:
                 if not isinstance(it, dict):
@@ -3309,11 +3349,17 @@ class Handler(BaseHTTPRequestHandler):
                 who = clean_profile_name(str(it.get("profile") or "")) or ""
                 name = str(it.get("file") or "").rsplit("/", 1)[-1]
                 plat = str(it.get("platform") or "instagram").lower()
+                sha = str(it.get("sha") or "")
                 # A name, never a path: move_media resolves it inside that
                 # profile's own folders, so a crafted item cannot reach outside
                 # the archive.
                 if not who or not name or plat not in ("instagram", "tiktok"):
                     skipped += 1
+                    continue
+                if sha and sha in refused:
+                    skipped += 1
+                    if len(errors) < 5:
+                        errors.append(f"{who}/{name}: {refused[sha]}")
                     continue
                 if str(it.get("section") or "main") != "main":
                     # Already in Trash (or Favourites): left alone, because

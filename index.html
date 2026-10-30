@@ -1802,6 +1802,7 @@ some.profile
     </div>
     <div id="dupList" class="hint" style="margin-top:8px">Not scanned yet.</div>
     <div class="row" id="dupActions" style="display:none;gap:8px;align-items:center;margin-top:8px">
+      <button class="small" id="dupAllBtn">Select all extras</button>
       <button class="small" id="dupTrashBtn">Move selected to Trash</button>
       <span class="hint" id="dupTrashMsg"></span>
     </div>
@@ -5014,20 +5015,24 @@ function dupRender(st){
     return;
   }
   const html = groups.map(function(g, gi){
-    // Keep the oldest copy: it is the one that was there first, and the one a
-    // person is most likely to think of as the original.
+    // The keeper must be a copy that is still in MAIN. It used to be files[0],
+    // and when the first copy was one already sitting in favourites/trash the
+    // only main copy was the one pre-ticked -- so one click put the post away
+    // and the profile showed neither version. A group always keeps one file in
+    // main, and that file is never selectable.
+    let keepAt = g.files.findIndex(function(f){ return f.section === "main"; });
+    if(keepAt < 0) keepAt = 0;
     const rows = g.files.map(function(f, fi){
       const key = dupKey(gi, fi);
-      // A copy already in Trash is never pre-selected: it is set aside on
-      // purpose, and the gallery's own "empty trash" is what removes it.
-      if(fi === 0 || f.section !== "main") DUP.sel.delete(key);
-      else if(!g.seen){ DUP.sel.add(key); }         // default: every main copy but the first
+      // Only a main copy that is not the keeper can be moved. Everything else
+      // is left alone, and a stale selection from an earlier render is dropped.
+      const movable = fi !== keepAt && f.section === "main";
+      if(!movable) DUP.sel.delete(key);
       const on = DUP.sel.has(key);
-      const keep = fi === 0 || f.section !== "main";
-      return '<label class="duprow' + (keep ? ' keep' : '') + '">' +
-        (keep ? '<span class="hint" style="width:13px">keep</span>'
-              : '<input type="checkbox" data-g="' + gi + '" data-i="' + fi + '"' +
-                (on ? ' checked' : '') + '>') +
+      return '<label class="duprow' + (movable ? '' : ' keep') + '">' +
+        (movable ? '<input type="checkbox" data-g="' + gi + '" data-i="' + fi + '"' +
+                (on ? ' checked' : '') + '>'
+              : '<span class="hint" style="width:13px">keep</span>') +
         '<span>' + dupLabel(f) + (f.section === "main" ? '' :
           ' <span class="hint">(not in main — left alone)</span>') + '</span></label>';
     }).join("");
@@ -5095,15 +5100,42 @@ $("dupList").addEventListener("change", function(e){
   if(t.checked) DUP.sel.add(key); else DUP.sel.delete(key);
   dupCount();
 });
+// One click for the whole sweep, and it can only ever tick copies that are not
+// a group's keeper -- the same rule the rows are built with.
+$("dupAllBtn").onclick = function(){
+  const groups = (DUP.report && DUP.report.groups) || [];
+  DUP.sel.clear();
+  groups.forEach(function(g, gi){
+    let keepAt = g.files.findIndex(function(f){ return f.section === "main"; });
+    if(keepAt < 0) keepAt = 0;
+    g.files.forEach(function(f, fi){
+      if(fi !== keepAt && f.section === "main") DUP.sel.add(dupKey(gi, fi));
+    });
+  });
+  dupRender({});
+};
 $("dupTrashBtn").onclick = async function(){
   const groups = (DUP.report && DUP.report.groups) || [];
   const items = [];
+  const groupInfo = [];
   DUP.sel.forEach(function(key){
     const parts = key.split(":");
     const g = groups[+parts[0]], f = g && g.files[+parts[1]];
     if(!f || f.section !== "main") return;
+    const mainCopies = g.files.filter(function(x){ return x.section === "main"; });
+    // One copy always stays in main. A group with a single main copy has
+    // nothing to move, so it is never sent -- that is the invariant, and the
+    // server checks it again rather than trusting this list.
+    if(mainCopies.length < 2) return;
     items.push({profile: f.profile, platform: f.platform,
-                file: f.name, section: f.section});
+                file: f.name, section: f.section, sha: g.sha256});
+  });
+  // The group membership travels with the request so the server can refuse a
+  // batch that would empty a group, not just this page.
+  groups.forEach(function(g){
+    const main = g.files.filter(function(x){ return x.section === "main"; })
+      .map(function(x){ return x.profile + "|" + x.platform + "|" + x.name; });
+    if(g.sha256 && main.length) groupInfo.push({sha: g.sha256, main: main});
   });
   if(!items.length) return;
   if(!confirm("Move " + items.length + " file" + (items.length === 1 ? "" : "s") +
@@ -5119,7 +5151,7 @@ $("dupTrashBtn").onclick = async function(){
     $("dupTrashMsg").textContent =
       "Moving " + Math.min(i + slice.length, items.length) + "/" + items.length + "…";
     let one = null;
-    try { one = await post("/api/dupes/trash", {items: slice}); }
+    try { one = await post("/api/dupes/trash", {items: slice, groups: groupInfo}); }
     catch(e){ one = {ok: false, error: e.message}; }
     if(!one || !one.ok){
       r.errors.push((one && one.error) || "no answer");
