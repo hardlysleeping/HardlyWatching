@@ -28,6 +28,7 @@ import tempfile
 import sys
 import concurrent.futures
 import threading
+import traceback
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -1340,6 +1341,11 @@ PEOPLE_MODEL_PATHS = [
 ]
 _PEOPLE_SESSION = None
 _PEOPLE_LOCK = threading.Lock()
+# Every clip probe is ffprobe plus three ffmpeg seeks, and four scan workers
+# meant twelve decoders at once with ffmpeg defaulting to every core each --
+# the pass was eating the machine. Two slots, one thread per process, keeps it
+# a background job instead of a space heater.
+_FFMPEG_SLOTS = threading.Semaphore(2)
 
 
 def people_model_path() -> Path | None:
@@ -1375,8 +1381,16 @@ def _people_session():
         except Exception:
             return None
         try:
+            # One thread per session on purpose. onnxruntime defaults to a
+            # thread per core, and four scan workers each doing that meant the
+            # pass used the whole machine for a background job. A 640x640
+            # forward pass is 36ms either way.
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = 1
+            opts.inter_op_num_threads = 1
             _PEOPLE_SESSION = ort.InferenceSession(
-                str(model), providers=["CPUExecutionProvider"])
+                str(model), sess_options=opts,
+                providers=["CPUExecutionProvider"])
         except Exception:
             _PEOPLE_SESSION = None
         return _PEOPLE_SESSION
@@ -1431,7 +1445,8 @@ def _ffprobe_seconds(path: Path) -> float:
     """How long the clip is, or 0 when ffprobe cannot say."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            ["nice", "-n", "15", "ffprobe", "-v", "error", "-threads", "1",
+             "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", str(path)],
             capture_output=True, text=True, timeout=30)
         return max(0.0, float((r.stdout or "0").strip() or 0))
@@ -1459,10 +1474,12 @@ def video_frames(path: Path, count: int = PEOPLE_VIDEO_FRAMES,
         at = max(0.0, dur * frac)
         dst = outdir / f"f{i}.jpg"
         try:
-            r = subprocess.run(
-                ["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.3f}", "-i", str(path),
-                 "-frames:v", "1", "-q:v", "3", str(dst)],
-                capture_output=True, timeout=60)
+            with _FFMPEG_SLOTS:
+                r = subprocess.run(
+                    ["nice", "-n", "15", "ffmpeg", "-v", "error", "-threads", "1", "-y",
+                     "-ss", f"{at:.3f}", "-i", str(path),
+                     "-frames:v", "1", "-q:v", "3", str(dst)],
+                    capture_output=True, timeout=60)
         except Exception:
             return None
         if r.returncode == 0 and dst.is_file() and dst.stat().st_size > 0:
@@ -3410,6 +3427,9 @@ def people_scan_profile(self, username: str, platform: str = "instagram",
     batch: list[tuple] = []
     workers = max(1, min(8, int(workers or 1)))
 
+    def stop_wanted() -> bool:
+        return bool(self._people_scan.get("stop"))
+
     def flush() -> None:
         # Publish as it goes, not at the end of the profile: a big profile takes
         # minutes, and a counter that sits at 0 for all of it reads as "stuck".
@@ -3526,29 +3546,63 @@ def _people_worker(self, workers: int = 4, only=None) -> None:
     that is the "scan this one profile" button. The whole-archive pass is the
     same worker with `only` left out, so there is one implementation of the
     walk, the stop and the resume.
+
+    `only` arrives as 2-tuples and the walk needs a folder, so it is normalised
+    here. Unpacking it directly raised "not enough values to unpack (expected 3,
+    got 2)" the instant a per-profile scan started -- the pass died before its
+    first picture, which is why the button never did anything.
     """
     st = self._people_scan
+
+    def log(msg: str) -> None:
+        """One line per event, in a file, so a pass that stops early says why.
+
+        The counters alone cannot tell "it finished" from "it died on profile
+        two": both leave running = false and an empty error.
+        """
+        try:
+            path = STATE_FILE.parent / "people-scan.log"
+            if path.exists() and path.stat().st_size > 1_000_000:
+                path.unlink()
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+        except Exception:
+            pass
+
+    reason = "done"
     try:
-        profiles = (list(only) if only else
+        profiles = ([(u, p, "") for u, p, *_rest in only] if only else
                     [(u, p, f) for u, p, f in self._profile_folders()])
         st["profiles_total"] = len(profiles)
         st["profiles_done"] = 0
+        log(f"start: {len(profiles)} profiles, workers={workers}, only={only}")
         for username, platform, _folder in profiles:
             if st.get("stop"):
+                reason = "stopped by you"
+                log(f"stop requested at {platform}:{username}")
                 break
             st["profile"] = f"{platform}:{username}"
+            t0 = time.time()
             try:
                 res = self.people_scan_profile(username, platform, workers)
             except Exception as exc:
                 st["error"] = f"{username}: {exc}"
+                log(f"ERROR {platform}:{username} {type(exc).__name__}: {exc}")
+                traceback.print_exc()
                 res = {}
+            log(f"profile {platform}:{username} checked={res.get('checked')} "
+                f"skipped={res.get('skipped')} in {time.time() - t0:.1f}s")
             # checked/clean/with_people were published by people_scan_profile
             # as it wrote each batch; only the profile count is the worker's.
             st["skipped"] += int(res.get("skipped") or 0)
             st["profiles_done"] += 1
-    except Exception as exc:
+    except BaseException as exc:            # noqa: BLE001 - log why it ended
         st["error"] = str(exc)
+        reason = f"died: {type(exc).__name__}: {exc}"
+        log(reason)
+        traceback.print_exc()
     finally:
+        log(f"end: {reason}, {st.get('profiles_done')}/{st.get('profiles_total')} profiles")
         st["running"] = False
         st["stop"] = False
         st["profile"] = ""
