@@ -249,6 +249,31 @@
      the rows below them level. */
   .col-left > .section-head,
   #doneSection > .section-head{min-height:30px;align-items:center}
+  /* The two heads sit in columns of different widths, and a head that wraps
+     pushes its own search box and list down while the other column stays put --
+     which reads as the two lists being out of line. On TikTok the waiting head
+     also carries "Clear queue", so the finished head ran out of room first.
+     Above the stacking breakpoint neither head may wrap: the buttons are a
+     touch smaller, and the count line gives up width with an ellipsis rather
+     than shoving a control onto a second row. */
+  @media (min-width:901px){
+    .col-left > .section-head,
+    #doneSection > .section-head{flex-wrap:nowrap;gap:8px}
+    .col-left > .section-head .hint,
+    #doneSection > .section-head .hint{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .col-left > .section-head button.small,
+    #doneSection > .section-head button.small{flex:none;font-size:11.5px;padding:2px 7px;white-space:nowrap}
+  }
+  /* In a split window the finished head is the tightest row on the page: four
+     controls beside a title and a count. A point smaller there is the
+     difference between the count reading "2072 done · 1–10" and trailing off
+     into an ellipsis. */
+  @media (min-width:901px) and (max-width:1120px){
+    .col-left > .section-head button.small,
+    #doneSection > .section-head button.small{font-size:11px;padding:2px 6px;gap:4px}
+    .col-left > .section-head,
+    #doneSection > .section-head{gap:7px}
+  }
   #failSection{margin-bottom:24px}
   /* The queue and the finished list are different lengths, so the gap above
      them has to come from the layout, not from whichever head happens to be
@@ -3600,7 +3625,10 @@ function render(st){
   const clearQ = $("clearQueueBtn");
   if(clearQ){
     clearQ.style.display = queued.length ? "" : "none";
-    clearQ.textContent = queued.length > 1 ? `Clear queue (${queued.length})` : "Clear queue";
+    // Short label: the head is a single row and the count is already spelled
+    // out beside it. The number rides on the button for the confirm dialog.
+    clearQ.dataset.n = queued.length;
+    clearQ.textContent = "Clear queue";
   }
 
   // Waiting list. Paged and searchable: with hundreds queued, rendering every
@@ -3737,7 +3765,10 @@ function paintPager(key, total, _hint, hintEl, noun){
 
   const hint = hintEl || $(key === "done" ? "doneHint" : "queueHint");
   if(hint){
-    const showing = count ? `showing ${ui.page * ui.size + 1}–${Math.min((ui.page + 1) * ui.size, count)}` : "none";
+    // "showing 1–10" spelled out costs ~45px that the finished head does not
+    // have once TikTok's Clear queue sits in the waiting head; the range alone
+    // reads the same with the pager underneath saying "page 1 / 208".
+    const showing = count ? `${ui.page * ui.size + 1}–${Math.min((ui.page + 1) * ui.size, count)}` : "none";
     hint.textContent = ui.q
       ? `${count} of ${all} match`
       : `${all} ${noun || ""}`.trim() + (count ? ` · ${showing}` : "");
@@ -4619,7 +4650,7 @@ $("clearFinishedBtn").onclick = async () => {
 $("clearQueueBtn").onclick = async () => {
   // Say exactly what happens, because "clear" on a downloader reads like
   // "delete". It is a move to Finished, and nothing on disk is touched.
-  const n = ($("clearQueueBtn").textContent.match(/\((\d+)\)/) || [])[1];
+  const n = $("clearQueueBtn").dataset.n || "";
   if(!confirm(`Move ${n ? n + " waiting profile" + (n === "1" ? "" : "s") : "every waiting profile"} to Finished?\n\n`
             + `Nothing is deleted. Files already downloaded stay where they are, `
             + `and any cleared profile can be re-queued from Finished.`)) return;
