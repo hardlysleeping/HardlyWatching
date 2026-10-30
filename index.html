@@ -5923,9 +5923,9 @@ function paintPeopleScan(st){
   }else{
     b.textContent = done ? `👤 ${done.toLocaleString()} checked` : "👤 Scan for people";
     b.title = done
-      ? `${done.toLocaleString()} pictures checked (${(tot.with_people || 0).toLocaleString()} have somebody in them). `
+      ? `${done.toLocaleString()} pictures and clips checked (${(tot.with_people || 0).toLocaleString()} have somebody in them). `
         + `Tap to continue where it left off.`
-      : "Mark every picture as having somebody in it or not, so a profile can be filtered to the empty ones. "
+      : "Mark every picture and clip as having somebody in it or not, so a profile can be filtered to the empty ones. "
         + "Runs one profile at a time and saves as it goes.";
     b.classList.remove("on");
     b.disabled = false;
@@ -5956,7 +5956,7 @@ function paintPplScanBtn(){
     b.title = "Scanning this profile. Progress is saved per picture; stopping loses nothing.";
   } else {
     b.textContent = "👤 Scan";
-    b.title = "Mark every picture here as having somebody in it or not, "
+    b.title = "Mark every picture and clip here as having somebody in it or not, "
       + "so this profile can be filtered to the empty ones.";
   }
 }
@@ -6050,6 +6050,12 @@ function buildAllBar(profileCount){
             bmCat = "all"; renderBookmarks(); }));
   bar.appendChild(mk("🗑 All Trash", gAll === "trash",
     () => { gAll = "trash"; gProfile = null; gPlatform = "instagram"; renderAllSection("trash"); }));
+  // Every people-free post in the archive, in one grid: the per-profile chip
+  // answers "what in THIS folder has nobody in it", which still means opening
+  // 200 folders to find out. Unknown posts are not here -- only judged ones.
+  bar.appendChild(mk("👤 No people", gAll === "nopeople",
+    () => { gAll = "nopeople"; gProfile = null; gPlatform = "instagram";
+            renderAllSection("nopeople"); }));
   bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
     // Opened from inside a profile, the timeline stays on that profile -- the
     // same way Shorts opens limited when you arrive from a profile. Opened from
@@ -8955,8 +8961,8 @@ function drawPhotos(username, sec){
   pplBtn.className = "small";
   pplBtn.id = "pplScanBtn";
   pplBtn.textContent = "👤 Scan";
-  pplBtn.title = "Mark every picture here as having somebody in it or not, "
-    + "so this profile can be filtered to the empty ones. Saves as it goes.";
+  pplBtn.title = "Mark every picture and clip here as having somebody in it or not, "
+    + "so this profile can be filtered to the empty ones. Clips are judged from three stills. Saves as it goes.";
   pplBtn.onclick = async () => {
     const st = (gPeopleScan && gPeopleScan.running) ? gPeopleScan : null;
     if(st){

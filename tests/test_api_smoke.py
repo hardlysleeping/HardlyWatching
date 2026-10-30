@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 import unittest
+from pathlib import Path
 
 try:  # imported as `tests.test_api_smoke` (discover from the repo root)
     from . import sandbox
@@ -1033,6 +1035,85 @@ class TaggedPostTests(SandboxCase):
             self.assertEqual(p["section"], "favorites")
 
 
+class PeopleClipTests(unittest.TestCase):
+    """A clip is judged from stills taken out of it, not skipped."""
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+            raise unittest.SkipTest("needs ffmpeg and ffprobe")
+        import subprocess
+        cls.tmp = Path(tempfile.mkdtemp(prefix="hw-clip-"))
+        cls.clip = cls.tmp / "clip.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                        "-i", "color=c=black:s=320x240:d=3", "-pix_fmt", "yuv420p",
+                        str(cls.clip)], check=True)
+        cls.junk = cls.tmp / "junk.mp4"
+        cls.junk.write_bytes(b"not a video" * 40)
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_frames_are_taken_from_across_the_clip(self):
+        import engine as E
+        frames = E.video_frames(self.clip)
+        self.addCleanup(E.cleanup_video_frames, frames)
+        self.assertEqual(len(frames), E.PEOPLE_VIDEO_FRAMES)
+        for f in frames:
+            self.assertTrue(f.is_file() and f.stat().st_size > 0)
+
+    def test_a_clean_clip_is_clean_and_every_frame_is_looked_at(self):
+        import engine as E
+        seen = []
+
+        def fake(path):
+            seen.append(Path(path).name)
+            return (0, 0.02)
+
+        old = E._people_probe_image
+        self.addCleanup(setattr, E, "_people_probe_image", old)
+        E._people_probe_image = fake
+        self.assertEqual(E.people_probe(self.clip)[0], 0)
+        self.assertEqual(len(seen), E.PEOPLE_VIDEO_FRAMES,
+                         "a clip judged clean must have had all its frames read")
+
+    def test_one_person_in_one_frame_is_enough(self):
+        import engine as E
+        seen = []
+
+        def fake(path):
+            seen.append(Path(path).name)
+            return (1, 0.91) if len(seen) == 2 else (0, 0.02)
+
+        old = E._people_probe_image
+        self.addCleanup(setattr, E, "_people_probe_image", old)
+        E._people_probe_image = fake
+        self.assertEqual(E.people_probe(self.clip)[0], 1)
+        self.assertEqual(len(seen), 2, "it kept decoding frames after finding a person")
+
+    def test_an_unreadable_clip_is_unknown_not_clean(self):
+        import engine as E
+        self.assertIsNone(E.people_probe(self.junk))
+        self.assertIsNone(E.people_probe(Path("/nonexistent/clip.mp4")))
+
+    def test_pictures_do_not_go_through_ffmpeg(self):
+        # The dispatcher must not hand a .jpg to ffprobe: a picture is decoded
+        # by Pillow, and paying two subprocesses per photo would make the whole
+        # pass an order of magnitude slower.
+        import engine as E
+        img = self.tmp / "a.jpg"
+        img.write_bytes(b"x" * 10)
+        calls = []
+        old_img = E._people_probe_image
+        self.addCleanup(setattr, E, "_people_probe_image", old_img)
+        E._people_probe_image = lambda p: (calls.append(p) or (0, 0.01))
+        self.assertEqual(E.people_probe(img), (0, 0.01))
+        self.assertEqual(calls, [img], "a picture took the clip path")
+
+
 class PeoplePassTests(SandboxCase):
     """The people pass: per-picture verdicts, per-profile runs, resumable."""
 
@@ -1087,20 +1168,22 @@ class PeoplePassTests(SandboxCase):
         eng = self.engine(root)
 
         first = eng.people_scan_profile("ppl")
-        self.assertEqual(first["checked"], 3, "only pictures are looked at")
+        # Three pictures and the clip: a video is looked at now, from stills.
+        # (The model is faked here, so the clip answers like a picture does.)
+        self.assertEqual(first["checked"], 4)
         self.assertEqual(first["people"], 1)
-        self.assertEqual(first["clean"], 2)
+        self.assertEqual(first["clean"], 3)
 
         # Second run has nothing to do: the answers are already stored.
         second = eng.people_scan_profile("ppl")
         self.assertEqual(second["checked"], 0, "the pass redid work it had done")
-        self.assertEqual(len(seen), 3, "a picture was probed twice")
+        self.assertEqual(len(seen), 4, "a file was probed twice")
 
         posts = {p["post"]: p for p in eng.gallery_posts("ppl", "main")}
         self.assertIs(posts["2024-05-01_12-00-00_UTC"]["people"], True)
         self.assertIs(posts["2024-05-02_12-00-00_UTC"]["people"], False)
-        self.assertIsNone(posts["2024-05-04_12-00-00_UTC"]["people"],
-                          "a video is not something the pass judged")
+        self.assertIs(posts["2024-05-04_12-00-00_UTC"]["people"], False,
+                      "a clip nobody was found in counts as clean")
 
     def test_progress_is_visible_while_a_profile_is_still_running(self):
         # A big profile takes minutes. If the counter only moves when the profile

@@ -24,6 +24,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import sys
 import concurrent.futures
 import threading
@@ -1325,6 +1326,12 @@ def _walk_bytes(folder: Path) -> int:
 # the same as clean and is never shown as such.
 PEOPLE_CONF = 0.25
 PEOPLE_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+# Clips are judged from stills taken out of them, because the detector reads one
+# frame at a time. Three, spread across the clip, is the cheap end that still
+# catches a person who walks in halfway through: a 30s video costs about 0.2s
+# to sample and 0.1s to look at, so a 200-video profile is under a minute.
+PEOPLE_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"}
+PEOPLE_VIDEO_FRAMES = 3
 PEOPLE_MODEL_PATHS = [
     Path(os.environ.get("AI_PEOPLE_MODEL", "")) if os.environ.get("AI_PEOPLE_MODEL") else None,
     Path.home() / ".ai-tools" / "models" / "yolov8n.onnx",
@@ -1374,7 +1381,7 @@ def _people_session():
         return _PEOPLE_SESSION
 
 
-def people_probe(path: Path) -> tuple[int, float] | None:
+def _people_probe_image(path: Path) -> tuple[int, float] | None:
     """(1 if somebody is in this picture else 0, best person score), or None.
 
     None means "could not be looked at" -- an unreadable file, a format Pillow
@@ -1417,6 +1424,110 @@ def people_probe(path: Path) -> tuple[int, float] | None:
         return 0, float(best_score.max())
     except Exception:
         return None
+
+
+def _ffprobe_seconds(path: Path) -> float:
+    """How long the clip is, or 0 when ffprobe cannot say."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=30)
+        return max(0.0, float((r.stdout or "0").strip() or 0))
+    except Exception:
+        return 0.0
+
+
+def video_frames(path: Path, count: int = PEOPLE_VIDEO_FRAMES,
+                 outdir: Path | None = None) -> list[Path]:
+    """Stills taken out of a clip at 10%, 50% and 90% of its length.
+
+    Seeking to a timestamp rather than decoding from the start keeps this cheap
+    on a long video. An empty list means the clip could not be read at all --
+    the caller must treat that as "not looked at", never as "nobody in it".
+    """
+    dur = _ffprobe_seconds(path)
+    if dur <= 0:
+        return []
+    made: list[Path] = []
+    outdir = outdir or Path(tempfile.mkdtemp(prefix="hw-people-"))
+    n = max(1, int(count))
+
+    def grab(i: int) -> Path | None:
+        frac = (i + 0.5) / n            # 1/6, 1/2, 5/6 of the clip
+        at = max(0.0, dur * frac)
+        dst = outdir / f"f{i}.jpg"
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.3f}", "-i", str(path),
+                 "-frames:v", "1", "-q:v", "3", str(dst)],
+                capture_output=True, timeout=60)
+        except Exception:
+            return None
+        if r.returncode == 0 and dst.is_file() and dst.stat().st_size > 0:
+            return dst
+        return None
+
+    # The seeks run together: they are separate processes waiting on the disk,
+    # and three in a row was the whole cost of judging a clip (~1.2s each).
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
+        for got in pool.map(grab, range(n)):
+            if got is not None:
+                made.append(got)
+    made.sort(key=lambda p: p.name)
+    return made
+
+
+def cleanup_video_frames(frames: list[Path]) -> None:
+    """Delete the stills taken out of a clip, and their folder."""
+    dirs = set()
+    for f in frames:
+        try:
+            dirs.add(Path(f).parent)
+            Path(f).unlink()
+        except OSError:
+            pass
+    for d in dirs:
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+
+def people_probe_video(path: Path) -> tuple[int, float] | None:
+    """(1 if somebody is in any sampled frame else 0, best person score), or None.
+
+    A person anywhere in the clip means the clip has a person: the filter exists
+    to find material with nobody in it, so one clean frame out of three is not
+    enough to call the clip empty. None (unreadable, no frames, no model) stays
+    distinct from 0 for the same reason it does for a picture.
+    """
+    frames = video_frames(path)
+    if not frames:
+        return None
+    try:
+        looked = 0
+        best = 0.0
+        for f in frames:
+            got = _people_probe_image(f)
+            if got is None:
+                continue
+            looked += 1
+            best = max(best, got[1])
+            if got[0] == 1:
+                return 1, got[1]      # one person is enough; stop looking
+        if not looked:
+            return None
+        return 0, best
+    finally:
+        cleanup_video_frames(frames)
+
+
+def people_probe(path: Path) -> tuple[int, float] | None:
+    """Judge one file, picture or clip. None = not looked at."""
+    if Path(path).suffix.lower() in PEOPLE_VIDEO_EXTS:
+        return people_probe_video(Path(path))
+    return _people_probe_image(Path(path))
 
 
 def profile_bytes(folder: Path, nfiles: int = -1) -> int:
@@ -2146,8 +2257,8 @@ def _attach_people(self, folder: Path, posts: list[dict]) -> list[dict]:
     The verdicts are per FILE in profiles.db; a post is the sum of its pictures:
     anybody in any part means the post has people. Three rules keep it honest:
 
-      * a post with a video part is None, not False -- the pass only looks at
-        pictures, and calling a video "no people" would be a guess;
+      * a post with a clip part is judged from stills taken out of that clip,
+        so a clip nobody was found in counts as clean like a picture does;
       * a part with no verdict is None, so a half-scanned folder never shows as
         "nobody here";
       * a verdict recorded for a different file SIZE is ignored -- the picture
@@ -2160,8 +2271,10 @@ def _attach_people(self, folder: Path, posts: list[dict]) -> list[dict]:
         verdicts: list[int] | None = [] if known else None
         if verdicts is not None:
             for item in p.get("items") or []:
-                if item.get("kind") != "image":
-                    verdicts = None       # a clip: not something the pass judged
+                # Pictures and clips are both judged now; anything else (a
+                # sidecar, a missing part) has no verdict and stays unknown.
+                if item.get("kind") not in ("image", "video"):
+                    verdicts = None
                     break
                 rec = known.get(str(folder / item.get("file", "")))
                 if rec is None or (item.get("bytes") and rec[0] != item["bytes"]):
@@ -2402,6 +2515,9 @@ def timeline_month(self, month: str, offset: int = 0,
 FAVORITES_DIR = "favorites"
 TRASH_DIR = "trash"
 SUBDIRS = (FAVORITES_DIR, TRASH_DIR)
+# Not a folder: a filter across every profile, for the one view that
+# answers "show me everything with nobody in it".
+NOBODY_SECTION = "nopeople"
 
 # A dotfile inside each profile folder listing the media that was there last
 # time we looked. It lets us notice files you deleted from the file manager and
@@ -3098,6 +3214,50 @@ def _profile_folders(self) -> list[tuple[str, str, Path]]:
     return out
 
 
+def people_free_posts(self) -> list[dict]:
+    """Every post in the archive with nobody in it, newest first.
+
+    Built from the verdicts in profiles.db rather than by walking folders:
+    the table already holds every judged file with its size, and walking 2,279
+    folders to rebuild that took over two minutes (a sidecar read per post).
+    Only files the pass actually judged clean are here -- a file with no
+    verdict is unknown, and unknown is not shown as people-free.
+
+    A post is its files: the carousel parts of one stamp arrive together, and
+    a stamp whose files were only partly judged is judged by the parts that
+    were, which is the same rule _attach_people applies per folder.
+    """
+    try:
+        rows = _pdb._shared_db().people_clean()
+    except Exception:
+        return []
+    grouped: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    for path, size in rows:
+        p = Path(path)
+        m = POST_RE.match(p.name)
+        stamp = m.group("stamp") if m else p.stem
+        grouped.setdefault((str(p.parent), stamp), []).append((p.name, size))
+    out: list[dict] = []
+    for (folder, stamp), parts in grouped.items():
+        prof_dir = Path(folder)
+        platform = "tiktok" if f"{os.sep}tiktok{os.sep}" in folder else "instagram"
+        items = [{"file": name,
+                  "kind": "video" if Path(name).suffix.lower() in PEOPLE_VIDEO_EXTS
+                          else "image",
+                  "bytes": size}
+                 for name, size in sorted(parts)]
+        out.append({"post": stamp,
+                    "ts": _parse_filename_date(stamp),
+                    "count": len(items),
+                    "items": items,
+                    "people": False,
+                    "section": NOBODY_SECTION,
+                    "username": prof_dir.name,
+                    "platform": platform})
+    out.sort(key=lambda p: p["ts"], reverse=True)
+    return out
+
+
 def gallery_all(self, section: str) -> list[dict]:
     """Every profile's posts for one section, across the whole archive.
 
@@ -3115,6 +3275,8 @@ def gallery_all(self, section: str) -> list[dict]:
     Instagram root and found nothing) and every profile whose job was not exactly
     `done`, which is why All Trash could be empty while profile trash was full.
     """
+    if section == NOBODY_SECTION:
+        return self.people_free_posts()
     if section not in SUBDIRS:
         return []
     out = []
@@ -3167,7 +3329,7 @@ def people_scan_profile(self, username: str, platform: str = "instagram",
     if folder is None or not folder.is_dir():
         return out
     names = [n for n in _gallery_media(folder)
-             if Path(n).suffix.lower() in PEOPLE_IMG_EXTS]
+             if Path(n).suffix.lower() in (PEOPLE_IMG_EXTS | PEOPLE_VIDEO_EXTS)]
     if not names:
         return out
     db = _pdb._shared_db()
@@ -4738,6 +4900,7 @@ class Engine:
     _note_saved_failures = _note_saved_failures
     _people_worker = _people_worker
     _attach_people = _attach_people
+    people_free_posts = people_free_posts
     clear_trash = clear_trash
     list_tombstones = list_tombstones
     remove_tombstone = remove_tombstone

@@ -1322,6 +1322,19 @@ class ProfileDB:
                 (prefix + "%",)).fetchall()
         return {r["path"]: (r["size"], r["people"]) for r in rows}
 
+    def people_clean(self) -> list[tuple[str, int]]:
+        """[(path, size)] for every file judged to have nobody in it.
+
+        The one query behind the archive-wide "No people" view. Walking every
+        profile folder to build that list took over two minutes -- 2,279
+        folders and a sidecar read per post -- while the answers were already
+        in this table. A file with no verdict is not here: unknown is not clean.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT path, size FROM people WHERE people = 0").fetchall()
+        return [(r["path"], int(r["size"] or 0)) for r in rows]
+
     def people_set_many(self, rows: list[tuple]) -> None:
         """rows: [(path, size, has_people, score)] -- one commit for the batch."""
         if not rows:

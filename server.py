@@ -1912,7 +1912,7 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
             section = (q.get("section") or [""])[0]
-            if section not in ("favorites", "trash"):
+            if section not in ("favorites", "trash", "nopeople"):
                 return self.send_error(400)
             # Liked is the favourites folder plus every clip liked in the viewer
             # (gallery_all joins the two); trash is a folder like any other.
