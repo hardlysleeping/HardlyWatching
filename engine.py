@@ -5724,6 +5724,60 @@ class Engine:
                            f"stopped after {PHOTO_LIMIT} on purpose)")
         return posts, images
 
+    def _adopt_stale_photos(self, tmp: Path, target_dir: Path, job: Job) -> int:
+        """Move photo posts an interrupted run left in `.photos` into the folder.
+
+        The tool writes images and their sidecar into that hidden temp folder and
+        the pass moves them out when it is done. A run stopped in between leaves
+        a COMPLETE post sitting there: invisible to the gallery (a dot-directory)
+        and re-fetched on the next run, because the folder scan that decides
+        "already have this id" only looks at files in the profile folder.
+
+        A post is complete when its `.info.json` is there -- the tool writes the
+        images first and the sidecar last -- so a set without one is a partial
+        fetch and is dropped rather than adopted.
+        """
+        try:
+            entries = [p for p in tmp.iterdir() if p.is_file()]
+        except OSError:
+            return 0
+        if not entries:
+            return 0
+        # The id is what comes before the first "_" or ".": `<id>.jpg`,
+        # `<id>_2.jpg` and `<id>.info.json` are one post. (Splitting on the
+        # last dot instead made `_2.jpg` look like its own post, so a complete
+        # set had its extra frames deleted as "partial".)
+        def pid(name: str) -> str:
+            return name.split("_", 1)[0].split(".", 1)[0]
+
+        complete = {pid(p.name) for p in entries if p.name.endswith(".info.json")}
+        moved = dropped = 0
+        for src in entries:
+            stem = pid(src.name)
+            if stem not in complete:
+                try:
+                    src.unlink()
+                    dropped += 1
+                except OSError:
+                    pass
+                continue
+            try:
+                shutil.move(str(src), str(target_dir / src.name))
+                moved += 1
+            except OSError:
+                pass
+        try:
+            tmp.rmdir()
+        except OSError:
+            pass
+        if moved:
+            self._log(job, f"{moved} file(s) from an interrupted photo pass were "
+                           f"still in .photos -- moved into the profile folder")
+        if dropped:
+            self._log(job, f"{dropped} partial file(s) from an interrupted photo "
+                           f"pass dropped")
+        return moved
+
     def _grab_profile_photos(self, job: Job, target_dir: Path,
                              count: int = 0) -> tuple[int, int]:
         """Take the photo posts a profile download could not fetch.
@@ -5776,6 +5830,8 @@ class Engine:
         self._log(job, f"{len(todo)} post(s) have no file — checking them for photo "
                        f"posts (a TikTok slideshow has no video to fetch)")
         tmp = target_dir / ".photos"
+        # Anything a previous run left behind is a finished post, not scratch.
+        self._adopt_stale_photos(tmp, target_dir, job)
         try:
             rows = tt.photo_posts(asked, cookies=self._photo_cookies(),
                                   out=tmp, limit=PHOTO_LIMIT)
