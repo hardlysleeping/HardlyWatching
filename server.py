@@ -2408,6 +2408,9 @@ class Handler(BaseHTTPRequestHandler):
                 workers = max(1, min(8, int(body.get("workers") or 3)))
             except (TypeError, ValueError):
                 workers = 3
+            # `force` re-tags files that already have a row: a changed prompt
+            # never reaches them otherwise, because resume skips by (path,size).
+            force = bool(body.get("force"))
             eng = get_engine()
             folders: list[tuple] = []
             for pl in ([plat] if plat in ("instagram", "tiktok")
@@ -2425,7 +2428,7 @@ class Handler(BaseHTTPRequestHandler):
                         folders.append((eng._platform_folder(base, pl) / spelling, pl))
             if not folders:
                 return self._json({"ok": False, "error": "no such profile"})
-            return self._json(tagging.start_pass(folders, limit, workers))
+            return self._json(tagging.start_pass(folders, limit, workers, force))
         if p == "/api/tags/scan/stop":
             import tagging
             return self._json(tagging.stop_pass())

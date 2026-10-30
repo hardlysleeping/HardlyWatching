@@ -295,17 +295,22 @@ def owner_name(profile_dir: Path, platform: str = "instagram") -> str:
 # What is in the frame -- the model
 # --------------------------------------------------------------------------- #
 
+# The tags ARE the people. A picture of Kendall Jenner gets the tag
+# "kendall jenner" and nothing else is asked for: descriptive words (indoor,
+# selfie, makeup) describe every picture in this archive and answer nothing
+# when he wants to find a person.
 PROMPT = (
-    "You label photos for a personal archive. Answer with ONLY compact JSON, no prose:\n"
-    '{"people": ["Full Name"], "gender": "female", "tags": ["tag"], "caption": "one sentence"}\n'
-    "people: real, publicly known people you actually recognise (celebrities, actors, "
-    "musicians, models, athletes, influencers). Common public name. If you do not "
-    "recognise someone, return an empty list -- never guess.\n"
-    "gender: who the main subject is -- exactly one of \"male\", \"female\", \"mixed\" "
-    "(both sexes present), \"none\" (no person in frame). Required on every answer.\n"
-    "tags: 5 to 10 lowercase single words or short phrases for setting, clothing, "
-    "activity, mood, colours and shot type.\n"
-    "caption: one plain sentence."
+    "You name the people in photos for a personal archive. Answer with ONLY "
+    "compact JSON, no prose:\n"
+    '{"people": ["full name"], "gender": "female"}\n'
+    "people: every real, publicly known person you can identify in the picture -- "
+    "celebrities, actors, musicians, models, athletes, influencers. One entry per "
+    "person, lowercase, the full name as the person is publicly known "
+    "(\"kendall jenner\", never \"kendall\" or a description). Never invent a name: "
+    "return an empty list if you cannot identify anyone.\n"
+    "gender: who the main subject is -- exactly one of \"male\", \"female\", "
+    "\"mixed\" (both sexes present), \"none\" (no person in frame). Required on "
+    "every answer."
 )
 
 GENDERS = ("male", "female", "mixed", "none")
@@ -393,7 +398,13 @@ def _names(d: dict) -> list[str]:
 
 
 def tag_media(path: Path, owner: str = "", cfg: dict | None = None) -> dict:
-    """Tags for one file. Owner is a fact; other names need two models to agree."""
+    """Tags for one file: the people in it, by name.
+
+    The model's names ARE the tags -- that is the whole feature. The owner's
+    name is added from the sidecar by `_store()` (a fact, never a guess), so a
+    picture of Kendall Jenner on her own account and the same picture on a fan
+    account both carry `kendall jenner`.
+    """
     cfg = cfg or settings()
     img = _payload_bytes(path)
     if img is None:
@@ -404,17 +415,13 @@ def tag_media(path: Path, owner: str = "", cfg: dict | None = None) -> dict:
         return {"error": "no answer"}
     if "__error__" in first:
         return {"error": first["__error__"]}
-    tags = [_norm(t) for t in (first.get("tags") or []) if _norm(t)]
-    caption = str(first.get("caption") or "")[:300]
     # Gender is asked for on every picture and forced into the tag list, so
     # "hide male" is a filter and not a hope. The model is told it is required;
     # anything outside the four words is dropped rather than stored as-is.
     gender = str(first.get("gender") or "").strip().lower()
     if gender not in GENDERS:
         gender = ""
-    if gender and cfg.get("gender_tags", True) and gender not in tags:
-        tags.append(gender)
-    named = [n for n in _names(first) if n.lower() != (owner or "").lower()]
+    named = _names(first)
     confirmed: list[str] = []
     check = cfg.get("check_model") or ""
     if named and check and check != model:
@@ -423,12 +430,14 @@ def tag_media(path: Path, owner: str = "", cfg: dict | None = None) -> dict:
         if second and "__error__" not in second:
             other = {n.lower() for n in _names(second)}
             confirmed = [n for n in named if n.lower() in other]
-    elif named:
-        # One model, no cross-check: Karakeep's behaviour. The name is stored as
-        # the model gave it -- which is why the owner's name, read from the
-        # sidecar, stays the one name that is certainly right.
+    else:
+        # One model, no cross-check: its names are taken as given.
         confirmed = named
-    return {"tags": tags[:13], "people": confirmed, "caption": caption,
+    tags = [_norm(n) for n in confirmed if _norm(n)]
+    if gender and cfg.get("gender_tags", True) and gender not in tags:
+        tags.append(gender)
+    return {"tags": tags[:13], "people": confirmed,
+            "caption": str(first.get("caption") or "")[:300],
             "gender": gender, "model": model}
 
 
@@ -515,12 +524,14 @@ def _store(path: Path, size: int, mtime: float, owner: str, res: dict) -> None:
 
 
 def scan_profile(folder: Path, platform: str = "instagram", limit: int = 0,
-                 workers: int = 3, progress=None, stop=None) -> dict:
+                 workers: int = 3, progress=None, stop=None,
+                 force: bool = False) -> dict:
     """Tag every untagged file in one profile folder.
 
     Per profile, not per archive: it is small enough to stop between profiles,
     and every row is committed as it is produced, so an interrupted pass resumes
-    where it left off.
+    where it left off. `force` ignores what is already stored, which is the only
+    way a changed prompt reaches files tagged under the old one.
     """
     out = {"folder": folder.name, "platform": platform, "tagged": 0, "skipped": 0,
            "failed": 0, "seconds": 0.0, "people": {}}
@@ -529,7 +540,7 @@ def scan_profile(folder: Path, platform: str = "instagram", limit: int = 0,
         files.extend(_media_files(d))
     if not files:
         return out
-    known = _known(files)
+    known = {} if force else _known(files)
     todo: list[Path] = []
     for p in files:
         try:
@@ -743,7 +754,7 @@ def stop_pass() -> dict:
 
 
 def start_pass(folders: list[tuple[Path, str]], limit: int = 0,
-               workers: int = 3) -> dict:
+               workers: int = 3, force: bool = False) -> dict:
     """Tag the given profile folders in the background, one profile at a time.
 
     A profile is the unit: it is small enough to stop between two of them, and
@@ -757,6 +768,7 @@ def start_pass(folders: list[tuple[Path, str]], limit: int = 0,
                       "skipped": 0, "total": 0, "profiles_done": 0,
                       "profiles_total": len(folders), "started": time.time(),
                       "finished": 0.0, "error": "", "last": "",
+                      "force": bool(force),
                       "profile": "", "platform": ""})
 
     def run() -> None:
@@ -770,7 +782,8 @@ def start_pass(folders: list[tuple[Path, str]], limit: int = 0,
                 try:
                     res = scan_profile(folder, plat, limit, workers,
                                        progress=_on_progress,
-                                       stop=lambda: bool(_PASS["stop"]))
+                                       stop=lambda: bool(_PASS["stop"]),
+                                       force=force)
                 except Exception as e:                  # one bad profile must not end the pass
                     with _PASS_LOCK:
                         _PASS["error"] = "%s: %s" % (folder.name, str(e)[:140])

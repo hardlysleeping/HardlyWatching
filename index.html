@@ -8256,6 +8256,13 @@ function renderAI(){
             ${running ? "Tagging…" : "Tag the whole library"}</button>
           <button class="small danger" id="aiStop" style="${running ? "" : "display:none"}">Stop</button>
         </div>
+        <div style="${row}">
+          <label style="${lab}">Re-tag</label>
+          <label class="hint" style="display:flex;gap:6px;align-items:center;grid-column:2 / -1">
+            <input type="checkbox" id="aiForce">
+            re-tag files already done (needed after changing the prompt)
+          </label>
+        </div>
         <div class="hint" id="aiProg">${running
           ? `tagging ${esc(pass.profile || "…")} — ${pass.tagged || 0} tagged,
              ${pass.profiles_done || 0}/${pass.profiles_total || 0} profiles`
@@ -8277,11 +8284,13 @@ function renderAI(){
       r.onchange = () => { if(r.checked) aiSave({scope: r.value}); });
     $("aiStop").onclick = async () => { await post("/api/tags/scan/stop", {}); setTimeout(renderAI, 900); };
     $("aiRun").onclick = async () => {
+      const force = !!($("aiForce") && $("aiForce").checked);
       const ok = confirm("Tag the whole library?\n\n"
         + `${aiMoney(cur.per_1000)} per 1,000 images — about $${cur.per_archive || "?"} for everything.\n`
+        + (force ? "Re-tagging files already done, so the new prompt applies to them too.\n" : "")
         + "Runs in the background, one profile at a time, and resumes where it stopped.");
       if(!ok) return;
-      const r = await post("/api/tags/scan", {});
+      const r = await post("/api/tags/scan", {force});
       if(!r.ok){ toast(r.error || "Could not start"); return; }
       toast(`Tagging ${r.profiles} profiles`);
       setTimeout(renderAI, 900);
