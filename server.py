@@ -1136,6 +1136,113 @@ def _find_terminal() -> list[str] | None:
     return None
 
 
+def _mounted_disks(eng) -> list[dict]:
+    """Real mounted drives, and the archive folder each one would contribute.
+
+    Read from /proc/mounts so nothing extra has to be installed: a source that is
+    not a /dev device is a pseudo filesystem (proc, tmpfs, an AppImage's
+    squashfs) and is not somewhere to put an archive. Free space is statvfs, and
+    the label comes from /dev/disk/by-label when udev left a link.
+
+    This exists so the settings page can offer a drive to click instead of
+    asking for a typed path -- and so it can say which one is already the
+    downloads folder rather than offering a button that would do nothing.
+    """
+    labels: dict[str, str] = {}
+    try:
+        for link in Path("/dev/disk/by-label").iterdir():
+            try:
+                labels[str(link.resolve())] = link.name.replace("\\x20", " ")
+            except OSError:
+                continue
+    except OSError:
+        pass
+    skip_prefix = ("/boot", "/proc", "/sys", "/dev", "/run", "/snap", "/sysroot",
+                   "/var/lib/docker", "/var/lib/flatpak")
+    # The same btrfs filesystem is mounted many times (ostree subvolumes); those
+    # are one drive, not seven, and /etc is not a place to keep an archive.
+    skip_exact = {"/etc", "/var", "/usr", "/"}
+    roots = []
+    for r in (getattr(eng, "roots", None) or []):
+        try:
+            roots.append(Path(r).resolve())
+        except OSError:
+            continue
+    try:
+        out_root = Path(getattr(eng, "output_root", "") or ".").resolve()
+    except OSError:
+        out_root = Path("/")
+    try:
+        lines = Path("/proc/mounts").read_text().splitlines()
+    except OSError:
+        return []
+    out: list[dict] = []
+    by_device: dict[int, dict] = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        source, mount, fstype = parts[0], parts[1].replace("\\040", " "), parts[2]
+        if not source.startswith("/dev/"):
+            continue
+        if mount in skip_exact:
+            continue
+        if any(mount == s or mount.startswith(s + "/") for s in skip_prefix):
+            continue
+        try:
+            st = os.statvfs(mount)
+            dev = os.stat(mount).st_dev
+        except OSError:
+            continue
+        if st.f_blocks == 0:
+            continue
+        m = Path(mount)
+        # A root IS an Instagram archive folder, so the folder this drive would
+        # contribute is `<mount>/instagram` -- unless the mount already IS one.
+        archive = m if m.name == "instagram" else m / "instagram"
+        try:
+            archive_r = archive.resolve()
+            mount_r = m.resolve()
+        except OSError:
+            archive_r, mount_r = archive, m
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        try:
+            has_archive = archive.is_dir()
+        except OSError:
+            has_archive = False
+        is_downloads = archive_r == out_root or mount_r == out_root
+        is_archive = archive_r in roots or mount_r in roots
+        row = {
+            "path": str(m),
+            "label": labels.get(str(Path(source).resolve()), "") or m.name,
+            "fstype": fstype,
+            "total_gb": round(total / 1e9, 1),
+            "free_gb": round(free / 1e9, 1),
+            "used_pct": round(100.0 * (total - free) / total, 1) if total else 0.0,
+            "writable": os.access(str(archive if has_archive else m), os.W_OK),
+            "archive": str(archive),
+            "has_archive": has_archive,
+            "is_downloads": bool(is_downloads),
+            "is_archive": bool(is_archive),
+        }
+        # One row per physical filesystem. The home mount wins over /etc-style
+        # subvolume mounts, and a drive already in use wins over both.
+        rank = (not is_downloads, not is_archive, mount not in ("/var/home", "/home"),
+                len(mount), mount)
+        prev = by_device.get(dev)
+        if prev is None or rank < prev["_rank"]:
+            row["_rank"] = rank
+            by_device[dev] = row
+    for row in by_device.values():
+        row.pop("_rank", None)
+        out.append(row)
+    # The drive in use first, then the emptiest: the one a person reaches for is
+    # either already working or has room.
+    out.sort(key=lambda d: (not d["is_downloads"], not d["is_archive"], -d["free_gb"]))
+    return out
+
+
 class QuietServer(ThreadingHTTPServer):
     """A threaded server that does not shout when a browser walks away.
 
@@ -1955,6 +2062,14 @@ class Handler(BaseHTTPRequestHandler):
             # sizes moving, and 572 KB of JSON parsed each time was the page
             # feeling slow. Unchanged snapshots now cost a 304 with no body.
             return self._json_etagged({"profiles": get_engine().gallery_profiles()})
+        if p == "/api/roots/disks":
+            # Every real drive on this machine, so the settings page can offer
+            # one click instead of asking for a typed path. `archive` is the
+            # folder that would be added or used (a root IS an Instagram
+            # archive folder: mount/instagram), and the flags say whether that
+            # is already the downloads folder or already read as a root, so the
+            # page never offers a button that would do nothing.
+            return self._json({"ok": True, "disks": _mounted_disks(get_engine())})
         if p == "/api/tags/stats":
             import tagging
             return self._json(tagging.stats())
