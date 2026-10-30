@@ -8955,11 +8955,6 @@ function drawPhotos(username, sec){
   menu.className = "dlmenu";
   menu.hidden = true;
   const PLAT = gPlatform || "instagram";
-  const PASSES = PLAT === "tiktok"
-    ? [["new", "New videos", "fetch videos newer than the ones you have"]]
-    : [["new", "New or missing posts", "posts added since the last run, plus any it skipped"],
-       ["tagged", "Tagged posts", "posts this profile is tagged in"],
-       ["reels", "Reels", "reels only, as their own pass"]];
   // The profile's own job, so "new" can re-run it. The queue is held in
   // `lastState` (the module's copy of /api/state); there is no bare `st` in this
   // scope, and reaching for one threw a ReferenceError AFTER the grid had been
@@ -8968,6 +8963,18 @@ function drawPhotos(username, sec){
     (j.username || "").toLowerCase() === username.toLowerCase() &&
     (j.kind || "main") === "main" && j.status !== "cancelled");
   const mainJobId = mainJob ? mainJob.id : null;
+  // "Everything" only exists once the profile has a job: it means "walk this
+  // profile again from the top", which is a change to that job's count (0 =
+  // all). A profile with no job is already being queued whole by "new".
+  const PASSES = PLAT === "tiktok"
+    ? [["new", "New videos", "fetch videos newer than the ones you have"],
+       ...(mainJobId
+         ? [["all", "Everything on the profile",
+             "walk the whole profile again, not just what is new"]]
+         : [])]
+    : [["new", "New or missing posts", "posts added since the last run, plus any it skipped"],
+       ["tagged", "Tagged posts", "posts this profile is tagged in"],
+       ["reels", "Reels", "reels only, as their own pass"]];
   if(PASSES[0][0] === "new" && !mainJobId) PASSES[0][1] = "Download this profile";
 
   const boxes = {};
@@ -8996,6 +9003,9 @@ function drawPhotos(username, sec){
     go.textContent = "…";
     try {
     const want = Object.keys(boxes).filter(k => boxes[k].checked);
+    // "Everything" re-runs the same job as "new" with no count cap, so ticking
+    // both would queue the profile twice for the same work.
+    if(want.includes("all") && want.includes("new")) want.splice(want.indexOf("new"), 1);
     if(!want.length){ showErr("Tick at least one."); return; }
     const done = [], failed = [];
     for(const key of want){
@@ -9004,7 +9014,14 @@ function drawPhotos(username, sec){
       // the last run and anything that was missed, without re-walking the rest.
       // /api/add cannot do this: it refuses a profile that already has a main
       // job, which is every profile here that has ever been downloaded.
-      const r = key === "new"
+      //
+      // "all" is the opposite of that, and only exists for TikTok: it sets the
+      // job's count to 0 (the app's "all") and revives it, so the run walks the
+      // profile from the top instead of stopping at the newest video it already
+      // has. Same endpoint the card's own "all" button uses.
+      const r = key === "all"
+        ? await post("/api/tiktok/more", {id: mainJobId, all: true})
+        : key === "new"
         // Existing job: re-run it. No job yet: queue it fresh.
         ? (mainJobId ? await post("/api/requeue", {id: mainJobId})
                      : await post("/api/add", {profiles: [username]}))
