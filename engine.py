@@ -3447,8 +3447,24 @@ def gallery_profiles(self) -> list[dict]:
         out = [p for p in out
                if (p["username"].lower(), p["platform"]) not in folded]
 
-    out.sort(key=lambda p: p["username"].lower())
+    # A pinned profile stays at the top, most recently pinned first; everything
+    # else keeps the order it had. The flag rides the card so the page can draw
+    # the pin without asking again, and the pin itself lives in the database so
+    # it survives a restart and does not depend on the profile having a job.
+    pins = _pdb._shared_db().profile_pins()
+    for p in out:
+        key = (p.get("platform", "instagram"), p["username"].lower())
+        p["pinned"] = key in pins
+        p["pinned_at"] = pins.get(key, 0.0)
+    out.sort(key=lambda p: (not p["pinned"], -p["pinned_at"],
+                            p["username"].lower()))
     return out
+
+
+def set_profile_pin(self, username: str, platform: str = "instagram",
+                    pinned: bool = True) -> bool:
+    """Keep one profile at the top of the gallery, or stop doing that."""
+    return _pdb._shared_db().set_profile_pin(platform, username, bool(pinned))
 
 
 def post_files(self, username: str, platform: str, section: str,
@@ -5566,6 +5582,7 @@ class Engine:
     # ---------- gallery ----------
 
     gallery_profiles = gallery_profiles
+    set_profile_pin = set_profile_pin
     _gallery_folders_now = _gallery_folders_now
     gallery_sections = gallery_sections
     profile_peek = profile_peek

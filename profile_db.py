@@ -106,6 +106,17 @@ CREATE TABLE IF NOT EXISTS saved_videos (
     saved_at REAL                     -- when it was SAVED on TikTok, from the export
 );
 CREATE INDEX IF NOT EXISTS idx_saved_creator ON saved_videos(creator);
+
+-- Profiles kept at the top of the gallery. Its own table rather than a column on
+-- `profiles`, because a profile can exist on disk with no row there (an archive
+-- copied in by hand) and a pin has to work for it too. Keyed the same way the
+-- gallery keys a card: platform + lowercased handle.
+CREATE TABLE IF NOT EXISTS profile_pins (
+    platform  TEXT NOT NULL,
+    handle    TEXT NOT NULL,
+    pinned_at REAL NOT NULL,
+    PRIMARY KEY (platform, handle)
+);
 """
 
 
@@ -722,6 +733,48 @@ class ProfileDB:
                     (platform, key, w))
             self._conn.commit()
         return round(w, 3)
+
+    # ---------- pinned profiles ----------
+    #
+    # A pin is not a weight and not a category: it is "keep this at the top of
+    # the list", the one ordering the user set by hand. It lives in its own
+    # table so it works for a profile that has no `profiles` row (an archive
+    # copied in by hand) and so removing a profile from the queue cannot drop it.
+
+    def set_profile_pin(self, platform: str, profile: str, pinned: bool) -> bool:
+        """Pin or unpin one profile. Returns the state it is in afterwards."""
+        key = (profile or "").strip().lower()
+        if not key:
+            return False
+        with self._lock:
+            if pinned:
+                self._conn.execute(
+                    "INSERT INTO profile_pins (platform, handle, pinned_at) "
+                    "VALUES (?,?,?) ON CONFLICT(platform, handle) "
+                    "DO UPDATE SET pinned_at=excluded.pinned_at",
+                    (platform or "instagram", key, time.time()))
+            else:
+                self._conn.execute(
+                    "DELETE FROM profile_pins WHERE platform=? AND handle=?",
+                    (platform or "instagram", key))
+            self._conn.commit()
+        return bool(pinned)
+
+    def profile_pins(self) -> dict[tuple, float]:
+        """Every pinned profile as {(platform, lower handle): pinned_at}."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT platform, handle, pinned_at FROM profile_pins").fetchall()
+        return {(r["platform"], r["handle"]): float(r["pinned_at"] or 0.0)
+                for r in rows}
+
+    def is_profile_pinned(self, platform: str, profile: str) -> bool:
+        key = (profile or "").strip().lower()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM profile_pins WHERE platform=? AND handle=?",
+                (platform or "instagram", key)).fetchone()
+        return row is not None
 
     def reset_profile_weights(self) -> int:
         """Forget every favour/damp. Returns how many rows went."""

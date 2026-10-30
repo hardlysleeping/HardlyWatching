@@ -3109,6 +3109,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(_profile_db().link_profiles(
                 alias, primary, plat, parent_plat))
 
+        if p == "/api/profile/pin":
+            # Keep a profile at the top of the gallery (or stop). One flag, its
+            # own table -- see ProfileDB.set_profile_pin for why it is not a
+            # column on `profiles`.
+            import engine as _eng
+            who = _eng.clean_profile_name(str(body.get("profile") or ""))
+            if not who:
+                return self._json({"ok": False, "error": "a profile is needed"})
+            plat = str(body.get("platform") or "instagram").strip().lower()
+            if plat not in ("instagram", "tiktok"):
+                plat = "instagram"
+            want = bool(body.get("pinned"))
+            state = get_engine().set_profile_pin(who, plat, want)
+            return self._json({"ok": True, "profile": who, "platform": plat,
+                               "pinned": state})
+
         if p == "/api/links/split":
             # Tell two accounts apart, and keep the same-name rule from putting
             # them back together. This is the "these are different people" case.

@@ -576,6 +576,8 @@
   /* A profile still downloading is listed live, marked so the count climbing
      underneath reads as progress rather than as a bug. */
   .pcard.live{border-color:#5a4a1e}
+  .pcard.pinned{border-color:#6a5a2e}
+  .pinmark{font-size:11px;margin-left:5px;opacity:.85}
   .pcard .livebadge{position:absolute;top:7px;right:7px;font-size:10px;
     padding:2px 7px;border-radius:999px;background:rgba(0,0,0,.75);
     color:var(--warn);border:1px solid #5a4a1e;white-space:nowrap}
@@ -7433,6 +7435,11 @@ function sortProfiles(list){
   } else {
     out.sort(gSortNameDir === "az" ? byName : (a,b) => byName(b,a));
   }
+  // Pinned profiles stay on top of whichever order was asked for -- a pin is a
+  // hand-set position, so no sort button may bury it. Stable sort: the axis
+  // order is kept inside each group, newest pin first among the pinned.
+  out.sort((a,b) => ((b.pinned?1:0) - (a.pinned?1:0))
+    || ((b.pinned_at||0) - (a.pinned_at||0)));
   return out;
 }
 
@@ -9000,6 +9007,14 @@ function pLive(p){
     : "";
 }
 
+function pPin(p){
+  // The pin itself is a flag on the card (data-pinned, which the right-click
+  // menu reads) plus this mark, so a pinned profile is obvious in the grid.
+  return p.pinned
+    ? `<span class="pinmark" title="Pinned to the top">📌</span>`
+    : "";
+}
+
 function pMerged(p){
   if(!p.merged) return "";
   return `<div class="mg" title="${esc((p.merged_platforms||[]).join(" + ") || "same site")}">+ @${p.merged.map(esc).join(" @ ")}${
@@ -9024,11 +9039,11 @@ function pCount(p){
 // The compact grid: what the list has always looked like.
 function pcardGrid(p){
   return `
-    <div class="pcard${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
+    <div class="pcard${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-pinned="${p.pinned?1:0}">
       ${pAvatar(p)}
       ${pLive(p)}
       <a class="nm" data-plink="1" href="${esc(profileHref(p.username, p.platform||"instagram"))}"
-         title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>
+         title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>${pPin(p)}
       <div class="ct" data-count="1">${pCount(p)}</div>
       ${pMerged(p)}
       ${pSplit(p)}
@@ -9043,7 +9058,7 @@ function pcardBig(p){
   const pic = `/api/profile-pic?profile=${encodeURIComponent(p.username)}&platform=${encodeURIComponent(p.platform||"instagram")}`;
   const href = esc(profileHref(p.username, p.platform||"instagram"));
   return `
-    <div class="pcard big${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
+    <div class="pcard big${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-pinned="${p.pinned?1:0}">
       <a class="hero" data-plink="1" href="${href}" title="Open ${esc(p.username)}"><img loading="lazy" alt="" src="${pic}"
         onerror="this.style.visibility='hidden'"></a>
       ${pLive(p)}
@@ -9051,7 +9066,7 @@ function pcardBig(p){
         ${pAvatar(p)}
         <div class="who">
           <a class="nm" data-plink="1" href="${href}"
-             title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>
+             title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>${pPin(p)}
           <div class="ct" data-count="1">${pCount(p)}</div>
           ${pMerged(p)}
         </div>
@@ -9067,11 +9082,11 @@ function pcardBig(p){
 // The list: one row a profile.
 function pcardRow(p){
   return `
-    <div class="pcard rowv${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
+    <div class="pcard rowv${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-pinned="${p.pinned?1:0}">
       ${pAvatar(p)}
       <div class="who">
         <a class="nm" data-plink="1" href="${esc(profileHref(p.username, p.platform||"instagram"))}"
-           title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>
+           title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>${pPin(p)}
         ${pMerged(p)}
       </div>
       <span class="rowct">${pCount(p)}</span>
@@ -9380,6 +9395,8 @@ function openCtx(x, y, card){
     // verb set, and it is on the tile so a photo of someone you do not
     // recognise can be followed to their profile without a search.
     item("◎", "Open profile", () => openGalleryProfile(username, platform));
+    item("📌", (card.dataset.pinned === "1") ? "Unpin from the top" : "Pin to the top",
+         () => toggleProfilePin(username, platform, card.dataset.pinned !== "1"));
     item("⟳", main ? "Check for new" : "Download this profile",
          () => checkForNew(username, platform));
     if(platform === "tiktok"){
@@ -9398,6 +9415,10 @@ function openCtx(x, y, card){
 
   item("⟳", main ? "Check for new" : "Download this profile",
        () => checkForNew(username, platform));
+  // The one ordering the user sets by hand. At the top of the menu because it
+  // is the thing you reach for while scrolling a list of hundreds.
+  item("📌", (card.dataset.pinned === "1") ? "Unpin from the top" : "Pin to the top",
+       () => toggleProfilePin(username, platform, card.dataset.pinned !== "1"));
   // Shorts, that one person: opens the tab without counting as having opened
   // their profile, so going back to Gallery still shows the list.
   item("▶", "Open in Shorts",
@@ -9420,6 +9441,27 @@ function openCtx(x, y, card){
                                          "Link copied"));
 
   placeCtx(menu, x, y);
+}
+
+// Pin or unpin one profile: it stays at the top of the gallery list, above
+// whatever the sort buttons ask for. The server owns the flag (it lives in the
+// database, so a restart or another tab sees it); this only reflects it.
+async function toggleProfilePin(username, platform, pinned){
+  try{
+    const r = await (await fetch("/api/profile/pin", {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({profile: username, platform, pinned: !!pinned}),
+    })).json();
+    if(!r.ok){ toast(r.error || "Could not change the pin"); return; }
+    for(const p of (gProfiles || [])){
+      if(p.username === username && (p.platform || "instagram") === platform){
+        p.pinned = !!r.pinned;
+        p.pinned_at = r.pinned ? Date.now()/1000 : 0;
+      }
+    }
+    toast(r.pinned ? `📌 ${username} pinned to the top` : `${username} unpinned`);
+    if(gProfile) renderPhotos(gProfile, gPlatform); else renderGallery();
+  }catch(e){ toast("Could not change the pin"); }
 }
 
 // Place it at the pointer, but never off the screen: flip above when there is no
