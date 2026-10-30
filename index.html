@@ -438,6 +438,14 @@
      stack rather than use the 3-column grid .card is built for. */
   #ttPane .card{display:block;margin-bottom:12px}
   #ttPane .card h3{margin-bottom:6px}
+  /* Saved videos is a collapsed section, not a wall of text above the queue.
+     Its title row has to read like a card title, with a marker that turns. */
+  #ttPane details.card>summary{cursor:pointer;display:flex;align-items:center;gap:6px;
+    color:var(--text);font-size:13.5px;font-weight:650;list-style:none}
+  #ttPane details.card>summary::-webkit-details-marker{display:none}
+  #ttPane details.card>summary::before{content:"\25B8";color:var(--muted);font-weight:400;
+    transition:transform .15s}
+  #ttPane details.card[open]>summary::before{transform:rotate(90deg)}
   .pill.tiktok{color:#69e0e6;border-color:#1d4d50}
   .pill.ig{color:#e08ae0;border-color:#4d2b4d}
   .pill.reels{color:#f472b6;border-color:#5a2b4a;background:#24162100}
@@ -1463,6 +1471,15 @@ some.profile
       New profiles use the download settings in <b>Options…</b>. Existing queue
       items keep their own settings.
     </div>
+    <details style="margin-top:8px">
+      <summary class="hint" style="cursor:pointer">Copying a whole following list</summary>
+      <p class="hint" style="margin:6px 0 0">
+        Profile → <b>view all</b> next to Following accounts → scroll that list
+        all the way to the bottom until it stops loading, then select all and
+        copy. Copying before it finishes scrolling only picks up the rows that
+        happened to be on screen.
+      </p>
+    </details>
   </div>
 
 
@@ -1476,40 +1493,15 @@ some.profile
             title="Download settings, backup, phone access, excluded profiles">Options…</button>
   </div>
   <div id="ttPane" style="display:none">
-      <div class="card">
-        <h3 style="margin-top:0">TikTok notes</h3>
-        <p class="hint" style="margin-top:0">
-          The paste box above handles TikTok too — links, plain handles and
-          <b>@handles</b>, mixed in with Instagram links in the same paste. Its
-          <b>Check</b> button reads a block of text and reports the usernames it
-          finds before anything is queued.
-        </p>
-        <!-- The long "how to copy your following list" text used to live in the
-             placeholder, where it filled the box and read as noise. It still
-             needs to be findable, so it is one collapsed line instead. -->
-        <details style="margin-top:8px">
-          <summary>Copying a whole following list</summary>
-          <p class="hint" style="margin:6px 0 0">
-            Profile → <b>view all</b> next to Following accounts → scroll that
-            list all the way to the bottom until it stops loading, then select
-            all and copy. Copying before it finishes scrolling only picks up the
-            rows that happened to be on screen.
-          </p>
-        </details>
-        <!-- Where the files actually land, as a clickable path. The TikTok tree
-             is one level below the downloads folder, so opening that folder
-             never shows it and the videos look like they went somewhere else. -->
-        <div class="hint" id="ttPath" style="margin-top:10px"></div>
-      </div>
       <!-- Saved videos. TikTok's Favorites list is the one thing a downloader
            cannot read for you: the call behind it only answers a signed request
            from TikTok's own page, so it is read from the account holder's data
            export instead -- Settings -> Download your data, which lists every
            saved video as a link. The links are then downloaded like any other
            TikTok video. -->
-      <div class="card">
-        <h3 style="margin-top:0">Saved videos</h3>
-        <p class="hint" style="margin-top:0">
+      <details class="card" id="savedCard">
+        <summary><b>Saved videos</b><span class="hint" id="savedSumHint" style="margin-left:8px"></span></summary>
+        <p class="hint" style="margin-top:8px">
           Reads the export TikTok makes for you (<b>Settings → Account → Download
           your data</b>, JSON) and downloads every saved video into <b>its
           creator's own folder</b>, making that profile if it is not there yet.
@@ -1542,7 +1534,7 @@ some.profile
           </span>
         </label>
         <div class="hint" id="savedResult" style="margin-top:6px"></div>
-      </div>
+      </details>
       <!-- TikTok's logins live in the Sessions panel, which lists every saved
            login with the one in use and lets each be renamed or deleted. This tab
            used to carry a second, single-slot copy of that control; one place, and
@@ -3079,31 +3071,6 @@ function openDiskLimit(){
   if(!focusIt()) setTimeout(focusIt, 250);
 }
 
-// Where TikTok files land, shown as a clickable path. "Where did my TikTok
-// videos go?" should be answerable on screen: the TikTok tree is a subfolder of
-// the downloads folder, so opening that folder never reveals it.
-let ttPathShown = "";
-function paintTtPath(st){
-  const el = $("ttPath");
-  if(!el) return;
-  const roots = st.roots || [];
-  const main = roots.find(r => r.receives) || roots[0];
-  if(!main || !main.path){ el.innerHTML = ""; ttPathShown = ""; return; }
-  // Taken from the server, which resolves it. This used to be worked out here as
-  // "<downloads>/tiktok" -- correct until TikTok moved to sit beside the
-  // downloads folder, after which it printed a path that did not exist.
-  const full = st.tiktok_path || (main.path.replace(/\/+$/, "") + "/tiktok");
-  if(full === ttPathShown) return;     // do not rebuild on every poll
-  ttPathShown = full;
-  el.innerHTML = `TikTok files go to <a href="#" id="ttOpenPath"
-    style="color:var(--accent);text-decoration:none;border-bottom:1px dotted currentColor"
-    title="Open this folder">${esc(full)}</a>`;
-  const a = $("ttOpenPath");
-  if(a) a.onclick = (e) => {
-    e.preventDefault();
-    post("/api/open-folder", {platform:"tiktok"});
-  };
-}
 
 /* ---------- one job's own options ---------- */
 // The global panel cannot reach a row already in the queue: each job carries the
@@ -3294,6 +3261,12 @@ function paintSavedExport(st){
       : (se.exists ? "Queue the export used last time"
                    : "That file is gone — pick it again");
   }
+  // Collapsed by default, so the summary has to say whether an export is on
+  // file -- otherwise the one useful fact in here is hidden behind a click.
+  const sum = $("savedSumHint");
+  if(sum) sum.textContent = known
+    ? (se.exists ? `\u00b7 ${se.name} remembered` : `\u00b7 ${se.name} is gone`)
+    : "\u00b7 no export yet";
   if(note){
     if(!known){ note.textContent = ""; }
     else {
@@ -3342,7 +3315,6 @@ function render(st){
   // Space is not queue-specific: show it on every tab, before the early return
   // below skips the queue work.
   paintDisk(st);
-  paintTtPath(st);
   paintSavedSwitch(st);
   paintSavedExport(st);
   // Progress arrives with the poll (1.2s) instead of a separate 4s request.
