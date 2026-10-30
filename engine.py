@@ -3664,7 +3664,7 @@ def _note_saved_failures(self, path: Path, rows: list[tuple[str, str]]) -> None:
         pass
 
 
-def clear_trash(self) -> tuple[int, list[str]]:
+def clear_trash(self, permanent: bool = False) -> tuple[int, list[str]]:
     """Empty every profile's trash/ folder. Returns (n, errors).
 
     Only files inside a profile's own trash/ subfolder are touched, symlinks
@@ -3674,6 +3674,10 @@ def clear_trash(self) -> tuple[int, list[str]]:
     "Empty" means MOVED TO THE SYSTEM TRASH BIN (see _to_desktop_trash), not
     unlinked: a mistake stays recoverable until that bin is emptied, and on a
     removable drive the bytes are not free until it is. The UI says so.
+
+    permanent=True is the other button: the bytes are unlinked instead, so the
+    space comes back now and nothing can be recovered. That is a different
+    promise, which is why it is a different call and a different confirmation.
 
     Each emptied media file leaves a 0-byte placeholder of the same name in
     the profile's main folder. instaloader's fast-update decides a post is
@@ -3717,13 +3721,23 @@ def clear_trash(self) -> tuple[int, list[str]]:
                     })
                     if len(self.tombstones) > 5000:
                         del self.tombstones[:-5000]
-                # Send to the desktop trash bin rather than unlinking outright,
-                # so there is one more chance to recover a mistake. Falls back
-                # to a hard delete if no trash tool is available.
-                _to_desktop_trash(target)
+                # Two ways out, and the caller picks which. The default sends
+                # the bytes to the desktop trash bin, so there is one more
+                # chance to recover a mistake (and the space is not back until
+                # that bin is emptied). permanent=True unlinks them instead:
+                # nothing to recover, space back now. Never unlink the
+                # placeholder in the profile root -- it is what stops
+                # instaloader fetching the post again.
+                if permanent:
+                    target.unlink()
+                else:
+                    _to_desktop_trash(target)
                 for sib in trash.glob(f"{stem}.*"):
                     if sib.is_file() and not sib.is_symlink():
-                        _to_desktop_trash(sib)
+                        if permanent:
+                            sib.unlink()
+                        else:
+                            _to_desktop_trash(sib)
                 # The file is gone from disk; its people verdict is not. Left
                 # behind it kept the post in the archive-wide No people view,
                 # pointing at a path that now holds a 0-byte placeholder.

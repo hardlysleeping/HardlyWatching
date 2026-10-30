@@ -2896,11 +2896,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": ok, "message": msg})
 
         if p == "/api/gallery/trash/clear":
-            # Permanent. Requires an explicit confirm token in the body.
+            # Two modes, and they make different promises. Default: the bytes
+            # go to the system trash bin, recoverable until that is emptied.
+            # permanent=true: unlinked, nothing to recover. Both require an
+            # explicit confirm token in the body.
             if body.get("confirm") != "DELETE":
                 return self._json({"ok": False, "error": "confirmation required"})
-            n, errors = get_engine().clear_trash()
-            return self._json({"ok": True, "removed": n, "errors": errors[:20]})
+            permanent = bool(body.get("permanent"))
+            n, errors = get_engine().clear_trash(permanent=permanent)
+            return self._json({"ok": True, "removed": n, "permanent": permanent,
+                               "errors": errors[:20]})
 
         if p == "/api/gallery/tombstones":
             # What has been permanently deleted, and the 0-byte placeholders

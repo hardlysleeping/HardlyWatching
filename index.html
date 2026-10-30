@@ -1001,6 +1001,12 @@
   #profileGrid.selmode .ptile .acts,
   #profileGrid.selmode .ptile .acts-right{display:none}
   #profileGrid.selmode .ptile{cursor:pointer}
+  #profileGrid.selmode{cursor:crosshair}
+  /* The box you drag over the grid. Sits above the tiles, takes no pointer
+     events, so it can never be what the drag is hitting. */
+  #selBox{position:fixed;z-index:84;pointer-events:none;
+    border:1.5px solid var(--accent);background:rgba(193,53,132,.16);
+    border-radius:3px}
   /* A sweep must not select the labels or start a native image drag instead. */
   #profileGrid.selmode{user-select:none;-webkit-user-select:none}
   #profileGrid.selmode .ptile img{-webkit-user-drag:none;user-select:none}
@@ -6180,10 +6186,22 @@ async function renderAllSection(section){
     spacer.style.flex = "1";
     bar.appendChild(spacer);
     if(posts.length){
+      // Two buttons, because these are two different promises and the old
+      // single one was labelled "Delete" while only moving files to the drive's
+      // Trash bin. The bin first, so the recoverable one is the easy reach.
+      const bin = document.createElement("button");
+      bin.className = "small";
+      bin.textContent = `Move all to drive bin (${posts.length})`;
+      bin.title = "Recoverable until you empty the drive's Trash bin";
+      bin.onclick = () => confirmClearTrash(posts.length);
+      bar.appendChild(bin);
+
       const del = document.createElement("button");
       del.className = "small danger";
-      del.textContent = `Delete all trash (${posts.length} posts)`;
-      del.onclick = () => confirmClearTrash(posts.length);
+      del.style.marginLeft = "6px";
+      del.textContent = `Delete permanently (${posts.length})`;
+      del.title = "Unlinks the files — no Trash bin, no way back";
+      del.onclick = () => confirmPurgeTrash(posts.length);
       bar.appendChild(del);
     }
   }
@@ -6592,6 +6610,49 @@ function confirmClearTrash(n){
   wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
   document.body.appendChild(wrap);
   go.focus();
+}
+
+// The permanent one. Deliberately a separate dialog with its own wording: this
+// is the only control in the app that leaves nothing to recover, and the bin
+// button sits right beside it.
+function confirmPurgeTrash(n){
+  const wrap = document.createElement("div");
+  wrap.className = "confirm";
+  const box = document.createElement("div");
+  box.className = "box";
+  // Our own text plus a count — no user content, so innerHTML is safe here.
+  box.innerHTML = `<p>Permanently delete ${n} post${n===1?"":"s"}?</p>
+    <div class="why">The files are <b>unlinked from disk</b>. They do not go to
+    this drive's Trash bin, and there is no way back.<br><br>
+    A hidden marker is left so the downloader does not fetch them again. If you
+    only want them out of the gallery, use “Move all to drive bin” instead.</div>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const cancel = document.createElement("button");
+  cancel.className = "small";
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => wrap.remove();
+  const go = document.createElement("button");
+  go.className = "small danger";
+  go.textContent = "Delete permanently";
+  go.onclick = async () => {
+    go.disabled = true;
+    const r = await post("/api/gallery/trash/clear", {confirm:"DELETE", permanent:true});
+    wrap.remove();
+    if(r.ok){
+      toast(`Deleted ${r.removed} file${r.removed===1?"":"s"} for good`);
+      if(r.errors && r.errors.length) toast(`${r.errors.length} skipped`);
+    } else {
+      toast(r.error || "Could not delete");
+    }
+    renderAllSection("trash");
+  };
+  row.appendChild(cancel); row.appendChild(go);
+  box.appendChild(row);
+  wrap.appendChild(box);
+  wrap.onclick = (e) => { if(e.target === wrap) wrap.remove(); };
+  document.body.appendChild(wrap);
+  cancel.focus();          // NOT the destructive button: Enter must not delete
 }
 
 function changeFolderDialog(current){
@@ -10745,6 +10806,14 @@ async function runBulk(action){
     + (firstErr ? ` — ${firstErr}` : ""));
 }
 
+// The count only. A drag repaints the label every frame, and rebuilding the
+// whole bar (five buttons) that often is pointless work.
+function paintSelCount(){
+  const b = document.querySelector("#selBar b");
+  if(b) b.textContent = selProgress ? selProgress
+    : selPicked.size ? `${selPicked.size} selected` : "Tap tiles to pick";
+}
+
 function paintSelBar(){
   let bar = document.getElementById("selBar");
   if(!selMode){
@@ -10891,50 +10960,71 @@ document.addEventListener("touchend", () => {
   if(selHold){ clearTimeout(selHold); selHold = null; }
 }, {passive: true});
 
-// Drag across the grid to pick a run of tiles.
+// Drag a BOX over the grid to grab many tiles at once -- the way a file
+// manager does it, not a brush stroke. Press anywhere in the grid (on a tile or
+// on the space between them), drag, and every tile the rectangle touches joins
+// the selection. A press that never moves is still a tap that toggles one tile.
 //
-// Press on a tile and sweep: every tile the pointer crosses takes the state the
-// drag started in, so a drag that begins on an unselected tile selects and one
-// that begins on a selected tile unselects. That is the shape people already
-// know from a photo grid, and it is the only way to pick a few dozen in one
-// gesture -- tapping 1200 tiles is not a workflow.
+// What the box produces is "what was selected when the drag started" plus "what
+// the box covers", recomputed from scratch each frame. Recomputing is what lets
+// you shrink the box again before letting go without leaving stale picks behind,
+// and it lets several boxes in a row add up instead of fighting each other.
 //
-// The trailing click is the trap. A drag that ends on a different tile fires its
-// click on the GRID, not on a tile, and the capture handler below reads "a click
-// outside a tile" as "leave selection mode" -- so a drag would end the mode it
-// was working in. The drag therefore swallows exactly one click.
-let selDrag = null;          // {on, ax, ay, x, y, moved, raf}
+// The trailing click is the trap: a drag that ends on a different tile fires its
+// click on the GRID, and the capture handler below reads "a click outside a
+// tile" as "leave selection mode". The drag therefore swallows exactly one click.
+let selDrag = null;          // {ax, ay, x, y, moved, dirty, base, raf}
 let selDragClick = false;    // swallow the click that ends a drag
+let selBox = null;           // the drawn rectangle
 
-function selApplyAt(x, y, on){
-  const el = document.elementFromPoint(x, y);
-  const tile = el && el.closest ? el.closest("#profileGrid .ptile") : null;
-  if(!tile) return;
-  const it = tileItem(tile);
-  if(!it) return;
-  const k = selKey(it.profile, it.platform, it.section, it.file);
-  const had = selPicked.has(k);
-  if(on === had) return;
-  if(on) selPicked.set(k, it); else selPicked.delete(k);
-  tile.classList.toggle("sel", on);
-  paintSelBar();
+function selBoxPaint(){
+  if(!selDrag) return;
+  const r = {x1: Math.min(selDrag.ax, selDrag.x), y1: Math.min(selDrag.ay, selDrag.y),
+             x2: Math.max(selDrag.ax, selDrag.x), y2: Math.max(selDrag.ay, selDrag.y)};
+  if(!selBox){
+    selBox = document.createElement("div");
+    selBox.id = "selBox";
+    document.body.appendChild(selBox);
+  }
+  selBox.style.left = r.x1 + "px";
+  selBox.style.top = r.y1 + "px";
+  selBox.style.width = Math.max(0, r.x2 - r.x1) + "px";
+  selBox.style.height = Math.max(0, r.y2 - r.y1) + "px";
+  // Everything the box touches, on top of what was picked before this drag.
+  const next = new Map(selDrag.base);
+  for(const tile of document.querySelectorAll("#profileGrid .ptile")){
+    const b = tile.getBoundingClientRect();
+    if(b.right < r.x1 || b.left > r.x2 || b.bottom < r.y1 || b.top > r.y2) continue;
+    const it = tileItem(tile);
+    if(it) next.set(selKey(it.profile, it.platform, it.section, it.file), it);
+  }
+  selPicked.clear();
+  for(const [k, v] of next) selPicked.set(k, v);
+  paintSelTiles();
+  paintSelCount();
 }
 
-// Dragging past the edge of the window scrolls, or a sweep could never reach
-// past one screenful -- and one screenful is not 1200 tiles.
+function selBoxDrop(){
+  if(selBox){ selBox.remove(); selBox = null; }
+}
+
+// Dragging past the edge of the window scrolls, or a box could never reach past
+// one screenful -- and one screenful is not 1200 tiles.
 function selDragFrame(){
-  if(!selDrag){ return; }
-  const edge = 90, most = 22;
-  const h = window.innerHeight;
+  if(!selDrag) return;
+  const edge = 90, most = 22, h = window.innerHeight;
   let dy = 0;
-  if(selDrag.y < edge) dy = -Math.round(most * (1 - Math.max(0, selDrag.y) / edge));
-  else if(selDrag.y > h - edge)
-    dy = Math.round(most * (1 - Math.max(0, h - selDrag.y) / edge));
+  if(selDrag.moved){
+    if(selDrag.y < edge) dy = -Math.round(most * (1 - Math.max(0, selDrag.y) / edge));
+    else if(selDrag.y > h - edge)
+      dy = Math.round(most * (1 - Math.max(0, h - selDrag.y) / edge));
+  }
   if(dy){
     const before = window.scrollY;
     window.scrollBy(0, dy);
-    if(window.scrollY !== before) selApplyAt(selDrag.x, selDrag.y, selDrag.on);
+    if(window.scrollY !== before) selDrag.dirty = true;
   }
+  if(selDrag.dirty){ selDrag.dirty = false; selBoxPaint(); }
   selDrag.raf = requestAnimationFrame(selDragFrame);
 }
 
@@ -10943,15 +11033,11 @@ document.addEventListener("pointerdown", (e) => {
   // A touch drag is a scroll. Touch keeps tap-to-pick and hold-to-start, which
   // the handlers above already give it.
   if(e.pointerType === "touch" || (e.button !== undefined && e.button !== 0)) return;
-  const tile = e.target.closest ? e.target.closest("#profileGrid .ptile") : null;
-  if(!tile) return;
-  const it = tileItem(tile);
-  if(!it) return;
-  const k = selKey(it.profile, it.platform, it.section, it.file);
-  selDrag = {on: !selPicked.has(k), ax: e.clientX, ay: e.clientY,
-             x: e.clientX, y: e.clientY, moved: false, raf: 0};
+  if(!e.target.closest || !e.target.closest("#profileGrid")) return;
+  selDrag = {ax: e.clientX, ay: e.clientY, x: e.clientX, y: e.clientY,
+             moved: false, dirty: false, base: new Map(selPicked), raf: 0};
   selDrag.raf = requestAnimationFrame(selDragFrame);
-  // No text selection, no native image drag while sweeping.
+  // No text selection, no native image drag while drawing the box.
   e.preventDefault();
 }, true);
 
@@ -10962,7 +11048,7 @@ document.addEventListener("pointermove", (e) => {
   if(!selDrag.moved &&
      (Math.abs(e.clientX - selDrag.ax) > 4 || Math.abs(e.clientY - selDrag.ay) > 4))
     selDrag.moved = true;
-  if(selDrag.moved) selApplyAt(e.clientX, e.clientY, selDrag.on);
+  if(selDrag.moved) selDrag.dirty = true;
 }, true);
 
 function endSelDrag(){
@@ -10972,6 +11058,8 @@ function endSelDrag(){
     // If no click follows (pointer released outside the page), do not swallow a
     // later real one.
     setTimeout(() => { selDragClick = false; }, 700);
+    selBoxDrop();
+    paintSelBar();
   }
   if(selDrag.raf) cancelAnimationFrame(selDrag.raf);
   selDrag = null;
