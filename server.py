@@ -1943,7 +1943,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if p == "/api/gallery":
             # Profiles whose archive is finished and still on disk.
-            return self._json({"profiles": get_engine().gallery_profiles()})
+            # ETagged: the gallery re-reads this every few seconds to keep the
+            # sizes moving, and 572 KB of JSON parsed each time was the page
+            # feeling slow. Unchanged snapshots now cost a 304 with no body.
+            return self._json_etagged({"profiles": get_engine().gallery_profiles()})
         if p == "/api/tags/stats":
             import tagging
             return self._json(tagging.stats())

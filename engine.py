@@ -2668,14 +2668,21 @@ def _drive_bin_roots(roots) -> list[Path]:
     it did nothing.
     """
     out: list[Path] = []
+    seen: set[str] = set()
     for root in roots:
-        for name in (".Trash-1000", ".Trash", ".Trash-0"):
-            p = Path(root) / name
-            try:
-                if p.is_dir():
-                    out.append(p)
-            except OSError:
-                continue
+        # A root is the platform folder (.../part1/instagram); the drive's bin
+        # sits at the drive root, one level up, and a per-user bin can be
+        # another level up again. All three are checked.
+        base = Path(root)
+        for parent in (base, base.parent, base.parent.parent):
+            for name in (".Trash-1000", ".Trash", ".Trash-0", f".Trash-{os.getuid()}"):
+                p = parent / name
+                try:
+                    if p.is_dir() and str(p) not in seen:
+                        seen.add(str(p))
+                        out.append(p)
+                except OSError:
+                    continue
     return out
 
 

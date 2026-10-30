@@ -2937,7 +2937,9 @@ function armGallerySizeTimer(st){
   const onPlainProfileList = !gProfile && gAll === null
     && $("galleryPane") && $("galleryPane").style.display !== "none";
   if(anyLive && onPlainProfileList && !gTickLive){
-    gTickLive = setInterval(patchGalleryCounts, 4000);
+    // 10s, not 4s: each tick is a gallery read, and a profile size moving a
+    // few MB does not need to be watched four times a second.
+    gTickLive = setInterval(patchGalleryCounts, 10000);
   } else if((!anyLive || !onPlainProfileList) && gTickLive){
     clearInterval(gTickLive); gTickLive = null;
   }
