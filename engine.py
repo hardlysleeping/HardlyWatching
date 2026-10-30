@@ -165,6 +165,61 @@ INSTALOADER = shutil.which("instaloader") or str(Path.home() / ".local/bin/insta
 
 
 # ---------------------------------------------------------------------------
+# Where a job's raw downloader output lives
+#
+# It used to live in state.json. Every job keeps up to 120 lines of output, and
+# with 2,455 jobs in the queue (about 1,000 of them failed and therefore worth
+# reading) the file had grown to 18.6 MB -- 15 MB of it this. Every save dumps
+# the whole thing, fsyncs it, then reads it back and parses it to prove it is
+# valid, and a running download triggers a save about once a second. That is
+# what made every API call feel slow while something was downloading.
+#
+# The queue file now carries the tail only for jobs that are still live; a
+# finished job's log is a small text file beside it, read when the log panel is
+# opened. `SAVE_MIN_GAP` coalesces progress saves so a download cannot queue the
+# whole app behind a rewrite.
+TAIL_LINES = 120        # lines kept in memory while a job is live
+SAVE_MIN_GAP = 3.0      # seconds between saves while a download is running
+
+
+def tail_path(job_id: str) -> Path:
+    """The file holding one job's output, for a job that is no longer live."""
+    safe = "".join(c for c in str(job_id) if c.isalnum() or c in "-_") or "job"
+    return STATE_FILE.parent / "logs" / f"{safe}.txt"
+
+
+def _spill_tail(job_id: str, lines, force: bool = False) -> None:
+    """Write a finished job's output out of the queue file.
+
+    `force` is for the moment a job ends (its log is final, so it is rewritten
+    even if an older file exists from a previous run). Without it the file is
+    only created when missing, so the once-a-second save loop cannot rewrite the
+    same log on every poll.
+    """
+    if not lines:
+        return
+    path = tail_path(job_id)
+    try:
+        if path.is_file() and not force:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text("\n".join(str(x) for x in lines) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass        # a log is not worth failing a save over
+
+
+def read_tail(job_id: str) -> list[str]:
+    """A spilled job log, or [] when there is none."""
+    try:
+        text = tail_path(job_id).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [ln for ln in text.splitlines() if ln != ""]
+
+
+# ---------------------------------------------------------------------------
 # Disk space guardrails
 #
 # Downloading fills a drive and, left alone, keeps going until the volume is
@@ -5277,6 +5332,10 @@ class Job:
     done_count: int = 0   # posts processed so far, from "[ n/m ]"
     total_count: int = 0  # total posts, from "[ n/m ]" (0 = unknown)
     last_line: str = ""   # most recent output line, survives restarts
+    # How many output lines this job has, so the "log (N lines)" summary still
+    # says N after a restart -- the lines themselves live in logs/<id>.txt once
+    # the job is finished (see _spill_tail).
+    tail_len: int = 0
     heal_attempts: int = 0  # how many times a partial run was auto-refetched
     # Automatic retry bookkeeping (survives a restart, so a sweep scheduled
     # before a reboot still happens after it).
@@ -5498,6 +5557,10 @@ class Engine:
         # the gap starts: recomputing it per poll would make the countdown's total
         # jump around while the number counted down.
         self.wait_total: dict[str, float] = {"instagram": 0.0, "tiktok": 0.0}
+        # Save coalescing (see save_state): when the last save happened, and the
+        # trailing timer that flushes whatever was skipped.
+        self._last_save: float = 0.0
+        self._save_timer: threading.Timer | None = None
         self._load_state()
 
     # ---------- gallery ----------
@@ -5568,7 +5631,8 @@ class Engine:
         """One job's full log tail, for the UI to fetch when a log is opened.
 
         The poll no longer carries logs for finished jobs, so this is how a
-        card's "log (N lines)" panel fills itself in.
+        card's "log (N lines)" panel fills itself in. A finished job's output
+        lives in its own file (see `_spill_tail`); a live one is still in memory.
         """
         with self.lock:
             job = self.jobs.get(job_id)
@@ -5576,9 +5640,9 @@ class Engine:
                 archived = next((r for r in self.removed if r.get("id") == job_id), None)
                 if archived is None:
                     return {"ok": False, "error": "no such job"}
-                tail = list(archived.get("tail") or [])
+                tail = list(archived.get("tail") or []) or read_tail(job_id)
                 return {"ok": True, "id": job_id, "tail": tail, "tail_len": len(tail)}
-            tail = list(job.tail)
+            tail = list(job.tail) or read_tail(job_id)
             return {"ok": True, "id": job_id, "tail": tail, "tail_len": len(tail)}
 
     # ---------- persistence ----------
@@ -5667,6 +5731,22 @@ class Engine:
                     j.message = "resumed after restart"
                     j.attempts = 0
                 self.jobs[j.id] = j
+            # One-time migration: a job's output used to live in this very file.
+            # Write the finished ones out to their own files now, before the
+            # next save drops them from the queue file -- and keep the line
+            # count, which is what the card's "log (N lines)" summary reads.
+            for j in self.jobs.values():
+                if j.tail:
+                    j.tail_len = max(int(j.tail_len or 0), len(j.tail))
+                if j.tail and j.status not in ("running", "retrying"):
+                    _spill_tail(j.id, j.tail)
+                elif not j.tail and not j.tail_len:
+                    # A queue file written before the count was kept: recover it
+                    # from the job's own log, once. It is persisted from the next
+                    # save on, so this only costs a read on the first restart.
+                    spilled = read_tail(j.id)
+                    if spilled:
+                        j.tail_len = len(spilled)
             # No remembered export yet (this is the first run with the field):
             # take it from the newest saved job, so the card can offer the file
             # the user already picked instead of starting from blank.
@@ -5698,11 +5778,54 @@ class Engine:
             pass
 
 
+    def _arm_trailing_save(self) -> None:
+        """One save, just after the gap, so a coalesced update is never dropped.
+
+        `save_state` returns early while a download is reporting progress; this
+        is what guarantees the last of those updates still reaches disk instead
+        of waiting for the next event (which might be minutes away, or never).
+        """
+        try:
+            if self._save_timer is not None and self._save_timer.is_alive():
+                return
+            delay = max(0.05, SAVE_MIN_GAP - (time.time() - self._last_save) + 0.05)
+            t = threading.Timer(delay, self.save_state)
+            t.daemon = True
+            self._save_timer = t
+            t.start()
+        except Exception:
+            pass
+
     def save_state(self) -> None:
+        # A running download reports progress about once a second, and each save
+        # is a full dump of the queue plus an fsync plus a re-parse to prove the
+        # file is valid. Coalesce those: while something is running, save at
+        # most every SAVE_MIN_GAP seconds, with a trailing save so the last
+        # update is never dropped. With nothing running, save immediately --
+        # that is a structural change the user just made.
+        now = time.time()
+        if now - getattr(self, "_last_save", 0.0) < SAVE_MIN_GAP:
+            try:
+                live = any(j.status in ("running", "retrying")
+                           for j in self.jobs.values())
+            except Exception:
+                live = False
+            if live:
+                self._arm_trailing_save()
+                return
+        self._last_save = now
         try:
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
             with self.lock:
-                jobs = [j.to_dict() for j in self.jobs.values()]
+                jobs = []
+                for j in self.jobs.values():
+                    d = j.to_dict()
+                    # A finished job's output goes to its own file: keeping it
+                    # here is what grew this file to 18 MB (see TAIL_LINES).
+                    if j.status not in ("running", "retrying") and d.get("tail"):
+                        _spill_tail(j.id, d["tail"])
+                        d["tail"] = []
+                    jobs.append(d)
                 data = {
                     "settings": self.settings.to_dict(),
                     "active_session": self.active_session,
@@ -7865,8 +7988,10 @@ class Engine:
         """
         d = job.to_dict()
         tail = d.pop("tail", None) or []
-        d["tail_len"] = len(tail)
-        d["tail"] = tail if job.status in ("running", "retrying", "failed") else []
+        # The count survives a restart; the lines do not (a finished job's output
+        # lives in its own file now, see _spill_tail).
+        d["tail_len"] = len(tail) or int(getattr(job, "tail_len", 0) or 0)
+        d["tail"] = tail if job.status in ("running", "retrying") else []
         return d
 
     def snapshot(self) -> dict:
@@ -8101,6 +8226,10 @@ class Engine:
         with self.lock:
             for k, v in kw.items():
                 setattr(job, k, v)
+            # A job that just ended: its output is final, so write it out now
+            # rather than leaving it in memory for the next save to drop.
+            if kw.get("status") in ("done", "failed", "cancelled", "skipped"):
+                _spill_tail(job.id, job.tail, force=True)
 
     def _finish_outcome(self, job: Job) -> None:
         """Fill new_files/skipped for a job that has just reached "done".
@@ -8144,8 +8273,9 @@ class Engine:
             return
         with self.lock:
             job.tail.append(line)
-            if len(job.tail) > 120:
-                del job.tail[:-120]
+            if len(job.tail) > TAIL_LINES:
+                del job.tail[:-TAIL_LINES]
+            job.tail_len = len(job.tail)
             # Remember the latest line so a resumed job still shows context.
             job.last_line = line.strip()[:200]
 
