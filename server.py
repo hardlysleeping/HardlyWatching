@@ -2616,6 +2616,13 @@ class Handler(BaseHTTPRequestHandler):
             # touches the bookmarks in it -- they fall back to uncategorised.
             db = _profile_db()
             op = str(body.get("op") or "").strip().lower()
+            if op == "list":
+                # Read-only. The bookmark picker asks for this every time it
+                # opens: it used to draw whatever the last WRITE happened to
+                # leave in the page, so a picker opened before any save showed
+                # one row ("No category") and no ticks at all.
+                return self._json({"ok": True,
+                                   "categories": db.bookmark_categories()})
             if op == "add":
                 made = db.add_bookmark_category(str(body.get("name") or ""))
                 if not made:

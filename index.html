@@ -86,6 +86,8 @@
      line up, and the tick itself is the state -- not just a highlight. */
   .bmrow{display:flex;align-items:center;gap:8px;justify-content:flex-start}
   .bmcheck{width:1.1em;flex:0 0 auto;text-align:center;opacity:.9}
+  /* An unticked row shows an empty box, so the row reads as tickable. */
+  .bmrow[data-on="0"] .bmcheck{opacity:.4}
   .bmrow.on{border-color:#4a7a4a;color:#bfe3bf}
   /* Two controls in the Download bar are symbols: start/pause for the queue and a
      folder door. Written out they were the longest words in the row, they changed
@@ -6323,7 +6325,9 @@ function bookmarkPicker(username, file, plat, current, saved){
       b.classList.toggle("on", on);
       b.dataset.on = on ? "1" : "0";
       const mark = b.querySelector(".bmcheck");
-      if(mark) mark.textContent = on ? "✓" : "";
+      // An empty string left an unticked row looking like plain text, so there
+      // was no sign a row could be ticked at all. An empty box is the sign.
+      if(mark) mark.textContent = on ? "✓" : "☐";
     }
     const rm = list.querySelector("[data-remove]");
     if(rm) rm.style.display = liveSaved ? "" : "none";
@@ -6332,6 +6336,7 @@ function bookmarkPicker(username, file, plat, current, saved){
   const apply = async (nextCats, nextSaved) => {
     live = nextCats; liveSaved = nextSaved;
     repaintRows();
+    paintTitle();
     repaintBookmarksView();
     if(vState) paintViewerActions();
     if(!nextSaved) toast("Bookmark removed");
@@ -6369,24 +6374,52 @@ function bookmarkPicker(username, file, plat, current, saved){
     };
     list.appendChild(b);
   };
-  addRow("No category", "none");
-  for(const c of bmCats) addRow(c.name, c.id, c.count);
+  // The heading says what this post is actually in, by name. Opening with
+  // nothing ticked and no rows at all -- which is what happened whenever the
+  // category list had not been loaded yet -- is exactly "I can't tell what's in
+  // what".
+  const paintTitle = () => {
+    if(!liveSaved){ title.textContent = "File this bookmark"; return; }
+    const names = live.map(id => {
+      const c = bmCats.find(x => String(x.id) === String(id));
+      return c ? c.name : ("#" + id);
+    });
+    title.textContent = names.length
+      ? `Bookmarked — in ${names.join(", ")}`
+      : "Bookmarked — in no category yet";
+  };
 
-  if(isSaved){
-    const rm = document.createElement("button");
-    rm.className = "small danger";
-    rm.dataset.remove = "1";
-    rm.textContent = "Remove bookmark";
-    rm.title = "Take it out of every category and unsave it";
-    rm.onclick = async () => {
-      const r = await bookmarkPost(username, file, plat, false);
-      if(!r || !r.ok){ toast("Could not update bookmarks"); return; }
-      close();
-      await apply([], false);
-    };
-    list.appendChild(rm);
-  }
-  repaintRows();
+  const drawRows = () => {
+    list.innerHTML = "";
+    addRow("No category", "none");
+    for(const c of bmCats) addRow(c.name, c.id, c.count);
+    if(liveSaved){
+      const rm = document.createElement("button");
+      rm.className = "small danger";
+      rm.dataset.remove = "1";
+      rm.textContent = "Remove bookmark";
+      rm.title = "Take it out of every category and unsave it";
+      rm.onclick = async () => {
+        const r = await bookmarkPost(username, file, plat, false);
+        if(!r || !r.ok){ toast("Could not update bookmarks"); return; }
+        close();
+        await apply([], false);
+      };
+      list.appendChild(rm);
+    }
+    paintTitle();
+    repaintRows();
+  };
+  drawRows();
+
+  // Ask for the categories every time it opens: the list and the "(n)" counts
+  // move as soon as anything is filed anywhere. Before this, `bmCats` was only
+  // ever filled by a write or by visiting the Bookmarks view, so the picker
+  // opened with one row ("No category") and no ticks for a post that was
+  // already in two categories.
+  post("/api/bookmark/category", {op:"list"}).then(r => {
+    if(r && r.ok && Array.isArray(r.categories)){ bmCats = r.categories; drawRows(); }
+  });
 
   const row = document.createElement("div");
   row.className = "row";
@@ -8749,8 +8782,10 @@ function tileFor(username, post, section){
   // file being filed into favourites/ or moved to trash.
   {
     let saved = !!post.bookmarked;
+    // The whole list, not the first id: a post in two categories used to open
+    // with only one of them ticked.
     const tagBtn = mkBtn("🏷", "File this bookmark under a category",
-      () => bookmarkPicker(username, first.file, plat, post.category ?? "none"));
+      () => bookmarkPicker(username, first.file, plat, post.categories ?? [], !!post.bookmarked));
     tagBtn.dataset.tag = "1";
     const bb = mkBtn("🔖", "Bookmark this", async () => {
       if(saved){
@@ -10228,8 +10263,10 @@ function viewerPickCategory(){
   if(!vState) return;
   const file = viewerCurrentFile();
   if(!file) return;
+  // Every category it is in, or the picker under-reports: `category` is only
+  // the first id, and a post can be in several.
   bookmarkPicker(vState.username, file, postPlatform(vState.post),
-                  vState.post.category ?? "none");
+                  vState.post.categories ?? [], !!vState.post.bookmarked);
 }
 
 // The tile behind the viewer, after a bookmark changed. No file moved, so only
