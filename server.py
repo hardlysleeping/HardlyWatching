@@ -534,6 +534,42 @@ def _page_args(q, default_limit: int = 0, cap: int = 2000) -> tuple[int, int]:
     return max(0, limit), offset
 
 
+def _tag_path_parts(eng, path: str) -> dict | None:
+    """Turn a stored media path back into (profile, platform, section, file).
+
+    Tags are keyed by absolute path, which is right for the pass -- it is the one
+    name a file has regardless of which section or root it lives in. The gallery
+    needs the other spelling, so this walks the roots the engine already knows and
+    returns what /thumb and /media expect. A path under a root that has since gone
+    away returns None: the tag stays, the tile is simply not offered.
+    """
+    p = Path(path)
+    for root in eng.roots:
+        for plat in ("instagram", "tiktok"):
+            try:
+                base = eng._platform_folder(root, plat)
+            except Exception:
+                continue
+            try:
+                rel = p.relative_to(base)
+            except (ValueError, TypeError):
+                continue
+            parts = rel.parts
+            if len(parts) < 2:
+                continue
+            handle, rest = parts[0], list(parts[1:])
+            section = "main"
+            if rest and rest[0] in ("favorites", "trash"):
+                section = rest.pop(0)
+            if len(rest) > 1 and rest[0] == handle:
+                rest.pop(0)                     # <handle>/<handle>/... layout
+            if not rest:
+                continue
+            return {"profile": handle, "platform": plat, "section": section,
+                    "file": "/".join(rest)}
+    return None
+
+
 def _mark_bookmarks(posts, profile: str | None = None) -> list[dict]:
     """Mark which of these posts are already saved, with the category each is in.
 
@@ -1856,6 +1892,43 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/gallery":
             # Profiles whose archive is finished and still on disk.
             return self._json({"profiles": get_engine().gallery_profiles()})
+        if p == "/api/tags/stats":
+            import tagging
+            return self._json(tagging.stats())
+        if p == "/api/tags/list":
+            from urllib.parse import parse_qs
+            import tagging
+            q = parse_qs(urlparse(self.path).query)
+            prefix = (q.get("prefix") or [""])[0]
+            try:
+                n = max(1, min(500, int((q.get("limit") or ["60"])[0])))
+            except ValueError:
+                n = 60
+            return self._json({"tags": [{"tag": t, "n": c}
+                                        for t, c in tagging.tag_counts(prefix, n)]})
+        if p == "/api/tags/search":
+            # Tag search across the whole archive. A stored path is turned back
+            # into (profile, section, file) so the UI reuses the gallery's own
+            # tile and viewer instead of a second way of showing a picture.
+            from urllib.parse import parse_qs
+            import tagging
+            q = parse_qs(urlparse(self.path).query)
+            raw = (q.get("tags") or [""])[0]
+            tags = [t for t in raw.replace(";", ",").split(",") if t.strip()]
+            if not tags:
+                return self._json({"ok": False, "error": "no tags given"})
+            try:
+                n = max(1, min(2000, int((q.get("limit") or ["300"])[0])))
+            except ValueError:
+                n = 300
+            eng = get_engine()
+            items = [h for h in (_tag_path_parts(eng, pth)
+                                 for pth in tagging.search(tags, n)) if h]
+            return self._json({"ok": True, "tags": tags, "count": len(items),
+                               "items": items})
+        if p == "/api/tags/scan":
+            import tagging
+            return self._json(tagging.pass_state())
         if p == "/api/people-scan":
             # Read-only: what the pass is doing, and how much of the archive it
             # has answered. The UI polls this while a scan runs.
@@ -2211,6 +2284,43 @@ class Handler(BaseHTTPRequestHandler):
             info = _ZIPS[token]
             return self._json({"id": token, "files": info["files"],
                                "total": info["total"]})
+
+        if p == "/api/tags/scan":
+            # Start a tagging pass. One profile, or every profile on both
+            # platforms when none is named. It runs in the background: a profile
+            # is hundreds of model calls, and the request must answer at once.
+            import tagging
+            name = clean_profile_name(str(body.get("profile") or ""))
+            plat = str(body.get("platform") or "").strip().lower()
+            try:
+                limit = max(0, int(body.get("limit") or 0))
+            except (TypeError, ValueError):
+                limit = 0
+            try:
+                workers = max(1, min(8, int(body.get("workers") or 3)))
+            except (TypeError, ValueError):
+                workers = 3
+            eng = get_engine()
+            folders: list[tuple] = []
+            for pl in ([plat] if plat in ("instagram", "tiktok")
+                       else ["instagram", "tiktok"]):
+                try:
+                    handles = eng._handle_folders(pl)
+                except Exception:
+                    handles = {}
+                if name:
+                    hit = handles.get(name.lower())
+                    if hit:
+                        folders.append((eng._platform_folder(hit[0], pl) / hit[1], pl))
+                else:
+                    for base, spelling in handles.values():
+                        folders.append((eng._platform_folder(base, pl) / spelling, pl))
+            if not folders:
+                return self._json({"ok": False, "error": "no such profile"})
+            return self._json(tagging.start_pass(folders, limit, workers))
+        if p == "/api/tags/scan/stop":
+            import tagging
+            return self._json(tagging.stop_pass())
 
         if p == "/api/add":
             raw = body.get("profiles")

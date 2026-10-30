@@ -6129,6 +6129,17 @@ function buildAllBar(profileCount){
   stills.onclick = openStaticPanel;
   bar.appendChild(stills);
 
+  // Tags: a model reads every picture (and a video's first frame) and writes
+  // what is in it, plus the profile owner's name from the sidecar. The panel
+  // both starts that pass and searches what it has produced.
+  const tagsBtn = document.createElement("button");
+  tagsBtn.className = "fchip";
+  tagsBtn.id = "tagsChip";
+  tagsBtn.title = "Tag the archive with AI, and search it by tag";
+  tagsBtn.textContent = "🏷 Tags";
+  tagsBtn.onclick = openTagsPanel;
+  bar.appendChild(tagsBtn);
+
   refreshJunk();
 }
 
@@ -7639,6 +7650,171 @@ async function cleanJunk(){
 
 let staticPoll = null;
 let staticOpen = false;
+
+// ---------------------------------------------------------------------------
+// Tags: what the archive is made of, and a way to find it by word.
+//
+// The pass is a model call per picture and per video (first frame), so it runs
+// in the server, one profile at a time, and this panel only reports it. Search
+// is AND across the tags given: "night, leather" means both, which is what
+// typing two words is meant to mean.
+// ---------------------------------------------------------------------------
+let tagPoll = null;
+
+function tagThumb(it){
+  const q = `profile=${encodeURIComponent(it.profile)}&file=${encodeURIComponent(it.file)}`
+    + `&platform=${encodeURIComponent(it.platform)}`
+    + (it.section && it.section !== "main" ? `&section=${encodeURIComponent(it.section)}` : "");
+  return {thumb: `/thumb?${q}`, full: `/media?${q}`};
+}
+
+function paintTagResults(items, note){
+  const grid = $("tagGrid");
+  if(!grid) return;
+  grid.innerHTML = "";
+  if(!items.length){
+    // esc() because both strings are ours today but a tag can reach this
+    // path later; every other label in this file goes through it too.
+    grid.innerHTML = `<div class="gempty" style="grid-column:1/-1">${esc(note || "Nothing tagged with that yet.")}</div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for(const it of items){
+    const {thumb, full} = tagThumb(it);
+    const a = document.createElement("a");
+    a.href = full;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.title = `${it.profile} · ${it.file}`;
+    a.style.cssText = "display:block;aspect-ratio:1;overflow:hidden;border-radius:6px;background:var(--panel)";
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.src = thumb;
+    img.style.cssText = "width:100%;height:100%;object-fit:cover";
+    a.appendChild(img);
+    frag.appendChild(a);
+  }
+  grid.appendChild(frag);
+}
+
+async function runTagSearch(){
+  const box = $("tagSearch");
+  const tags = (box && box.value || "").trim();
+  if(!tags){ toast("Type a tag first"); return; }
+  const note = $("tagNote");
+  if(note) note.textContent = "Searching…";
+  try{
+    const r = await (await fetch(`/api/tags/search?tags=${encodeURIComponent(tags)}`)).json();
+    if(!r.ok){ if(note) note.textContent = r.error || "Search failed"; return; }
+    paintTagResults(r.items || []);
+    if(note) note.textContent = `${r.count} match${r.count === 1 ? "" : "es"} for ${r.tags.join(" + ")}`;
+  }catch(e){
+    if(note) note.textContent = "Could not search: " + e.message;
+  }
+}
+
+async function paintTagChips(){
+  const host = $("tagChips");
+  if(!host) return;
+  try{
+    const d = await (await fetch("/api/tags/list?limit=40")).json();
+    host.innerHTML = "";
+    const tags = d.tags || [];
+    if(!tags.length){
+      host.innerHTML = `<span class="hint">Nothing tagged yet — press “Tag this archive”.</span>`;
+      return;
+    }
+    for(const t of tags){
+      const b = document.createElement("button");
+      b.className = "fchip";
+      b.innerHTML = `${esc(t.tag)}<span class="n">${t.n}</span>`;
+      b.onclick = () => {
+        const box = $("tagSearch");
+        if(box) box.value = t.tag;
+        runTagSearch();
+      };
+      host.appendChild(b);
+    }
+  }catch(e){ /* chips are a convenience; a failure here must not hide the panel */ }
+}
+
+function paintTagScan(st){
+  const note = $("tagNote");
+  const scan = $("tagScan");
+  const stop = $("tagStop");
+  if(!note) return;
+  if(st && st.running){
+    if(scan){ scan.disabled = true; scan.textContent = "Tagging…"; }
+    if(stop) stop.style.display = "";
+    note.textContent = `Tagging ${st.profile || "…"} — ${st.tagged || 0} tagged, `
+      + `${st.profiles_done || 0}/${st.profiles_total || 0} profiles`;
+  }else{
+    if(scan){ scan.disabled = false; scan.textContent = "Tag this archive"; }
+    if(stop) stop.style.display = "none";
+  }
+}
+
+async function refreshTagScan(){
+  try{
+    const st = await (await fetch("/api/tags/scan")).json();
+    paintTagScan(st);
+    if(st.running){
+      clearTimeout(tagPoll);
+      tagPoll = setTimeout(refreshTagScan, 2500);
+    }else{
+      paintTagChips();
+    }
+    return st;
+  }catch(e){ return null; }
+}
+
+function openTagsPanel(){
+  let box = $("tagsBox");
+  if(box) box.remove();
+  box = document.createElement("div");
+  box.id = "tagsBox";
+  box.className = "banner";
+  box.style.cssText = "display:block;background:var(--panel-2);border-color:var(--line-2);color:var(--text)";
+  box.innerHTML = `
+    <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+      <b style="font-size:13.5px">🏷 Tags</b>
+      <input id="tagSearch" placeholder="tags, comma for AND — e.g. night, leather"
+             style="flex:1;min-width:220px;background:var(--panel);color:var(--text);
+                    border:1px solid var(--line-2);border-radius:6px;padding:6px 9px;font:inherit">
+      <button class="small" id="tagGo">Search</button>
+      <span class="hint" id="tagNote" style="flex:1;min-width:160px"></span>
+      <button class="small" id="tagScan">Tag this archive</button>
+      <button class="small danger" id="tagStop" style="display:none">Stop</button>
+      <button class="small" id="tagClose">Close</button>
+    </div>
+    <div id="tagChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px"></div>
+    <div id="tagGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+         gap:6px;margin-top:11px;max-height:62vh;overflow:auto"></div>`;
+  $("profileGrid").parentElement.insertBefore(box, $("profileGrid"));
+  $("tagClose").onclick = () => { box.remove(); clearTimeout(tagPoll); };
+  $("tagGo").onclick = runTagSearch;
+  $("tagSearch").addEventListener("keydown", (e) => { if(e.key === "Enter") runTagSearch(); });
+  $("tagStop").onclick = async () => {
+    await post("/api/tags/scan/stop", {});
+    setTimeout(refreshTagScan, 800);
+  };
+  $("tagScan").onclick = async () => {
+    const st = await refreshTagScan();
+    if(st && st.running){ toast("Already tagging"); return; }
+    const ok = confirm("Tag the whole archive?\n\n"
+      + "One model call per picture, and one per video (its first frame). "
+      + "It runs in the background, one profile at a time, and picks up where it "
+      + "left off if you stop it.");
+    if(!ok) return;
+    const r = await post("/api/tags/scan", {});
+    if(!r.ok){ toast(r.error || "Could not start tagging"); return; }
+    toast(`Tagging ${r.profiles} profiles — this takes a while`);
+    refreshTagScan();
+  };
+  paintTagChips();
+  refreshTagScan();
+}
 
 function openStaticPanel(){
   staticOpen = true;
