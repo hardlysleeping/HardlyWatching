@@ -6431,8 +6431,20 @@ async function bookmarkPost(username, file, plat, on, category){
   // The write answers with the category counts, so the picker's "(n)" moves on
   // its next open with no second request -- a grid has no bookmarks-view fetch
   // to piggyback on, and a reload used to be the only thing that updated them.
-  if(r && Array.isArray(r.categories)) bmCats = r.categories;
+  // Two different lists come back and they used to share one key:
+  //   all_categories -> every category with its count (the "(n)" labels)
+  //   categories     -> the ids THIS post is in (what the ticks are drawn from)
+  // The server wrote both to `categories`, so the post's own ids were
+  // overwritten by the global list: nothing ever ticked, and the title read
+  // "#[object Object]".
+  if(r && Array.isArray(r.all_categories)) bmCats = r.all_categories;
+  if(r) r.categoryIds = catIds(r.categories);
   return r;
+}
+
+// Ids out of either shape the API has used: [1, 2] or [{id: 1}, {id: 2}].
+function catIds(list){
+  return (list || []).map(c => String(c && typeof c === "object" ? c.id : c));
 }
 
 function paintBook(btn, saved){
@@ -6454,7 +6466,11 @@ function bookmarkPicker(username, file, plat, current, saved){
   // bookmark is removed from here. There is no "one tap and it is gone".
   const cats = Array.isArray(current) ? current.map(String)
     : (current === undefined || current === null || current === "none" ? [] : [String(current)]);
-  const inCat = (id) => cats.includes(String(id));
+  // A bookmark saved without a category is stored as category 0. The picker
+  // draws that as a row called "No category" with the synthetic key "none", so
+  // both spellings have to mean the same thing or the row never ticks.
+  const isNone = (id) => String(id) === "none" || String(id) === "0";
+  const named = () => cats.filter(c => !isNone(c));
   const isSaved = saved === undefined ? cats.length > 0 : !!saved;
 
   const wrap = document.createElement("div");
@@ -6479,10 +6495,19 @@ function bookmarkPicker(username, file, plat, current, saved){
   let live = cats.slice();
   let liveSaved = isSaved;
 
+  // Counts. Once the server sends `all_categories` these are its numbers; until
+  // then the "(n)" beside a row is moved here, so filing a post visibly changes
+  // the number instead of sitting on the old one.
+  const bump = (catId, delta) => {
+    const c = bmCats.find(x => String(x.id) === String(catId));
+    if(c) c.count = Math.max(0, (c.count || 0) + delta);
+  };
+
   const repaintRows = () => {
     for(const b of list.querySelectorAll("[data-cat]")){
       const id = b.dataset.cat;
-      const on = id === "none" ? live.length === 0 && liveSaved : live.includes(id);
+      const on = isNone(id) ? (live.filter(x => !isNone(x)).length === 0 && liveSaved)
+                            : live.includes(id);
       b.classList.toggle("on", on);
       b.dataset.on = on ? "1" : "0";
       const mark = b.querySelector(".bmcheck");
@@ -6495,8 +6520,10 @@ function bookmarkPicker(username, file, plat, current, saved){
   };
 
   const apply = async (nextCats, nextSaved) => {
-    live = nextCats; liveSaved = nextSaved;
-    repaintRows();
+    live = catIds(nextCats); liveSaved = nextSaved;
+    // The write also returns fresh counts, so the rows are rebuilt rather than
+    // just reticked -- otherwise "(8)" sat there after filing a ninth post.
+    if(liveSaved) drawRows(); else repaintRows();
     paintTitle();
     repaintBookmarksView();
     if(vState) paintViewerActions();
@@ -6515,22 +6542,29 @@ function bookmarkPicker(username, file, plat, current, saved){
     b.appendChild(text);
     b.onclick = async () => {
       const key = String(cat);
-      const isOn = key === "none"
-        ? (live.length === 0 && liveSaved)
+      const isOn = isNone(key)
+        ? (live.filter(x => !isNone(x)).length === 0 && liveSaved)
         : live.includes(key);
+      // What the post is in after this press, computed here rather than read
+      // back: the write's answer is about the write, and trusting a payload for
+      // the new tick state is what left the picker showing nothing.
       let r;
       if(isOn){
         // Untick. Removing the last category removes the bookmark, which is why
         // the row says so before you press it.
+        const next = key === "none" ? [] : live.filter(x => x !== key);
         r = await bookmarkPost(username, file, plat, false, key === "none" ? undefined : cat);
         if(!r || !r.ok){ toast("Could not update bookmarks"); return; }
-        await apply(r.categories ?? [], !!r.bookmarked);
-        if(!r.bookmarked) close();
+        if(!r.all_categories && key !== "none") bump(cat, -1);
+        await apply(next, next.length > 0);
+        if(!next.length) close();
         return;
       }
+      const next = key === "none" ? [] : [...new Set([...live, key])];
       r = await bookmarkPost(username, file, plat, true, cat);
       if(!r || !r.ok){ toast("Could not file that"); return; }
-      await apply(r.categories ?? [cat], true);
+      if(!r.all_categories && key !== "none" && !live.includes(key)) bump(cat, +1);
+      await apply(next, true);
       toast(cat === "none" ? "Bookmarked" : `Filed under ${label}`);
     };
     list.appendChild(b);
@@ -6541,7 +6575,7 @@ function bookmarkPicker(username, file, plat, current, saved){
   // what".
   const paintTitle = () => {
     if(!liveSaved){ title.textContent = "File this bookmark"; return; }
-    const names = live.map(id => {
+    const names = live.filter(id => !isNone(id)).map(id => {
       const c = bmCats.find(x => String(x.id) === String(id));
       return c ? c.name : ("#" + id);
     });
@@ -6597,7 +6631,7 @@ function bookmarkPicker(username, file, plat, current, saved){
     if(made){
       const got = await bookmarkPost(username, file, plat, true, made.id);
       if(!got || !got.ok){ toast("Could not file that"); return; }
-      await apply(got.categories ?? [made.id], true);
+      await apply(got.categoryIds ?? got.categories ?? [made.id], true);
       toast(`Filed under ${made.name}`);
     }
   };
@@ -9396,13 +9430,13 @@ function tileFor(username, post, section){
     // The whole list, not the first id: a post in two categories used to open
     // with only one of them ticked.
     const tagBtn = mkBtn("🏷", "File this bookmark under a category",
-      () => bookmarkPicker(username, first.file, plat, post.categories ?? [], !!post.bookmarked));
+      () => bookmarkPicker(username, first.file, plat, catIds(post.categories), !!post.bookmarked));
     tagBtn.dataset.tag = "1";
     const bb = mkBtn("🔖", "Bookmark this", async () => {
       if(saved){
         // Already saved: open the picker instead of unsaving. The picker's
         // unticked rows and its Remove button are the only ways out.
-        bookmarkPicker(username, first.file, plat, post.categories ?? [], true);
+        bookmarkPicker(username, first.file, plat, catIds(post.categories), true);
         return;
       }
       const want = true;
@@ -10873,7 +10907,7 @@ async function viewerToggleBook(){
   if(post.bookmarked){
     // Same rule as the grid: a saved post opens its categories rather than
     // unsaving itself on one tap.
-    bookmarkPicker(st.username, file, postPlatform(post), post.categories ?? [], true);
+    bookmarkPicker(st.username, file, postPlatform(post), catIds(post.categories), true);
     return;
   }
   const want = true;
@@ -10901,7 +10935,7 @@ function viewerPickCategory(){
   // Every category it is in, or the picker under-reports: `category` is only
   // the first id, and a post can be in several.
   bookmarkPicker(vState.username, file, postPlatform(vState.post),
-                  vState.post.categories ?? [], !!vState.post.bookmarked);
+                  catIds(vState.post.categories), !!vState.post.bookmarked);
 }
 
 // The tile behind the viewer, after a bookmark changed. No file moved, so only

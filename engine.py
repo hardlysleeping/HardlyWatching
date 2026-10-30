@@ -1582,7 +1582,33 @@ def profile_bytes(folder: Path, nfiles: int = -1) -> int:
     hit = _PROFILE_BYTES.get(key)
     if hit is not None and hit[0] == nfiles and (now - hit[1]) < PROFILE_BYTES_TTL:
         return hit[2]
-    nbytes = _walk_bytes(folder)
+    nbytes = _walk_bytes(folder) - profile_trash_bytes(folder)
+    if len(_PROFILE_BYTES) >= _PROFILE_BYTES_MAX:
+        _PROFILE_BYTES.clear()
+    _PROFILE_BYTES[key] = (nfiles, now, nbytes)
+    return nbytes
+
+
+def profile_trash_bytes(folder: Path) -> int:
+    """Bytes sitting in this profile's trash/, kept out of the live total.
+
+    Trash is pending deletion, not archive: counting it in the size made
+    trashing a post look like it did nothing at all, because the number on the
+    card never moved. It is reported separately so the card can say so.
+    """
+    tdir = Path(folder) / "trash"
+    try:
+        if not tdir.is_dir():
+            return 0
+    except OSError:
+        return 0
+    key = "trash:" + str(folder)
+    now = time.time()
+    nfiles = len(_gallery_media(tdir))
+    hit = _PROFILE_BYTES.get(key)
+    if hit is not None and hit[0] == nfiles and (now - hit[1]) < PROFILE_BYTES_TTL:
+        return hit[2]
+    nbytes = _walk_bytes(tdir)
     if len(_PROFILE_BYTES) >= _PROFILE_BYTES_MAX:
         _PROFILE_BYTES.clear()
     _PROFILE_BYTES[key] = (nfiles, now, nbytes)
@@ -2915,6 +2941,7 @@ def gallery_profiles(self) -> list[dict]:
                 # the folder the first time and is remembered after that; see
                 # profile_bytes(). The grid sorts by it.
                 "bytes": profile_bytes(folder, len(media)),
+                "trash_bytes": profile_trash_bytes(folder),
                 "root": str(folder.parent),
             }
         disk = (stamp, cards)

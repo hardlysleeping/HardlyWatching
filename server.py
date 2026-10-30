@@ -2794,7 +2794,7 @@ class Handler(BaseHTTPRequestHandler):
                     cur = db.bookmark_for(plat, prof, name)
                     if cur.get("bookmarked"):
                         return self._json({"ok": True, **cur,
-                                           "categories": db.bookmark_categories()})
+                                           "all_categories": db.bookmark_categories()})
                     cat = 0
                 else:
                     cat = None
@@ -2805,10 +2805,10 @@ class Handler(BaseHTTPRequestHandler):
                                    # from this answer, so the number moves as
                                    # soon as the write lands instead of staying
                                    # stale until a reload.
-                                   "categories": db.bookmark_categories()})
+                                   "all_categories": db.bookmark_categories()})
             got = db.set_bookmark(plat, prof, name, True, cat)
             return self._json({"ok": True, **got,
-                               "categories": db.bookmark_categories()})
+                               "all_categories": db.bookmark_categories()})
 
         if p == "/api/bookmark/category":
             # The categories themselves: add, rename, delete. Deleting one never
@@ -2821,21 +2821,21 @@ class Handler(BaseHTTPRequestHandler):
                 # leave in the page, so a picker opened before any save showed
                 # one row ("No category") and no ticks at all.
                 return self._json({"ok": True,
-                                   "categories": db.bookmark_categories()})
+                                   "all_categories": db.bookmark_categories()})
             if op == "add":
                 made = db.add_bookmark_category(str(body.get("name") or ""))
                 if not made:
                     return self._json({"ok": False, "error": "a name is needed"})
                 return self._json({"ok": True, "category": made,
-                                   "categories": db.bookmark_categories()})
+                                   "all_categories": db.bookmark_categories()})
             if op == "rename":
                 ok = db.rename_bookmark_category(int(body.get("id") or 0),
                                                  str(body.get("name") or ""))
-                return self._json({"ok": ok, "categories": db.bookmark_categories()})
+                return self._json({"ok": ok, "all_categories": db.bookmark_categories()})
             if op == "delete":
                 n = db.delete_bookmark_category(int(body.get("id") or 0))
                 return self._json({"ok": True, "kept": n,
-                                   "categories": db.bookmark_categories()})
+                                   "all_categories": db.bookmark_categories()})
             return self._json({"ok": False, "error": "unknown op"})
 
         if p == "/api/shorts/feed":
