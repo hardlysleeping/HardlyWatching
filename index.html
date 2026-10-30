@@ -2812,11 +2812,12 @@ function paintDrives(){
     return;
   }
 
-  // Only drives a person would put files on: the system drive is noise, and a
-  // drive that is neither in use nor writable cannot be used at all.
-  const shown = rows.filter(d =>
-    !(d.system && !d.is_downloads && !d.is_archive) &&
-    (d.writable || d.is_downloads || d.is_archive));
+  // Every drive the machine reports is listed, including the one the system
+  // itself lives on -- hiding a drive because of what it holds is not a
+  // decision this page gets to make. A row that cannot be written is shown as
+  // it is (the pill says why) instead of being dropped, so "where did my disk
+  // go" never has an answer other than the disk itself.
+  const shown = rows;
   if(count) count.textContent = shown.length
     ? `${shown.length} drive${shown.length === 1 ? "" : "s"}` : "";
   if(!shown.length){
@@ -2855,6 +2856,13 @@ function paintDrives(){
       t.title = "The gallery shows this folder";
       head.appendChild(t);
     }
+    if(d.system){
+      const t = document.createElement("span");
+      t.className = "tagtag";
+      t.textContent = "this machine";
+      t.title = "The disk the system and your home folder live on";
+      head.appendChild(t);
+    }
     if(!d.writable){
       const t = document.createElement("span");
       t.className = "pill";
@@ -2891,7 +2899,7 @@ function paintDrives(){
         () => useDriveForDownloads(target, use));
       acts.appendChild(use);
     }
-    if(d.writable && !d.is_archive && !d.is_downloads){
+    if(d.writable && d.has_archive && !d.is_archive && !d.is_downloads){
       const read = driveBtn("Read it too", `Also show ${target} in the gallery`,
         () => readDriveToo(target, read));
       acts.appendChild(read);

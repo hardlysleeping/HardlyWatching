@@ -1988,6 +1988,20 @@ def _tiktok_roots_uncached(root: Path) -> tuple[Path, ...]:
     # the Instagram folder while a stranger's directory is never touched.
     if not sibling.exists():
         return (sibling, nested)
+    # An EMPTY folder is not a stranger -- it is the placeholder this app creates
+    # itself (the writer makes the folder before the first file lands in it, and
+    # `tiktok_roots` is asked before that). Refusing to adopt it is what nested
+    # TikTok inside the Instagram folder on a brand-new drive: the sibling
+    # existed but held nothing, so the next run fell back to `<root>/tiktok`,
+    # wrote its marker there, and that marker then made the nested copy look
+    # like the real archive. A folder with anything in it that is not ours is
+    # still left alone.
+    try:
+        empty = sibling.is_dir() and not any(sibling.iterdir())
+    except OSError:
+        empty = False
+    if empty:
+        return (sibling, nested)
     return (nested,)
 
 

@@ -200,13 +200,26 @@ class ChoosesWhereToWrite(RootChoiceCase):
 
     def test_an_archived_profile_keeps_its_own_drive(self):
         self.archived(self.a, "delta")
-        self.fullness(driveA=96, driveB=40)
+        self.fullness(driveA=40, driveB=40)
 
         job = self.added("delta")
 
         # Its files are on A: writing to B would split one profile in two.
         self.assertEqual(job.root, str(self.a))
         self.assertEqual(self.eng.job_root(job), self.a)
+
+    def test_an_archived_profile_leaves_a_full_drive_for_one_with_room(self):
+        # The one exception, and it is deliberate: a profile on a drive at its
+        # stop limit continues on a drive that has room instead of waiting for
+        # space that is not coming. What is already archived stays on A.
+        self.archived(self.a, "delta")
+        self.fullness(driveA=96, driveB=40)
+
+        job = self.added("delta")
+
+        self.assertEqual(job.root, str(self.b))
+        self.assertIn(str(self.b), job.message)
+        self.assertTrue((self.a / "delta").is_dir(), "nothing may be moved off A")
 
     def test_an_unplugged_root_is_never_chosen(self):
         gone = self.base / "unplugged" / "instagram"
@@ -334,7 +347,20 @@ class MovesAJobThatCannotRun(RootChoiceCase):
         self.assertTrue(any("writing to" in line for line in job.tail),
                         "the switch should be in the job's log too")
 
-    def test_a_profile_already_on_the_pinned_drive_is_never_moved(self):
+    def test_a_profile_already_on_the_pinned_drive_stays_while_it_has_room(self):
+        job = self.pinned_job("mu")
+        self.archived(self.b, "mu")
+        self.eng.roots = [self.a, self.b, self.c]
+        self.fullness(driveA=40, driveB=40, driveC=40)
+
+        note = self.eng._reroot(job)
+
+        self.assertEqual(note, "")
+        self.assertEqual(job.root, str(self.b), "one profile split across drives")
+
+    def test_a_profile_already_on_a_full_pinned_drive_continues_elsewhere(self):
+        # Deliberate, and the reason a half-finished profile is not stuck behind
+        # a drive it has outgrown: what is on B stays on B, the rest goes to C.
         job = self.pinned_job("mu")
         self.archived(self.b, "mu")
         self.eng.roots = [self.a, self.b, self.c]
@@ -342,8 +368,9 @@ class MovesAJobThatCannotRun(RootChoiceCase):
 
         note = self.eng._reroot(job)
 
-        self.assertEqual(note, "")
-        self.assertEqual(job.root, str(self.b), "one profile split across drives")
+        self.assertTrue(note)
+        self.assertEqual(job.root, str(self.c))
+        self.assertTrue((self.b / "mu").is_dir(), "nothing may be moved off B")
 
     def test_a_job_that_never_ran_leaves_a_drive_that_is_gone(self):
         job = self.pinned_job("nu")

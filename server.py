@@ -1136,6 +1136,27 @@ def _find_terminal() -> list[str] | None:
     return None
 
 
+def _creatable(folder: Path) -> bool:
+    """True when this folder could be created here.
+
+    Walks up to the nearest directory that exists and asks whether this process
+    may write in it -- the same question `mkdir -p` answers. A path whose parent
+    is root-owned is therefore reported honestly instead of being called
+    unwritable just because the mount point itself is not ours to write.
+    """
+    p = Path(folder)
+    for _ in range(64):
+        try:
+            if p.is_dir():
+                return os.access(str(p), os.W_OK)
+        except OSError:
+            return False
+        if p.parent == p:
+            return False
+        p = p.parent
+    return False
+
+
 def _mounted_disks(eng) -> list[dict]:
     """Real mounted drives, and the archive folder each one would contribute.
 
@@ -1196,6 +1217,16 @@ def _mounted_disks(eng) -> list[dict]:
         if st.f_blocks == 0:
             continue
         m = Path(mount)
+        try:
+            home_r = Path.home().resolve()
+        except OSError:
+            home_r = Path("/var/home")
+        # The machine's own disk cannot hold an archive at its top level: `/` and
+        # `/var/home` belong to root, so the only place a folder can be created
+        # on it is inside the user's own home directory. It is offered like any
+        # other drive rather than hidden -- the same "use this drive" button,
+        # pointed at a path this process may actually write.
+        is_system_mount = bool(mount == "/" or m == home_r or m in home_r.parents)
         # A root is an Instagram archive folder. The layout is
         # `<mount>/hardlywatching/instagram`, with the older `<mount>/instagram`
         # still read so a drive that predates the wrapper folder keeps working.
@@ -1204,6 +1235,8 @@ def _mounted_disks(eng) -> list[dict]:
         cands = [m / "hardlywatching" / "instagram", m / "instagram"]
         if m.name in ("instagram", "hardlywatching"):
             cands.insert(0, m)
+        if is_system_mount:
+            cands.append(m / home_r.name / "hardlywatching" / "instagram")
         resolved: list[tuple[Path, Path]] = []
         for c in cands:
             try:
@@ -1212,7 +1245,12 @@ def _mounted_disks(eng) -> list[dict]:
                 resolved.append((c, c))
         chosen = next((c for c, r in resolved if r in roots or r == out_root), None)
         if chosen is None:
-            chosen = next((c for c, _r in resolved if c.is_dir()), resolved[0][0])
+            chosen = next((c for c, _r in resolved if c.is_dir()), None)
+        if chosen is None:
+            # Nothing exists yet: take the first candidate this process could
+            # actually create, so the row is not offered as unwritable just
+            # because the top of the disk is owned by root.
+            chosen = next((c for c, _r in resolved if _creatable(c)), resolved[0][0])
         archive = chosen
         try:
             archive_r = archive.resolve()
@@ -1227,10 +1265,6 @@ def _mounted_disks(eng) -> list[dict]:
             has_archive = False
         is_downloads = archive_r == out_root or mount_r == out_root
         is_archive = archive_r in roots or mount_r in roots
-        try:
-            home_r = Path.home().resolve()
-        except OSError:
-            home_r = Path("/var/home")
         row = {
             "path": str(m),
             "label": labels.get(str(Path(source).resolve()), "") or m.name,
@@ -1238,17 +1272,18 @@ def _mounted_disks(eng) -> list[dict]:
             "total_gb": round(total / 1e9, 1),
             "free_gb": round(free / 1e9, 1),
             "used_pct": round(100.0 * (total - free) / total, 1) if total else 0.0,
-            "writable": os.access(str(archive if has_archive else m), os.W_OK),
+            # Writability is asked of the folder that would hold the archive, not
+            # of the mount point: a mount whose top level is root-owned is still
+            # perfectly usable one level down.
+            "writable": os.access(str(archive), os.W_OK) if has_archive
+                        else _creatable(archive),
             "archive": str(archive),
             "has_archive": has_archive,
             "is_downloads": bool(is_downloads),
             "is_archive": bool(is_archive),
-            # The filesystem holding the home folder is the machine's own disk:
-            # listed only if it is already in use, so the page stays about the
-            # drives a person actually plugs in. The home mount is /var/home,
-            # not /var/home/<user>, so a plain equality test misses it.
-            "system": bool(mount_r == Path("/") or mount_r == home_r
-                           or mount_r in home_r.parents),
+            # Informational only -- nothing is filtered on it. Two 1 TB disks
+            # otherwise read as the same row, and this is what tells them apart.
+            "system": is_system_mount,
         }
         # One row per physical device: the same btrfs filesystem is mounted as
         # several subvolumes, and those are one drive. The home mount wins over
