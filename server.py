@@ -2103,6 +2103,22 @@ class Handler(BaseHTTPRequestHandler):
                 out.update({"total": total, "offset": offset, "limit": limit,
                             "has_more": offset + len(posts) < total})
             return self._json(out)
+        if p == "/api/gallery/bin":
+            # What is sitting in the archive drive's own bin. Deleting a profile
+            # moves it here, so the space is not free until this is emptied --
+            # that is the whole reason a delete could look like a no-op.
+            import engine as _eng_bin
+            eng = get_engine()
+            bin_body = self._read_json() if self.command == "POST" else {}
+            if self.command == "POST":
+                body = bin_body or {}
+                if str(body.get("confirm") or "") != "EMPTY":
+                    return self._json({"ok": False, "error": "confirm must be EMPTY"})
+                got = _eng_bin.empty_drive_bin(eng)
+                return self._json({"ok": True, **got,
+                                   "message": "emptied the drive bin"})
+            return self._json({"ok": True, **_eng_bin.drive_bin(eng)})
+
         if p == "/api/bookmarks":
             # The user's own collection: every bookmarked post, newest first,
             # plus the categories they have made. `category` filters the list --

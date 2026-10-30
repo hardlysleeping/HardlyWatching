@@ -6346,9 +6346,9 @@ async function renderAllSection(section){
     spacer.style.flex = "1";
     bar.appendChild(spacer);
     if(posts.length){
-      // Two buttons, because these are two different promises and the old
-      // single one was labelled "Delete" while only moving files to the drive's
-      // Trash bin. The bin first, so the recoverable one is the easy reach.
+      // Two buttons, because these are two different promises: the old single
+      // one was labelled "Delete" while only moving files to the drive's Trash
+      // bin. The bin first, so the recoverable one is the easy reach.
       const bin = document.createElement("button");
       bin.className = "small";
       bin.textContent = `Move all to drive bin (${posts.length})`;
@@ -6364,6 +6364,16 @@ async function renderAllSection(section){
       del.onclick = () => confirmPurgeTrash(posts.length);
       bar.appendChild(del);
     }
+    // The bin itself. Deleting a whole profile puts it here, on the same disk,
+    // so the free space does not move until this is emptied -- which is why a
+    // delete looked like it had done nothing.
+    const empty = document.createElement("button");
+    empty.className = "small";
+    empty.style.marginLeft = "6px";
+    empty.textContent = "Empty drive bin…";
+    empty.title = "Permanently delete everything already in the drive's Trash bin";
+    empty.onclick = () => confirmEmptyDriveBin(empty);
+    bar.appendChild(empty);
   }
 
   bar.appendChild(orderChip(
@@ -6843,6 +6853,49 @@ function confirmClearTrash(n){
 // The permanent one. Deliberately a separate dialog with its own wording: this
 // is the only control in the app that leaves nothing to recover, and the bin
 // button sits right beside it.
+// Empty the archive drive's own Trash bin. Deleting a profile moves the folder
+// into that bin, on the same filesystem, so nothing is freed until it is
+// emptied -- the delete is real, the space just waits.
+async function confirmEmptyDriveBin(btn){
+  let info = {bytes: 0, items: 0};
+  try { info = await (await fetch("/api/gallery/bin")).json(); } catch(e){}
+  if(!info.items){ toast("The drive bin is already empty"); return; }
+  const wrap = document.createElement("div");
+  wrap.className = "confirm";
+  const box = document.createElement("div");
+  box.className = "box";
+  const p = document.createElement("p");
+  p.textContent = `Empty the drive bin? ${fmtBytes(info.bytes)} in ${info.items} item${info.items===1?"":"s"}.`;
+  const why = document.createElement("div");
+  why.className = "why";
+  why.textContent = "This is the bin your deleted profiles went to. Emptying it "
+    + "is what actually frees the space. There is no undo.";
+  const row = document.createElement("div");
+  row.className = "row";
+  const cancel = document.createElement("button");
+  cancel.className = "small";
+  cancel.textContent = "Cancel";
+  const go = document.createElement("button");
+  go.className = "small danger";
+  go.textContent = `Empty it (${fmtBytes(info.bytes)})`;
+  row.appendChild(cancel); row.appendChild(go);
+  box.appendChild(p); box.appendChild(why); box.appendChild(row);
+  wrap.appendChild(box);
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  cancel.onclick = close;
+  wrap.onclick = (e) => { if(e.target === wrap) close(); };
+  go.onclick = async () => {
+    go.disabled = true;
+    go.textContent = "Emptying…";
+    const r = await post("/api/gallery/bin", {confirm: "EMPTY"});
+    close();
+    if(!r || !r.ok){ toast((r && r.error) || "Could not empty the bin"); return; }
+    toast(`Freed ${fmtBytes(r.bytes)}`);
+    renderAllSection("trash");
+  };
+}
+
 function confirmPurgeTrash(n){
   const wrap = document.createElement("div");
   wrap.className = "confirm";

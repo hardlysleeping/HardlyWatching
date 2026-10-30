@@ -2660,6 +2660,69 @@ def _to_desktop_trash(path: Path) -> None:
         pass
 
 
+def _drive_bin_roots(roots) -> list[Path]:
+    """The trash bins that sit on the same filesystem as the archive.
+
+    Deleting a profile sends it here (see _to_desktop_trash), which frees no
+    space at all until the bin is emptied -- that is why a delete can look like
+    it did nothing.
+    """
+    out: list[Path] = []
+    for root in roots:
+        for name in (".Trash-1000", ".Trash", ".Trash-0"):
+            p = Path(root) / name
+            try:
+                if p.is_dir():
+                    out.append(p)
+            except OSError:
+                continue
+    return out
+
+
+def drive_bin(eng) -> dict:
+    """How much is waiting in the archive drive's bin."""
+    paths = _drive_bin_roots(eng.roots)
+    total = 0
+    items = 0
+    for p in paths:
+        total += _walk_bytes(p)
+        for sub in ("files", "info"):
+            d = p / sub
+            try:
+                if d.is_dir():
+                    items += sum(1 for _ in d.iterdir())
+            except OSError:
+                continue
+    return {"paths": [str(p) for p in paths], "bytes": total, "items": items}
+
+
+def empty_drive_bin(eng) -> dict:
+    """Unlink everything in the archive drive's bin. No undo."""
+    freed = 0
+    removed = 0
+    for p in _drive_bin_roots(eng.roots):
+        for sub in ("files", "info"):
+            d = p / sub
+            try:
+                if not d.is_dir():
+                    continue
+                entries = list(d.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_dir() and not entry.is_symlink():
+                        freed += _walk_bytes(entry)
+                        shutil.rmtree(entry)
+                    else:
+                        freed += entry.stat().st_size
+                        entry.unlink()
+                    removed += 1
+                except OSError:
+                    continue
+    return {"bytes": freed, "items": removed}
+
+
 def _folder_totals(folder: Path) -> tuple[int, int]:
     """(file count, bytes) for a profile folder, symlinks skipped.
 
