@@ -397,6 +397,21 @@ SESSION_PROMPT = re.compile(
 
 PROFILE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 
+# instaloader prints this when it cannot verify the saved session, then falls
+# back to asking for a password. WHY the check failed decides everything:
+# a 401 "please wait a few minutes" is the account being refused, but an empty
+# body ("Expecting value: line 1 column 1"), a 5xx or a 429 is Instagram
+# throttling the IP -- the cookie is intact and the very same session file logs
+# in fine minutes later. Parking the queue on the second kind told the user to
+# log in again over a session that was never broken.
+LOGIN_CHECK_ERR = re.compile(r"Error when checking if logged in", re.IGNORECASE)
+THROTTLE_SYMPTOM = re.compile(
+    r"(Expecting value|JSONDecodeError|429|Too Many Requests|"
+    r"500 Internal Server Error|502 Bad Gateway|503 Service|"
+    r"feedback_required|Connection reset|timed out)",
+    re.IGNORECASE,
+)
+
 
 def list_sessions() -> list[dict]:
     """Every saved instaloader session, newest first, each with a validity check."""
@@ -6657,7 +6672,8 @@ class Engine:
         when the file is complete, and yt-dlp keeps `.part` files, so a killed
         run leaves no half-file for the next run to mistake for a finished one.
 
-        Not persisted: a service restart resumes downloading (see `_load_state`).
+        Persisted: a restart keeps each platform paused or running exactly as it
+        was (see `_load_state`, which restores `user_paused`).
         """
         platform = (platform or "instagram").strip().lower()
         if platform in ("instagram", "all"):
@@ -8771,6 +8787,8 @@ class Engine:
         crash_line = ""
         pic_warn = False
         session_hit = False
+        login_line = ""
+        login_throttle = False
         last_err = ""
         try:
             proc = subprocess.Popen(
@@ -8815,6 +8833,10 @@ class Engine:
                     # instaloader's own note that it is retrying anonymously
                     # because this may be a block rather than a deletion.
                     blocked_hint = True
+                if LOGIN_CHECK_ERR.search(line):
+                    login_line = line.strip()
+                    if THROTTLE_SYMPTOM.search(line):
+                        login_throttle = True
                 if SESSION_PROMPT.search(line):
                     # It is asking for a password because the session check
                     # failed. Everything after this -- the traceback, the
@@ -8849,6 +8871,25 @@ class Engine:
         # the same saved session gets the same 401, so the queue sat idle while
         # the UI said "rate limited". Say "session rejected" and let the user
         # switch accounts.
+        if session_hit and login_throttle:
+            # The session check failed because Instagram throttled it, not
+            # because the account was refused: the response had no JSON in it
+            # at all. The saved cookie still works, so this is a cooldown, and
+            # any "log in again" flag left by an earlier run has to go -- it
+            # was pointing at a session that was never broken.
+            self._set(job, error=(login_line or last_err
+                                  or "Instagram throttled the session check")
+                      + "  (the saved session is still valid; retrying after a "
+                        "cooldown instead of asking for a new login)")
+            with self.lock:
+                # Any "log in again" flag is stale now: this run proves the
+                # session file still authenticates, it was Instagram that
+                # refused to answer. Clearing unconditionally also covers the
+                # case where the account name cannot be resolved.
+                self.session_rejected = {}
+            self.save_state()
+            return "retryable"
+
         if session_hit:
             self._set(job, error="")
             self._session_rejected_reason = (
