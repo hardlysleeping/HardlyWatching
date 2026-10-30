@@ -962,8 +962,6 @@
   @media (prefers-reduced-motion:reduce){
     .ptile .acts button.pop,#vwrap [data-vfav].pop{animation:none}
   }
-  /* On touch devices there is no hover, so keep the actions visible. */
-  @media (hover:none){.ptile .acts{opacity:1}}
   /* Destructive action (trash / restore) sits alone in the bottom-right corner,
      far from the heart button in the top-left, so a fat-finger on a phone
      cannot land on it by mistake. */
@@ -971,11 +969,17 @@
     opacity:0;transition:.15s;z-index:3}
   .ptile:hover .acts-right,.ptile:focus-within .acts-right{opacity:1}
   .ptile.showacts .acts-right{opacity:1}
-  @media (hover:none){.ptile .acts-right{opacity:1}}
   .ptile .acts-right button{background:rgba(0,0,0,.7);border:none;color:#fff;
     border-radius:6px;width:30px;height:30px;font-size:14px;line-height:1;
     cursor:pointer;padding:0}
   .ptile .acts-right button:hover{background:rgba(0,0,0,.9)}
+  /* A phone tile is ~135px wide and has no hover, so these clusters had to be
+     shown permanently -- buttons on black chips sat on the corner of every
+     picture. The tap opens the viewer, which carries the same actions (like /
+     bookmark / download / trash), so on a coarse pointer the grid is the picture
+     and nothing else. Declared AFTER the two clusters: a media query adds no
+     specificity, so an earlier display:none would lose to their display:flex. */
+  @media (pointer:coarse){.ptile .acts,.ptile .acts-right{display:none}}
   .shead{grid-column:1/-1;color:var(--muted);font-size:12px;font-weight:600;
     text-transform:uppercase;letter-spacing:.6px;margin:14px 0 2px}
   .shead:first-child{margin-top:0}
@@ -1254,6 +1258,14 @@
     .fchip{display:inline-flex;align-items:center}
     .gviews button{display:inline-flex;align-items:center;justify-content:center}
     .vact{width:40px;height:40px;font-size:17px}
+    /* iOS zooms the whole page when a text field under 16px takes focus, and
+       never zooms back out -- tapping the paste box left the page magnified
+       with its right edge, and any Close button on it, off the screen. 16px is
+       the threshold, not a style choice. */
+    input:not([type=checkbox]):not([type=radio]), textarea, select{font-size:16px}
+    /* The pager/search fields carry their own 12-12.5px rules, which beat the
+       line above on specificity -- and a select under 16px zooms the page too. */
+    .pager .listsearch,.listsearch-row input.listsearch{font-size:16px}
     .vnav{width:44px;height:64px}
     .ptile .acts button{width:34px;height:34px;font-size:15px}
     /* Hover previews are a mouse idea; on touch they cost a transcode and never
@@ -2393,6 +2405,12 @@ const SPEC = [
   // of.
   {k:"tiktok.chunk_all", l:"\"All\" a slice at a time", d:"while a profile is set to all, fetch 25 videos a turn, then send it to the back of the queue so the next profile gets a turn. Off = all means the whole profile in one go.", t:"bool", flag:"--max-downloads", dotted:true},
   {k:"tiktok.chunk_size", l:"Videos a turn", d:"how many each turn fetches while the slice toggle above is on", t:"num", flag:"--max-downloads", dotted:true},
+  // The one that decides how long a requeue takes. On, yt-dlp stops at the
+  // first video the archive already holds -- a profile that is up to date ends
+  // after the first listing page instead of walking every page to discover
+  // nothing. Off is the full walk, which is the only way to fill a gap below
+  // the newest post (an interrupted run, a backfill).
+  {k:"tiktok.new_only", l:"New videos only", d:"stop at the first video already downloaded, so re-checking a profile ends after one page instead of walking all of it. Off = the whole profile, which is what fills a gap below the newest post.", t:"bool", flag:"--break-on-existing", dotted:true},
   {k:"tiktok.quality", l:"Video quality", d:"TikTok rung: 540, 720 or 1080. 0 = best available", t:"num", flag:"-f", dotted:true},
   {k:"tiktok.date_after", l:"Only videos on/after", d:"--dateafter YYYYMMDD. blank = no limit", t:"str", flag:"--dateafter", dotted:true},
   {k:"tiktok.date_before", l:"Only videos on/before", d:"--datebefore YYYYMMDD. blank = no limit", t:"str", flag:"--datebefore", dotted:true},

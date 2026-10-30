@@ -85,6 +85,13 @@ class TikTokSettings:
     chunk_all: bool = False              # all = a slice per turn, then requeue
     chunk_size: int = 25                 # --max-downloads, when the above is on
 
+    # -- how far a requeue looks
+    # On, yt-dlp stops at the first video the archive already holds, so
+    # re-checking a profile that is up to date ends after the first listing page
+    # instead of walking every page to discover nothing. Off is the full walk,
+    # which is the only way to fill a gap below the newest post.
+    new_only: bool = True                # --break-on-existing
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -380,6 +387,17 @@ def build_download_cmd(handle: str, dest: Path, archive: Path,
                        settings: TikTokSettings | None = None) -> list[str]:
     s = settings or TikTokSettings()
     cmd = _base_download_cmd(handle, dest, archive, count, s)
+    if s.new_only:
+        # Stop at the first video the archive already holds. A profile that is
+        # up to date then ends after the first listing page instead of walking
+        # every page to discover nothing -- which is what a requeue used to cost
+        # on a 1,600-video profile (~80 pages) for zero new files.
+        #
+        # NOT added to build_saved_download_cmd: that list is a fixed set of
+        # links, and stopping at the first one already fetched would skip the
+        # rest of the collection. Turning this off is the full walk, which is
+        # the only way to fill a gap below the newest post.
+        cmd += ['--break-on-existing']
     # A jar the app holds comes first, and the browser is only a fallback.
     #
     # Reading the browser every run is not a session the app has: it lasts exactly
