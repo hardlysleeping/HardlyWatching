@@ -623,6 +623,17 @@
     color:var(--text);border:1px solid var(--line);border-radius:7px;
     padding:5px 9px;font-size:12.5px;font-family:inherit}
   .pager button.small{padding:3px 9px}
+  /* The page label carries `margin-left:auto`, so every control to its right is
+     positioned by the label's WIDTH -- and "page 1 / 17" is not as wide as
+     "page 1 / 208". That made the Waiting and Finished pagers line up on one
+     platform and sit a dozen pixels apart on the other. Fix the width, align
+     the digits, and every pager in the app lands on the same columns. */
+  .pager .pagelabel{min-width:92px;text-align:right;white-space:nowrap;
+    font-variant-numeric:tabular-nums}
+  /* Same reason: the jump select grows with "→ page 208" and shrinks with
+     "→ page 2", which drags the page label sideways. A fixed width pins the
+     whole row to one set of columns. */
+  .pager select[data-role=size],.pager select[data-role=jump]{width:112px}
   .gsearch{display:flex;align-items:center;gap:8px;margin-bottom:12px}
   .gsearch input{flex:1;max-width:340px;background:var(--panel-3);color:var(--text);
     border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:13px;
@@ -690,6 +701,26 @@
     font-size:12.5px}
   .ctxmenu button:hover .g,.ctxmenu button:focus-visible .g{color:var(--accent)}
   .ctxmenu .sep{height:1px;background:var(--line);margin:4px 3px}
+
+  /* ---------- the one back control ---------- */
+  /* One button, one meaning: it always names the place behind you. It sits in
+     the bottom-left gutter -- clear of the sticky header/tab bar at the top of a
+     phone screen, and below the viewer (70) so the full-screen photo keeps its
+     own controls. Raised above the toast's line (22px + its own height) so a
+     toast never hides the way back. */
+  #backFloat{position:fixed;left:14px;bottom:calc(env(safe-area-inset-bottom) + 74px);
+    z-index:60;display:inline-flex;align-items:center;max-width:min(62vw,260px);
+    padding:9px 14px;background:var(--panel-3);border-color:var(--line-2);
+    color:var(--text);box-shadow:0 8px 22px rgba(0,0,0,.5);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #backFloat:hover{background:var(--panel-2);border-color:var(--accent)}
+
+  /* A profile's name and picture are real links, so the browser's own context
+     menu offers "Open link in new tab" on them. They must not look like blue
+     underlined text: a plain click still opens the profile in place. */
+  .pcard a.nm{display:block;color:inherit;text-decoration:none}
+  .pcard a.nm:hover{text-decoration:underline}
+  .pcard.big a.hero{display:block;color:inherit;text-decoration:none}
 
   /* ---------- gallery profile views ---------- */
   /* Card: a hero per profile. The top half opens the profile, the strip along
@@ -4087,8 +4118,9 @@ function cardHtml(j, pos, qpos){
         ${pos?`<span style="font-size:11px">${pos}</span>`:""}${thumbHtml(j.username, j.platform)}</div>
       <div>
         <div class="top">
-          <span class="name clickable" data-profile="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}"
-                title="${j.kind==="saved"?"Every video saved on the account, from its TikTok data export":`Open ${esc(j.username)}`}">${j.kind==="saved"?"Saved videos":esc(j.username)}</span>
+          <a class="name clickable" href="${esc(profileHref(j.username, j.platform||"instagram"))}"
+                data-profile="${esc(j.username)}" data-platform="${esc(j.platform||"instagram")}"
+                title="${j.kind==="saved"?"Every video saved on the account, from its TikTok data export":`Open ${esc(j.username)}`}">${j.kind==="saved"?"Saved videos":esc(j.username)}</a>
           ${j.passes ? passPills(j.passes) : ""}
           ${j.platform==="tiktok"?'<span class="pill tiktok" title="Downloaded with yt-dlp">tiktok</span>':'<span class="pill ig" title="Downloaded with instaloader">instagram</span>'}
           ${j.kind==="reels"?'<span class="pill reels" title="Reels-only pass">reels</span>':""}
@@ -4336,7 +4368,15 @@ function wireCards(container){
     e.stopPropagation();
     openGalleryProfile(b.dataset.galprofile, b.dataset.platform);
   });
-  on("[data-profile]", b=>b.onclick=()=>openProfile(b.dataset.profile, b.dataset.platform));
+  // A profile name is a real link to that profile's gallery, so the browser's
+  // own menu can offer "Open link in new tab". A plain click still opens the
+  // profile in place (the panel here, not a page load); ctrl/cmd-click and
+  // middle-click are left to the browser, which is the whole point of the link.
+  on("[data-profile]", b=>b.onclick=(e)=>{
+    if(e && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) return;
+    if(e && e.preventDefault) e.preventDefault();
+    openProfile(b.dataset.profile, b.dataset.platform);
+  });
   // Same viewer, told which platform: the TikTok card must not open Instagram.
   on("[data-ttprofile]", b=>b.onclick=()=>openProfile(b.dataset.ttprofile, "tiktok"));
   // Opening a folder used to be silent: the file manager window is the only
@@ -5256,6 +5296,118 @@ function rememberView(){
   try{ history.replaceState(null, "", location.pathname + want); }catch(e){}
 }
 
+// The address of one profile's gallery: the app's own view link, the same query
+// string rememberView() writes and the boot at the end of this file reads back.
+//
+// It exists so a profile control can be a real <a href>. That is what makes
+// "open this in a new tab" work at all -- the browser has an address to open,
+// and its own context menu offers the entry without this page doing anything.
+function profileHref(username, platform){
+  const q = new URLSearchParams();
+  q.set("tab", "gallery");
+  q.set("profile", username);
+  q.set("platform", platform || "instagram");
+  // Carried the way rememberView() carries it, so a new tab opens on the same
+  // platform sub-tab this one is on instead of resetting the queue to Instagram.
+  if(activePlatform === "tiktok") q.set("plat", "tiktok");
+  return "?" + q.toString();
+}
+
+// The same link, absolute -- for the clipboard and for window.open.
+function profileUrl(username, platform){
+  const href = profileHref(username, platform);
+  try{ return new URL(href, location.href).href; }catch(e){ return href; }
+}
+
+// Put a URL on the clipboard. Same two paths as copyHandle(): the async API
+// where it exists, a hidden textarea where it does not (no secure origin).
+async function copyText(text, okMsg){
+  const say = () => toast(okMsg || "Copied");
+  try{
+    await navigator.clipboard.writeText(text);
+    say();
+  }catch(e){
+    const t = document.createElement("textarea");
+    t.value = text;
+    t.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(t);
+    t.select();
+    try{ document.execCommand("copy"); say(); }
+    catch(e2){ showErr("Could not copy that."); }
+    t.remove();
+  }
+}
+
+// "Open in new tab" without a link under the pointer (the context menu's own
+// entry, for anyone who never right-clicks the name itself).
+function openProfileTab(username, platform){
+  try{
+    const w = window.open(profileUrl(username, platform), "_blank", "noopener");
+    if(!w) toast("The browser blocked the new tab");
+  }catch(e){ showErr("Could not open a new tab."); }
+}
+
+// Put one TikTok profile's WHOLE archive in the queue.
+//
+// "All" is stored as count 0 in the job -- engine.Job.tiktok_count says so, and
+// /api/tiktok/more {all:true} is the route that writes it. /api/add_mixed cannot
+// express it (it does `int(body.get("count") or 5)`, so a 0 arrives as 5), so a
+// profile with no job yet is added the ordinary way and then raised to all in a
+// second call, using the route that already exists. Nothing on the server had to
+// change for this.
+async function queueAllVideos(username, platform){
+  if((platform || "instagram") !== "tiktok"){
+    toast("Every video at once is a TikTok option");
+    return;
+  }
+  toast(`Queueing every video from @${username}…`);
+  let job = mainJobFor(username, platform);
+  if(!job){
+    try{
+      const r = await post("/api/add_mixed", {
+        text: "https://www.tiktok.com/@" + username, platform: "tiktok", count: 5,
+      });
+      const tt = r && r.tiktok;
+      if(!r || r.ok === false || !tt || !(tt.added || []).length){
+        const why = (tt && tt.skipped && tt.skipped[0])
+          || (r && r.error) || "Could not queue that profile.";
+        showErr(why);
+        return;
+      }
+    }catch(e){ showErr("Could not reach the server."); return; }
+    // The add answers with usernames, not ids, so the job is looked up in a
+    // fresh state rather than guessed at.
+    job = await freshMainJob(username, platform);
+  }
+  if(!job){
+    // It is queued, just not raisable yet. Say what happened rather than
+    // claiming a limit was lifted.
+    toast(`@${username} queued — set it to all videos from its card`);
+    return;
+  }
+  try{
+    const r = await post("/api/tiktok/more", {id: job.id, all: true});
+    if(r && r.ok){
+      toast(job.status === "running"
+        ? `@${username} set to all videos — the run in progress keeps its old limit`
+        : `@${username} will fetch every video${r.revived ? " — re-queued" : ""}`);
+    }else{
+      showErr((r && r.error) || "Could not raise that profile to all videos.");
+    }
+  }catch(e){ showErr("Could not reach the server."); }
+}
+
+// One job, read fresh from the server. mainJobFor() only knows the last poll.
+async function freshMainJob(username, platform){
+  try{
+    const st = await (await fetch("/api/state", {cache:"no-cache"})).json();
+    return ((st && st.jobs) || []).find(j =>
+      (j.username || "").toLowerCase() === username.toLowerCase()
+      && (j.platform || "instagram") === (platform || "instagram")
+      && (j.kind || "main") === "main" && j.status !== "cancelled") || null;
+  }catch(e){ return null; }
+}
+
 // Put the current tab's top on screen. Both the document and .wrap are asked,
 // because the phone scrolls the body while a wide window can scroll the wrapper
 // -- a single scrollTo on the wrong element is a silent no-op.
@@ -5280,6 +5432,11 @@ function showTab(which, only){
   const shorts = which === "shorts";
   const wasTab = currentTab;
   currentTab = gallery ? "gallery" : shorts ? "shorts" : "queue";
+  // A tab switch is a move too: record the view being left so the one back
+  // control can name it ("← Download"). Suppressed while a back is in flight --
+  // that move is a return, not a new place -- and on the first load, where
+  // there is nothing behind you yet.
+  if(wasTab !== currentTab && !navMute && !navBoot) navPush(snapshotView(wasTab));
   $("tabQueue").classList.toggle("active", !gallery && !shorts);
   $("tabGallery").classList.toggle("active", gallery);
   $("tabShorts").classList.toggle("active", shorts);
@@ -5595,6 +5752,51 @@ $("ttCheckBtn").onclick = async () => {
 
 /* ---------- going back ---------- */
 
+// Every entry on navStack is a PLACE, and the one floating button names the one
+// on top of it:
+//   {tab:"queue"}                                    the Download tab
+//   {tab:"shorts"}                                   the Shorts tab
+//   {tab:"gallery", profile, platform, scroll}       one profile's photos
+//   {tab:"gallery", all, bmCat, tlPicks, scroll}     a gallery list view
+//
+// The button used to exist only inside a profile, which left the cross-profile
+// lists and the tab switches with no way back at all -- the phone has no browser
+// chrome to reach for. It is one control with one meaning: press it and you are
+// where you were, with that view's scroll position.
+let navBoot = true;    // nothing is behind you on a first load
+let navMute = false;   // a back is in flight: the moves it makes are not new places
+
+// What the view on screen looks like as a stack entry.
+function snapshotView(tab){
+  const t = tab || currentTab;
+  const base = {tab: t, scroll: window.scrollY || 0};
+  if(t !== "gallery") return base;
+  if(gProfile) return Object.assign(base, {profile: gProfile,
+                                          platform: gPlatform || "instagram"});
+  return Object.assign(base, {all: gAll, bmCat,
+                              tlPicks: tlPicks ? [...tlPicks] : []});
+}
+
+// Same place twice in a row is not two places to go back to. Scroll is left out
+// of the comparison: re-entering the same list is still the same list.
+function navKey(e){
+  return e ? [e.tab, e.profile || "", e.all || ""].join("|") : "";
+}
+
+function navPush(entry){
+  if(!entry) return;
+  const top = navStack[navStack.length - 1];
+  if(top && navKey(top) === navKey(entry)){
+    // Same place, but the scroll position moved while we were there: keep the
+    // newer one, or going back lands somewhere else in a list you never left.
+    top.scroll = entry.scroll;
+    return;
+  }
+  navStack.push(entry);
+  if(navStack.length > 12) navStack.shift();
+  paintBackFloat();
+}
+
 // What to call the place behind us. The chip row already names these views, so
 // the button uses the same words -- "back" alone would not say where to.
 function backLabel(all){
@@ -5605,12 +5807,20 @@ function backLabel(all){
     : "← Profiles";
 }
 
-// One floating button, only while a profile is open. Drawn from navStack so it
-// always names the view it will return to.
+function backLabelFor(entry){
+  if(!entry) return "← Back";
+  if(entry.profile) return "← @" + entry.profile;
+  if(entry.tab === "queue") return "← Download";
+  if(entry.tab === "shorts") return "← Shorts";
+  return backLabel(entry.all);
+}
+
+// One floating button, whenever there is anywhere to go back to. Drawn from
+// navStack so it always names the view it will return to.
 function paintBackFloat(){
   const existing = $("backFloat");
   const top = navStack[navStack.length - 1];
-  if(!gProfile || !top){
+  if(!top){
     if(existing) existing.style.display = "none";
     return;
   }
@@ -5619,37 +5829,55 @@ function paintBackFloat(){
     b = document.createElement("button");
     b.id = "backFloat";
     b.className = "fchip";
+    b.type = "button";
     b.onclick = () => goBack();
     document.body.appendChild(b);
   }
   b.style.display = "";
-  b.textContent = backLabel(top.all);
-  b.title = "Back to where you were — the list and its scroll position are kept";
+  b.textContent = backLabelFor(top);
+  b.title = "Back to " + backLabelFor(top).replace(/^← /, "")
+    + " — the view and its scroll position are kept";
 }
 
-// Return to the view a profile was opened from, at the scroll position it had.
+// Return to the place on top of the stack, at the scroll position it had.
 async function goBack(){
   const entry = navStack.pop();
-  gProfile = null;
-  gPlatform = "instagram";
-  paintBackFloat();
   if(!entry){
-    gAll = null;
-    await renderGallery();
+    navMute = true;
+    gProfile = null; gAll = null; gPlatform = "instagram";
+    try{ await renderGallery(); } finally { navMute = false; }
+    paintBackFloat();
     return;
   }
-  gAll = entry.all;
-  if(entry.all === "favorites" || entry.all === "trash"){
-    await renderAllSection(entry.all);
-  }else if(entry.all === "bookmarks"){
-    bmCat = entry.bmCat ?? "all";
-    await renderBookmarks();
-  }else if(entry.all === "timeline"){
-    tlPicks = entry.tlPicks || [];
-    tlMonths = []; tlIndex = 0; tlCache.clear();
-    renderTimeline();
-  }else{
-    await renderGallery();
+  navMute = true;
+  try{
+    if(entry.profile){
+      // One profile's photos, opened the ordinary way (showTab + the grid).
+      gAll = null;
+      openGalleryProfile(entry.profile, entry.platform || "instagram");
+    } else if(entry.tab === "queue" || entry.tab === "shorts"){
+      gProfile = null; gPlatform = "instagram"; gAll = null;
+      showTab(entry.tab);
+    } else {
+      gProfile = null;
+      gPlatform = "instagram";
+      showTab("gallery");
+      gAll = entry.all ?? null;
+      if(entry.all === "favorites" || entry.all === "trash"){
+        await renderAllSection(entry.all);
+      } else if(entry.all === "bookmarks"){
+        bmCat = entry.bmCat ?? "all";
+        await renderBookmarks();
+      } else if(entry.all === "timeline"){
+        tlPicks = entry.tlPicks || [];
+        tlMonths = []; tlIndex = 0; tlCache.clear();
+        renderTimeline();
+      } else {
+        await renderGallery();
+      }
+    }
+  } finally {
+    navMute = false;
   }
   paintBackFloat();
   // After the view is drawn, put the page back where it was. The grid pages its
@@ -5787,9 +6015,12 @@ function buildAllBar(profileCount){
     const b = document.createElement("button");
     b.className = "fchip" + (active ? " on" : "");
     b.textContent = label;
-    // Pressing a view chip is a new journey, not a step back through the old
-    // one: drop the history so the floating button cannot offer a stale return.
-    b.onclick = () => { navStack.length = 0; paintBackFloat(); fn(); };
+    // Pressing a view chip is a move, and the one back control has to be able
+    // to undo it: the view being left (a profile, or the profile list) is
+    // recorded first, so "← Liked" from the list and "← @name" from inside a
+    // profile both land where the press came from. It used to drop the history
+    // outright, which left these views with no way back at all.
+    b.onclick = () => { navPush(snapshotView("gallery")); fn(); };
     return b;
   };
   bar.appendChild(mk(`Profiles (${profileCount})`, gAll === null,
@@ -7558,7 +7789,8 @@ function pcardGrid(p){
     <div class="pcard${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
       ${pAvatar(p)}
       ${pLive(p)}
-      <div class="nm">${esc(p.username)}</div>
+      <a class="nm" data-plink="1" href="${esc(profileHref(p.username, p.platform||"instagram"))}"
+         title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>
       <div class="ct">${pCount(p)}</div>
       ${pMerged(p)}
       ${pSplit(p)}
@@ -7567,18 +7799,21 @@ function pcardGrid(p){
 
 // The card: a hero and a name, with a strip along the bottom that unfolds this
 // profile's photos in place. Pressing the hero or the name still opens the
-// profile the ordinary way.
+// profile the ordinary way -- both are real links now, so the browser's own
+// menu can also open the profile in a new tab.
 function pcardBig(p){
   const pic = `/api/profile-pic?profile=${encodeURIComponent(p.username)}&platform=${encodeURIComponent(p.platform||"instagram")}`;
+  const href = esc(profileHref(p.username, p.platform||"instagram"));
   return `
     <div class="pcard big${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
-      <div class="hero" title="Open ${esc(p.username)}"><img loading="lazy" alt="" src="${pic}"
-        onerror="this.style.visibility='hidden'"></div>
+      <a class="hero" data-plink="1" href="${href}" title="Open ${esc(p.username)}"><img loading="lazy" alt="" src="${pic}"
+        onerror="this.style.visibility='hidden'"></a>
       ${pLive(p)}
       <div class="head" title="Open ${esc(p.username)}">
         ${pAvatar(p)}
         <div class="who">
-          <div class="nm">${esc(p.username)}</div>
+          <a class="nm" data-plink="1" href="${href}"
+             title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>
           <div class="ct">${pCount(p)}</div>
           ${pMerged(p)}
         </div>
@@ -7597,7 +7832,8 @@ function pcardRow(p){
     <div class="pcard rowv${p.downloading?" live":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}">
       ${pAvatar(p)}
       <div class="who">
-        <div class="nm">${esc(p.username)}</div>
+        <a class="nm" data-plink="1" href="${esc(profileHref(p.username, p.platform||"instagram"))}"
+           title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>
         ${pMerged(p)}
       </div>
       <span class="rowct">${pCount(p)}</span>
@@ -7742,6 +7978,19 @@ function paintProfileCards(profiles){
       if(gLpSuppress){ gLpSuppress = false; return; }
       renderPhotos(card.dataset.profile, card.dataset.platform);
     };
+    // The name (and, on the big card, the picture) is a real link to this
+    // profile's gallery: right-click it and the browser offers its own "Open
+    // link in new tab". A plain click must not reload the page, so it is taken
+    // here and handled in place; a modified click is left to the browser.
+    for(const a of card.querySelectorAll("a[data-plink]")){
+      a.onclick = (ev) => {
+        if(ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        if(gLpSuppress){ gLpSuppress = false; return; }
+        renderPhotos(card.dataset.profile, card.dataset.platform);
+      };
+    }
     wireCardMenu(card);
     // Card view: the strip along the bottom is the door to this profile's
     // photos, unfolded in place so you never lose your place in the list.
@@ -7856,10 +8105,15 @@ async function copyHandle(username){
 
 function openCtx(x, y, card){
   const menu = $("ctxMenu");
-  const username = card && card.dataset ? card.dataset.profile || "" : "";
+  // Profile cards carry data-profile; gallery tiles carry data-ctxprofile (a
+  // tile is a POST, and data-profile on one would be picked up by the queue's
+  // own [data-profile] wiring if a tile ever ended up inside that list).
+  const username = card && card.dataset
+    ? card.dataset.ctxprofile || card.dataset.profile || "" : "";
   if(!menu || !username) return;
   const platform = card.dataset.platform || "instagram";
   const main = mainJobFor(username, platform);
+  const kind = card.dataset.ctxkind || "card";
 
   menu.innerHTML = "";
   const hd = document.createElement("div");
@@ -7882,6 +8136,28 @@ function openCtx(x, y, card){
     menu.appendChild(b);
   };
 
+  if(kind === "tile"){
+    // A gallery tile: the same five things you would otherwise leave the grid
+    // for. The tile's own click still opens the viewer -- this is the other
+    // verb set, and it is on the tile so a photo of someone you do not
+    // recognise can be followed to their profile without a search.
+    item("◎", "Open profile", () => openGalleryProfile(username, platform));
+    item("⟳", main ? "Check for new" : "Download this profile",
+         () => checkForNew(username, platform));
+    if(platform === "tiktok"){
+      item("∞", "Queue all videos",
+           () => queueAllVideos(username, platform));
+    }
+    item("⧉", "Open in new tab", () => openProfileTab(username, platform));
+    const sepT = document.createElement("div");
+    sepT.className = "sep";
+    menu.appendChild(sepT);
+    item("🔗", "Copy link", () => copyText(profileUrl(username, platform),
+                                           "Link copied"));
+    placeCtx(menu, x, y);
+    return;
+  }
+
   item("⟳", main ? "Check for new" : "Download this profile",
        () => checkForNew(username, platform));
   // Shorts, that one person: opens the tab without counting as having opened
@@ -7890,14 +8166,29 @@ function openCtx(x, y, card){
        () => showTab("shorts", {profile: username, platform}));
   item("♥", "See liked", () => openGalleryProfileFilter(username, platform, "favorites"));
   item("🗑", "See trash", () => openGalleryProfileFilter(username, platform, "trash"));
+  if(platform === "tiktok"){
+    item("∞", "Queue all videos", () => queueAllVideos(username, platform));
+  }
+  // The card's name is a real link, so the browser already offers this on it.
+  // Repeated here because a menu is where you look for it -- and because a
+  // long-press on a phone never raises the browser's menu at all.
+  item("⧉", "Open in new tab", () => openProfileTab(username, platform));
 
   const sep = document.createElement("div");
   sep.className = "sep";
   menu.appendChild(sep);
   item("⧉", "Copy @" + username, () => copyHandle(username));
+  item("🔗", "Copy link", () => copyText(profileUrl(username, platform),
+                                         "Link copied"));
 
-  // Place it at the pointer, but never off the screen: flip above when there is
-  // no room below, and pull it inside on either side.
+  placeCtx(menu, x, y);
+}
+
+// Place it at the pointer, but never off the screen: flip above when there is no
+// room below, and pull it inside on either side. Split out so every kind of menu
+// lands the same way -- a phone at 390px must never see a menu hanging off the
+// right edge.
+function placeCtx(menu, x, y){
   menu.hidden = false;
   // The tab switcher may have left an inline display:none on this element from
   // before it was re-parented; `hidden` alone would not bring it back.
@@ -7905,9 +8196,12 @@ function openCtx(x, y, card){
   const pad = 8;
   const mw = menu.offsetWidth, mh = menu.offsetHeight;
   const left = Math.max(pad, Math.min(x, window.innerWidth - mw - pad));
-  const top = (y + mh + pad <= window.innerHeight)
-    ? y
-    : Math.max(pad, y - mh);
+  // Flip above the pointer when there is no room below, then pull the whole
+  // panel back inside: a long menu near the bottom of a 390x844 screen must not
+  // hang off it.
+  const top = Math.max(pad, Math.min(
+    (y + mh + pad <= window.innerHeight) ? y : y - mh,
+    window.innerHeight - mh - pad));
   menu.style.left = Math.round(left) + "px";
   menu.style.top = Math.round(top) + "px";
 }
@@ -8033,6 +8327,15 @@ async function openFavoritesBookmarks(){
 // discards its own result instead of overwriting the newer one.
 function openGalleryProfile(username, platform){
   if(!username) return;
+  // Record the view being left, so the one back control can return to it: a
+  // list view (All Liked, Bookmarks ...) or another profile whose tagged post
+  // sent you here. Coming from another TAB is already recorded by showTab, and
+  // renderPhotos records the card-click path itself -- it skips the push when
+  // gProfile is already set, which is exactly this case.
+  if(!navBoot && !navMute && currentTab === "gallery"
+     && String(gProfile || "").toLowerCase() !== String(username).toLowerCase()){
+    navPush(snapshotView("gallery"));
+  }
   showTab("gallery");
   gAll = null;
   gPlatform = platform || "instagram";
@@ -8070,9 +8373,7 @@ async function renderPhotos(username, platform){
   // Remember the view we are leaving (only when a profile is NOT already open,
   // so re-renders of the same profile do not stack up entries).
   if(!gProfile){
-    navStack.push({all: gAll, bmCat, tlPicks: tlPicks ? [...tlPicks] : [],
-                   scroll: window.scrollY || 0});
-    if(navStack.length > 12) navStack.shift();
+    navPush(snapshotView("gallery"));
   }
   gProfile = username;
   gPlatform = platform || "instagram";
@@ -8132,6 +8433,22 @@ function tileFor(username, post, section){
   // Carried on the tile so an action taken from here (like, move, trash)
   // acts on the folder the file is really in.
   tile.dataset.platform = plat;
+  // Which profile this tile belongs to, for the right-click / long-press menu.
+  // data-ctxprofile, not data-profile: a tile is a POST, and the queue's own
+  // [data-profile] wiring must never see one.
+  tile.dataset.ctxprofile = username;
+  tile.dataset.ctxkind = "tile";
+  // A long press ends as a tap too, and that tap would open the viewer behind
+  // the menu it just raised. One guard for the picture, the hover clip and the
+  // tile itself, since the finger can land on any of them.
+  const openTile = (ev) => {
+    if(gLpSuppress){
+      gLpSuppress = false;
+      if(ev && ev.stopPropagation) ev.stopPropagation();
+      return;
+    }
+    openViewer(username, post, tile.dataset.section || srcSection, 0);
+  };
   const mkSrc = (item) => `/media?profile=${encodeURIComponent(username)}`
       + `&file=${encodeURIComponent(item.file)}`
       + (srcSection === "main" ? "" : `&section=${srcSection}`)
@@ -8149,7 +8466,7 @@ function tileFor(username, post, section){
   // Read the section off the tile at click time: an in-place like has
   // already moved the files, and a captured section would open the viewer on
   // the folder they used to be in (heart showing empty on a liked post).
-  img.onclick = () => openViewer(username, post, tile.dataset.section || srcSection, 0);
+  img.onclick = (ev) => openTile(ev);
   tile.appendChild(img);
 
   // Videos: keep the poster frame, and only start the preview clip when the
@@ -8174,7 +8491,7 @@ function tileFor(username, post, section){
       vid.src = src; vid.muted = true; vid.loop = true;
       vid.playsInline = true; vid.preload = "auto";
       vid.className = "hovervid";
-      vid.onclick = () => openViewer(username, post, tile.dataset.section || srcSection, 0);
+      vid.onclick = (ev) => openTile(ev);
       vid.oncanplay = () => {
         img.style.visibility = "hidden";
         vid.play().catch(()=>{});
@@ -8192,7 +8509,7 @@ function tileFor(username, post, section){
   }
 
   // Any click on the tile that wasn't a button opens the viewer.
-  tile.onclick = () => openViewer(username, post, tile.dataset.section || section, 0);
+  tile.onclick = (ev) => openTile(ev);
 
   if(post.count > 1){
     const stack = document.createElement("span");
@@ -8363,6 +8680,10 @@ function tileFor(username, post, section){
   }
   tile.appendChild(acts);
   tile.appendChild(actsRight);
+  // Right-click / long-press on any tile, in every view: the profile grid, All
+  // Liked, All Trash, Bookmarks and the timeline all come through here, so
+  // wiring it once is what gives every one of them the same menu.
+  wireCardMenu(tile);
   return tile;
 }
 
@@ -8426,7 +8747,17 @@ function drawPhotos(username, sec){
   const back = document.createElement("button");
   back.className = "gback";
   back.textContent = "← All profiles";
-  back.onclick = () => { gProfile = null; gPlatform = "instagram"; renderGallery(); };
+  back.onclick = () => {
+    // The list behind us is the profile list: that is exactly what this button
+    // means, so it is the floating button's own move (scroll position and all)
+    // and leaves no entry pointing at the view already on screen.
+    const top = navStack[navStack.length - 1];
+    if(top && top.tab === "gallery" && !top.profile && !top.all){ goBack(); return; }
+    gProfile = null;
+    gPlatform = "instagram";
+    renderGallery();
+    paintBackFloat();
+  };
   bar.appendChild(back);
   bar.appendChild(selButton());
 
@@ -10469,6 +10800,10 @@ document.addEventListener("keydown", (e) => {
   if(direct) openGalleryProfile(direct, qs.get("platform") || "instagram");
   // Captions link @mentions back here, which needs the list of who is archived.
   loadKnownHandles();
+  // Everything from here on is the user moving around, and there is finally
+  // somewhere to go back to.
+  navBoot = false;
+  paintBackFloat();
 })();
 
 // Tapping a profile picture in the viewer.
