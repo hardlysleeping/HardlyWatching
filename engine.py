@@ -1187,6 +1187,26 @@ def _folder_sig(folder: Path, deep: bool = True) -> tuple[list[str], tuple] | No
     return names, stamp
 
 
+def _roots_stamp(roots) -> tuple | None:
+    """A fingerprint of the folders that decide which profiles exist.
+
+    One stat per root and one per parent: a profile folder appearing, leaving or
+    being renamed changes the root's mtime, and a `tiktok/` sibling appearing
+    beside it changes the parent's. Returns None as soon as a root cannot be
+    stat'd (an unplugged drive), so nothing is ever remembered across that
+    state -- a missing drive must not be cached into "there are no profiles".
+    """
+    out = []
+    for root in roots:
+        try:
+            st = os.stat(root)
+            parent = os.stat(Path(root).parent)
+        except OSError:
+            return None
+        out.append((str(root), st.st_dev, st.st_mtime_ns, parent.st_mtime_ns))
+    return tuple(out)
+
+
 def _archive_stamp(folders) -> tuple:
     """A cheap fingerprint of what is on disk across many folders.
 
@@ -3144,23 +3164,14 @@ def profile_family(self, username: str, platform: str = "instagram"
     return family
 
 
-def gallery_profiles(self) -> list[dict]:
-    """Profiles with files on disk, including ones still downloading."""
-    out = []
-    with self.lock:
-        jobs = list(self.jobs.values())
-    # One entry per person: a profile has up to three jobs (main, reels,
-    # tagged) and the main one decides the folder and the status, so the
-    # others never produce a second entry.
-    # Keyed by (username, platform) so an Instagram profile and a TikTok
-    # account sharing a handle do not overwrite each other's entry.
-    mains = {}
-    for job in jobs:
-        if job.kind != "main":
-            continue
-        mains[(job.username, getattr(job, "platform", "instagram"))] = job
-    # A profile can also exist on disk with no job at all (an archive copied
-    # in by hand), which the roots still know about.
+def _gallery_folders_now(self) -> list[tuple[str, str, list[Path]]]:
+    """Which profiles exist on disk right now, and every folder each one owns.
+
+    The body of the old inline block in `gallery_profiles`, lifted out so its
+    answer can be remembered (see `_roots_stamp`): two directory scans and one
+    `roots_for()` per handle is the expensive half of the gallery call, and it
+    only changes when a folder inside a root does.
+    """
     on_disk = []
     tt_on_disk = []
     for root in self.roots:
@@ -3199,7 +3210,8 @@ def gallery_profiles(self) -> list[dict]:
             break
     # Each profile is looked up under its own platform, so an Instagram profile
     # and a TikTok account sharing a handle stay separate entries on disk.
-    wanted = [(u, "instagram") for u in on_disk] + [(u, "tiktok") for u in tt_on_disk]
+    wanted = ([(u, "instagram") for u in on_disk]
+              + [(u, "tiktok") for u in tt_on_disk])
     # Resolve every handle to its folder first. A root that is not mounted
     # resolves to None here, so profiles on an unplugged drive are simply absent
     # from the list -- they reappear on the next request once the drive is back.
@@ -3220,6 +3232,42 @@ def gallery_profiles(self) -> list[dict]:
         if not fs:
             continue
         folders.append((username, platform, fs))
+    return folders
+
+
+def gallery_profiles(self) -> list[dict]:
+    """Profiles with files on disk, including ones still downloading."""
+    out = []
+    with self.lock:
+        jobs = list(self.jobs.values())
+    # One entry per person: a profile has up to three jobs (main, reels,
+    # tagged) and the main one decides the folder and the status, so the
+    # others never produce a second entry.
+    # Keyed by (username, platform) so an Instagram profile and a TikTok
+    # account sharing a handle do not overwrite each other's entry.
+    mains = {}
+    for job in jobs:
+        if job.kind != "main":
+            continue
+        mains[(job.username, getattr(job, "platform", "instagram"))] = job
+    # A profile can also exist on disk with no job at all (an archive copied
+    # in by hand), which the roots still know about.
+    #
+    # Resolving every handle to its folder is the expensive half of this call:
+    # two directory scans plus a `roots_for()` (an is_dir per root) for each of
+    # ~2,300 profiles, on every request. What profiles exist only changes when a
+    # folder is added, removed or renamed inside a root, so the answer is
+    # remembered against one stat per root -- and forgotten the moment a root is
+    # missing, so an unplugged drive is never cached into "no profiles".
+    roots_stamp = _roots_stamp(self.roots)
+    remembered = getattr(self, "_gallery_folders", None)
+    if roots_stamp is not None and remembered is not None \
+            and remembered[0] == roots_stamp:
+        folders = remembered[1]
+    else:
+        folders = self._gallery_folders_now()
+        if roots_stamp is not None:
+            self._gallery_folders = (roots_stamp, folders)
 
     # The disk half of each card: how many files, how many bytes, which root.
     # That is the part that costs a stat (or a full walk) per profile, and it
@@ -5455,6 +5503,7 @@ class Engine:
     # ---------- gallery ----------
 
     gallery_profiles = gallery_profiles
+    _gallery_folders_now = _gallery_folders_now
     gallery_sections = gallery_sections
     profile_peek = profile_peek
     liked_posts = liked_posts
@@ -6719,46 +6768,64 @@ class Engine:
         """
         roots = [self.output_root] + [r for r in self.roots
                                       if not _same(r, self.output_root)]
-        found = []
-        freed = 0
-        errors = []
+        # Gather the profile folders first. The sweep below reads every directory
+        # entry in the archive -- 250k of them here, 2.2s -- and the page asks
+        # for this on EVERY load to decide whether to show a button that is
+        # almost always hidden. So a dry run is remembered against one stat per
+        # profile folder (the same fingerprint the gallery uses): an interrupted
+        # download drops a `.temp` inside a folder, that folder's mtime changes,
+        # and the next load looks again.
+        profiles: list[Path] = []
         for root in roots:
             try:
                 if not root.is_dir():
                     continue
-                profiles = [p for p in root.iterdir() if p.is_dir()]
+                profiles.extend(p for p in root.iterdir() if p.is_dir())
             except OSError:
                 continue
-            for prof in profiles:
+        stamp = _archive_stamp(profiles)
+        cached = getattr(self, "_partials_cache", None)
+        if dry_run and cached is not None and cached[0] == stamp:
+            return cached[1]
+        found = []
+        freed = 0
+        errors = []
+        for prof in profiles:
+            try:
+                entries = list(prof.iterdir())
+            except OSError:
+                continue
+            for f in entries:
+                if not f.is_file():
+                    continue
+                # .temp only. Never a tombstone placeholder.
+                if not f.name.lower().endswith(".temp"):
+                    continue
                 try:
-                    entries = list(prof.iterdir())
+                    size = f.stat().st_size
                 except OSError:
                     continue
-                for f in entries:
-                    if not f.is_file():
-                        continue
-                    # .temp only. Never a tombstone placeholder.
-                    if not f.name.lower().endswith(".temp"):
-                        continue
+                found.append({"profile": prof.name, "name": f.name,
+                              "bytes": size})
+                freed += size
+                if not dry_run:
                     try:
-                        size = f.stat().st_size
-                    except OSError:
-                        continue
-                    found.append({"profile": prof.name, "name": f.name,
-                                  "bytes": size})
-                    freed += size
-                    if not dry_run:
-                        try:
-                            f.unlink()
-                        except OSError as e:
-                            errors.append(f"{prof.name}/{f.name}: {e}")
+                        f.unlink()
+                    except OSError as e:
+                        errors.append(f"{prof.name}/{f.name}: {e}")
         if found and not dry_run:
             # The listing cache may still mention them; cheap to drop.
             for root in roots:
                 _media_cache_forget(root)
-        return {"count": len(found), "bytes": freed,
-                "files": sorted(found, key=lambda r: -r["bytes"])[:50],
-                "errors": errors, "dry_run": dry_run}
+        result = {"count": len(found), "bytes": freed,
+                  "files": sorted(found, key=lambda r: -r["bytes"])[:50],
+                  "errors": errors, "dry_run": dry_run}
+        if dry_run:
+            self._partials_cache = (stamp, result)
+        else:
+            # A real sweep changed the archive; the remembered answer is stale.
+            self._partials_cache = None
+        return result
 
     def purge_removed(self) -> int:
         """Empty the removed-jobs archive."""

@@ -248,6 +248,36 @@ class BuiltAnswerTests(CacheCase):
         self.assertIn("another", names,
                       "a profile folder added while running was not listed")
 
+    def test_a_removed_profile_leaves_the_list(self):
+        # The folder list is remembered against one stat per root, so a profile
+        # folder leaving the root has to invalidate it -- otherwise a deleted
+        # person would stay on the grid for the life of the process.
+        self.assertEqual(self.profile_count(), 2)
+        import shutil
+        shutil.rmtree(self.folder)
+        names = {p["username"] for p in self.eng.gallery_profiles()}
+        self.assertNotIn("somebody", names,
+                         "a removed profile folder was still listed")
+
+    def test_the_leftover_sweep_is_remembered_and_still_sees_a_new_temp_file(self):
+        # The sweep walks every directory entry in the archive, so its answer is
+        # remembered. A `.temp` left by an interrupted download appears inside a
+        # profile folder, which is exactly what the stamp watches.
+        first = self.eng.sweep_partials(dry_run=True)
+        self.assertEqual(first["count"], 0)
+        cached = self.eng._partials_cache or (None, None)
+        self.assertIsNotNone(cached[0], "the sweep was not remembered")
+        again = self.eng.sweep_partials(dry_run=True)
+        self.assertIs(again, cached[1],
+                      "the sweep re-walked the archive with nothing changed")
+        (self.folder / "2024-02-03_12-00-00_UTC.jpg.temp").write_bytes(b"x" * 10)
+        got = self.eng.sweep_partials(dry_run=True)
+        self.assertEqual(got["count"], 1,
+                         "a new .temp file was hidden by the cached sweep")
+        self.assertEqual(got["files"][0]["profile"], "somebody")
+        # And the dry run never deleted it.
+        self.assertTrue((self.folder / "2024-02-03_12-00-00_UTC.jpg.temp").exists())
+
     def test_gallery_all_shows_a_favourite_at_once(self):
         posts = self.eng.gallery_all("favorites")
         self.assertEqual(posts, [])

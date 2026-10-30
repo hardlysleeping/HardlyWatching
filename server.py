@@ -1390,6 +1390,16 @@ def build_zip(token: str, plan: list[tuple[Path, str, int]]) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "InstaQueue/2.0"
+    # HTTP/1.1 keeps the socket open between requests. Without it every
+    # thumbnail, avatar and tile opened a fresh TCP connection to a Python
+    # process -- a profile grid of 149 clips meant 149 handshakes through a
+    # handful of threads, which is most of why the grid filled in slowly even
+    # on localhost. Every response here sets Content-Length (a 304 has no body
+    # by definition), so the framing is unambiguous.
+    protocol_version = "HTTP/1.1"
+    # An idle kept-alive socket must not pin a thread forever; the page keeps
+    # about six open and closes them when the tab goes away.
+    timeout = 30
 
     def log_message(self, fmt, *args):
         pass
@@ -1831,6 +1841,10 @@ class Handler(BaseHTTPRequestHandler):
         address on a phone needs to know the app is running and which switch
         turns it on, not that the server is broken.
         """
+        # The body of a refused POST is never read, so this connection cannot be
+        # reused: whatever is left in the socket would be parsed as the next
+        # request line. HTTP/1.1 makes that a hang instead of a close.
+        self.close_connection = True
         if path.startswith("/api/"):
             return self._json({"ok": False, "error": "lan_disabled",
                                "message": "Phone access is off. Turn on "
@@ -3841,6 +3855,10 @@ def main() -> int:
     def _warm_sizes() -> None:
         try:
             eng.gallery_profiles()
+            # Same reason: the leftover-sweep preview reads every directory
+            # entry in the archive (2 s here) and the page asks for it on load.
+            # Warming it means the first load answers in milliseconds too.
+            eng.sweep_partials(dry_run=True)
         except Exception:
             pass
     threading.Thread(target=_warm_sizes, daemon=True, name="sizes").start()
