@@ -3,6 +3,68 @@
 Notable changes to HardlyWatching. Format follows [Keep a Changelog](https://keepachangelog.com/);
 versioning is [SemVer](https://semver.org/).
 
+## [0.5.0] — 2026-10-29
+
+### Added
+
+- **Delete a profile in one action.** `🗑 Delete…` in a profile's head moves their
+  media to the system Trash (still on disk, restorable), removes the job from
+  Waiting *and* Finished whatever its status, and records an exclusion so a paste
+  or the empty-queue autocheck can never quietly fetch them again. Refused while
+  that profile is downloading. The exclusion is listed in Settings with Undo.
+- **Write to another drive instead of stopping.** When the downloads folder
+  reaches its stop limit, a new job is written to another configured archive
+  folder that has room, and the choice is pinned on the job so one profile never
+  splits across two drives. Unplugged drives are never chosen; a job already
+  archived on a full drive stays there and reports the block as before. Settings
+  shows per root whether it takes overflow.
+- **Send a running download to the back.** `⤓` on the running card stops it, puts
+  it behind everything still waiting, gives back the attempt it burned and skips
+  the pacing gap, so the next profile starts at once. Per platform: demoting a
+  TikTok job never touches an Instagram download.
+- **Scan for people from inside a profile.** The detector is reachable where you
+  are looking, not only from the archive-wide button in the other view, and its
+  progress now rides the ordinary poll as a line with a bar and a percentage.
+- **The saved-videos export is remembered.** The path used last time is kept
+  across restarts, the card fills itself in, and **Run again** re-queues it
+  without finding the file first.
+- **Gallery right-click.** A tile offers open profile, check for new, queue every
+  video, open in a new tab and copy link, on desktop and by long-press on a phone.
+- **One back button.** The floating control now covers tab switches and every
+  list view, not only "inside a profile", and names where it goes.
+
+### Changed
+
+- **Settings are grouped.** Eleven named sections with a one-line explanation
+  each, ordered by how often they are changed, plus a jump row; every setting,
+  label and description is unchanged.
+- **The gallery is cached, not re-walked.** The listing, the grouped posts and the
+  timeline are kept against a stamp of the folders plus a write counter. Measured
+  warm: `/api/timeline` 2.23 s → 0.074 s, the profile list 0.127 s → 0.059 s, a
+  5.2k-file profile 0.105 s → 0.031 s, All Favourites 0.243 s → 0.031 s.
+- **The poll only sends what a tab can draw.** `?lite=1` is 5.6 KB against
+  2.07 MB, and an unchanged snapshot answers 304 with no body.
+- **The disk warning follows your own limit.** It warns five points before the
+  stop you set (99 → 94) instead of a fixed 90, and says the real percentage with
+  a button straight to the setting.
+
+### Fixed
+
+- **A phone starts every tab at the top.** Leaving a long gallery list for
+  Download dropped you a screen or three down the queue, below the paste box.
+- **The disk warning no longer eats the phone.** 334 px of an 899 px viewport
+  became one line with the prose behind `details`.
+- **Bookmarks sort is findable.** It sat at x=1152 in a 362 px bar, three
+  screen-widths to the right; it now leads its own row with the category chips
+  below it.
+- **Waiting and Finished pagers line up.** The page label and jump select were
+  positioned by their own width, so "page 1 / 2" and "page 1 / 208" put the two
+  rows 14 px apart.
+- **TikTok cards match Instagram's rhythm.** The two-row "grab newest" block is
+  one row, so a card is 125 px against Instagram's 122 instead of 148.
+
+## [0.4.0] — 2026-10-29
+
 ### Added
 
 - **A picture of a person, or not.** A local detector (YOLOv8n as ONNX, 12.8 MB,
@@ -55,8 +117,6 @@ versioning is [SemVer](https://semver.org/).
 - **Profile photo passes.** Slideshow posts (no video track at all) are fetched on
   every profile download, not only on saved-list imports, and a post that is
   neither video nor photo is asked about once instead of every run.
-
-## [0.4.0] — 2026-10-29
 
 ### Removed
 
