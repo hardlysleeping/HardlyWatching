@@ -1001,6 +1001,9 @@
   #profileGrid.selmode .ptile .acts,
   #profileGrid.selmode .ptile .acts-right{display:none}
   #profileGrid.selmode .ptile{cursor:pointer}
+  /* A sweep must not select the labels or start a native image drag instead. */
+  #profileGrid.selmode{user-select:none;-webkit-user-select:none}
+  #profileGrid.selmode .ptile img{-webkit-user-drag:none;user-select:none}
   #profileGrid.selmode .ptile.sel{outline:3px solid var(--accent);outline-offset:-3px}
   #profileGrid.selmode .ptile.sel::after{
     content:"✓";position:absolute;top:6px;right:6px;z-index:5;
@@ -5061,12 +5064,27 @@ $("dupTrashBtn").onclick = async function(){
       " to Trash?\n\nThey go to each profile's Trash section and can be restored " +
       "from the gallery. Nothing is deleted from disk.")) return;
   this.disabled = true;
-  $("dupTrashMsg").textContent = "Moving…";
-  let r;
-  try { r = await post("/api/dupes/trash", {items: items}); }
-  catch(e){ r = {ok: false, error: e.message}; }
-  if(!r || !r.ok){
-    $("dupTrashMsg").textContent = "Failed: " + ((r && r.error) || "no answer");
+  // A whole sweep's worth of copies is easily over a thousand, and the route
+  // refuses more than 500 in one request -- which is why "Move 1200 to Trash"
+  // did nothing at all. Same chunking as the gallery's selection bar.
+  let r = {ok: true, done: 0, skipped: 0, errors: []};
+  for(let i = 0; i < items.length; i += BULK_CHUNK){
+    const slice = items.slice(i, i + BULK_CHUNK);
+    $("dupTrashMsg").textContent =
+      "Moving " + Math.min(i + slice.length, items.length) + "/" + items.length + "…";
+    let one = null;
+    try { one = await post("/api/dupes/trash", {items: slice}); }
+    catch(e){ one = {ok: false, error: e.message}; }
+    if(!one || !one.ok){
+      r.errors.push((one && one.error) || "no answer");
+      continue;
+    }
+    r.done += one.done || 0;
+    r.skipped += one.skipped || 0;
+    if(one.errors && one.errors.length) r.errors = r.errors.concat(one.errors);
+  }
+  if(!r.done && !r.skipped){
+    $("dupTrashMsg").textContent = "Failed: " + (r.errors[0] || "no answer");
     this.disabled = false;
     return;
   }
@@ -10617,6 +10635,16 @@ async function confirmTrash(username, names, onDone, platform){
 let selMode = false;
 const selPicked = new Map();      // key -> {profile, platform, section, file}
 
+// A bulk action is sent in chunks. The server refuses more than 500 items in
+// one request ("too many at once"), and a request is only answered when its
+// last file has moved -- so a 1200-tile trash either bounced off the cap or sat
+// there long enough to look like nothing had happened. Chunks keep every request
+// short, give the bar a number to count up, and let the first tiles go while the
+// rest are still moving.
+const BULK_CHUNK = 200;
+let selBusy = false;
+let selProgress = "";
+
 function selKey(profile, platform, section, file){
   return [profile, platform, section, file].join("|");
 }
@@ -10657,22 +10685,64 @@ function toggleTile(tile){
   paintSelBar();
 }
 
-async function runBulk(action){
-  if(!selPicked.size){ toast("Pick something first"); return; }
-  const items = [...selPicked.values()].map(v => ({
-    profile: v.profile, platform: v.platform, section: v.section, file: v.file}));
-  const r = await post("/api/gallery/bulk", {action, items});
-  if(!r || !r.ok){ toast((r && r.error) || "Could not do that"); return; }
-  toast(`${r.done} done${r.skipped ? `, ${r.skipped} skipped` : ""}`);
-  selPicked.clear();
-  // Redraw whatever view this is, so the grid shows what is left.
+const BULK_VERB = {trash:"Trashing", main:"Moving back", favorites:"Filing",
+  like:"Liking", unlike:"Unliking", bookmark:"Saving", unbookmark:"Unsaving"};
+
+// Redraw whatever view this is, so the grid shows what is left.
+function refreshAfterBulk(){
   if(gAll === "bookmarks") renderBookmarks();
   else if(gAll === "favorites" || gAll === "trash" || gAll === "nopeople")
     renderAllSection(gAll);
   else if(gAll === "timeline") renderTimeline();
   else if(gProfile) renderPhotos(gProfile, gPlatform);
   else renderGallery();
+}
+
+async function runBulk(action){
+  if(selBusy){ toast("Still working through the last batch…"); return; }
+  if(!selPicked.size){ toast("Pick something first"); return; }
+  const items = [...selPicked.values()].map(v => ({
+    profile: v.profile, platform: v.platform, section: v.section, file: v.file}));
+  const verb = BULK_VERB[action] || "Working on";
+  let done = 0, skipped = 0, failed = 0, firstErr = "";
+  selBusy = true;
   paintSelBar();
+  try{
+    for(let i = 0; i < items.length; i += BULK_CHUNK){
+      const slice = items.slice(i, i + BULK_CHUNK);
+      selProgress = `${verb} ${Math.min(i + slice.length, items.length)}/${items.length}…`;
+      paintSelBar();
+      let r = null;
+      try{ r = await post("/api/gallery/bulk", {action, items: slice}); }
+      catch(e){ r = {ok: false, error: e.message}; }
+      if(!r || !r.ok){
+        failed += slice.length;
+        if(!firstErr) firstErr = (r && (r.error || r.message)) || "no answer";
+        continue;
+      }
+      done += r.done || 0;
+      skipped += r.skipped || 0;
+      if(r.errors && r.errors.length && !firstErr) firstErr = r.errors[0];
+    }
+  } finally {
+    selBusy = false;
+    selProgress = "";
+  }
+  // Everything landed: clear and redraw. Nothing landed: keep the selection so
+  // the batch can be retried instead of picked again by hand.
+  if(done || skipped){
+    selPicked.clear();
+    refreshAfterBulk();
+  }
+  paintSelBar();
+  if(!done && !skipped){
+    toast(firstErr ? `Nothing moved: ${firstErr}` : "Nothing moved");
+    return;
+  }
+  toast(`${done} ${done === 1 ? "item" : "items"} done`
+    + (skipped ? `, ${skipped} skipped` : "")
+    + (failed ? `, ${failed} failed` : "")
+    + (firstErr ? ` — ${firstErr}` : ""));
 }
 
 function paintSelBar(){
@@ -10689,13 +10759,17 @@ function paintSelBar(){
   }
   bar.innerHTML = "";
   const n = document.createElement("b");
-  n.textContent = selPicked.size ? `${selPicked.size} selected` : "Tap tiles to pick";
+  n.textContent = selProgress ? selProgress
+    : selPicked.size ? `${selPicked.size} selected` : "Tap tiles to pick";
   bar.appendChild(n);
   const mk = (label, title, fn) => {
     const b = document.createElement("button");
     b.className = "small";
     b.textContent = label;
     if(title) b.title = title;
+    // A second click while the first batch is still moving would start a
+    // parallel run over the same selection.
+    b.disabled = selBusy;
     b.onclick = fn;
     return b;
   };
@@ -10769,6 +10843,15 @@ function selButton(){
 // stops it, so a tap picks instead of opening the viewer.
 document.addEventListener("click", (e) => {
   if(!selMode) return;
+  // The click that ends a drag is not a pick: the tiles it crossed were already
+  // painted, and if the drag ended on the grid this click would otherwise be
+  // read as "clicked outside a tile" and leave the mode.
+  if(selDragClick){
+    selDragClick = false;
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
   const tile = e.target.closest ? e.target.closest("#profileGrid .ptile") : null;
   if(tile){
     e.preventDefault();
@@ -10807,6 +10890,99 @@ document.addEventListener("touchmove", (e) => {
 document.addEventListener("touchend", () => {
   if(selHold){ clearTimeout(selHold); selHold = null; }
 }, {passive: true});
+
+// Drag across the grid to pick a run of tiles.
+//
+// Press on a tile and sweep: every tile the pointer crosses takes the state the
+// drag started in, so a drag that begins on an unselected tile selects and one
+// that begins on a selected tile unselects. That is the shape people already
+// know from a photo grid, and it is the only way to pick a few dozen in one
+// gesture -- tapping 1200 tiles is not a workflow.
+//
+// The trailing click is the trap. A drag that ends on a different tile fires its
+// click on the GRID, not on a tile, and the capture handler below reads "a click
+// outside a tile" as "leave selection mode" -- so a drag would end the mode it
+// was working in. The drag therefore swallows exactly one click.
+let selDrag = null;          // {on, ax, ay, x, y, moved, raf}
+let selDragClick = false;    // swallow the click that ends a drag
+
+function selApplyAt(x, y, on){
+  const el = document.elementFromPoint(x, y);
+  const tile = el && el.closest ? el.closest("#profileGrid .ptile") : null;
+  if(!tile) return;
+  const it = tileItem(tile);
+  if(!it) return;
+  const k = selKey(it.profile, it.platform, it.section, it.file);
+  const had = selPicked.has(k);
+  if(on === had) return;
+  if(on) selPicked.set(k, it); else selPicked.delete(k);
+  tile.classList.toggle("sel", on);
+  paintSelBar();
+}
+
+// Dragging past the edge of the window scrolls, or a sweep could never reach
+// past one screenful -- and one screenful is not 1200 tiles.
+function selDragFrame(){
+  if(!selDrag){ return; }
+  const edge = 90, most = 22;
+  const h = window.innerHeight;
+  let dy = 0;
+  if(selDrag.y < edge) dy = -Math.round(most * (1 - Math.max(0, selDrag.y) / edge));
+  else if(selDrag.y > h - edge)
+    dy = Math.round(most * (1 - Math.max(0, h - selDrag.y) / edge));
+  if(dy){
+    const before = window.scrollY;
+    window.scrollBy(0, dy);
+    if(window.scrollY !== before) selApplyAt(selDrag.x, selDrag.y, selDrag.on);
+  }
+  selDrag.raf = requestAnimationFrame(selDragFrame);
+}
+
+document.addEventListener("pointerdown", (e) => {
+  if(!selMode || selBusy) return;
+  // A touch drag is a scroll. Touch keeps tap-to-pick and hold-to-start, which
+  // the handlers above already give it.
+  if(e.pointerType === "touch" || (e.button !== undefined && e.button !== 0)) return;
+  const tile = e.target.closest ? e.target.closest("#profileGrid .ptile") : null;
+  if(!tile) return;
+  const it = tileItem(tile);
+  if(!it) return;
+  const k = selKey(it.profile, it.platform, it.section, it.file);
+  selDrag = {on: !selPicked.has(k), ax: e.clientX, ay: e.clientY,
+             x: e.clientX, y: e.clientY, moved: false, raf: 0};
+  selDrag.raf = requestAnimationFrame(selDragFrame);
+  // No text selection, no native image drag while sweeping.
+  e.preventDefault();
+}, true);
+
+document.addEventListener("pointermove", (e) => {
+  if(!selDrag) return;
+  selDrag.x = e.clientX;
+  selDrag.y = e.clientY;
+  if(!selDrag.moved &&
+     (Math.abs(e.clientX - selDrag.ax) > 4 || Math.abs(e.clientY - selDrag.ay) > 4))
+    selDrag.moved = true;
+  if(selDrag.moved) selApplyAt(e.clientX, e.clientY, selDrag.on);
+}, true);
+
+function endSelDrag(){
+  if(!selDrag) return;
+  if(selDrag.moved){
+    selDragClick = true;
+    // If no click follows (pointer released outside the page), do not swallow a
+    // later real one.
+    setTimeout(() => { selDragClick = false; }, 700);
+  }
+  if(selDrag.raf) cancelAnimationFrame(selDrag.raf);
+  selDrag = null;
+}
+document.addEventListener("pointerup", endSelDrag, true);
+document.addEventListener("pointercancel", endSelDrag, true);
+
+document.addEventListener("dragstart", (e) => {
+  if(selMode && e.target.closest && e.target.closest("#profileGrid .ptile"))
+    e.preventDefault();
+});
 
 document.addEventListener("keydown", (e) => {
   if(e.key === "Escape" && selMode) setSelMode(false);
