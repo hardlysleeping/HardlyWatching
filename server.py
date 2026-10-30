@@ -1161,7 +1161,7 @@ def _mounted_disks(eng) -> list[dict]:
                    "/var/lib/docker", "/var/lib/flatpak")
     # The same btrfs filesystem is mounted many times (ostree subvolumes); those
     # are one drive, not seven, and /etc is not a place to keep an archive.
-    skip_exact = {"/etc", "/var", "/usr", "/"}
+    skip_exact = {"/etc", "/var", "/usr", "/", "/var/tmp", "/tmp", "/var/home/.cache"}
     roots = []
     for r in (getattr(eng, "roots", None) or []):
         try:
@@ -1177,7 +1177,7 @@ def _mounted_disks(eng) -> list[dict]:
     except OSError:
         return []
     out: list[dict] = []
-    by_device: dict[int, dict] = {}
+    by_device: dict[str, dict] = {}
     for line in lines:
         parts = line.split()
         if len(parts) < 3:
@@ -1191,15 +1191,29 @@ def _mounted_disks(eng) -> list[dict]:
             continue
         try:
             st = os.statvfs(mount)
-            dev = os.stat(mount).st_dev
         except OSError:
             continue
         if st.f_blocks == 0:
             continue
         m = Path(mount)
-        # A root IS an Instagram archive folder, so the folder this drive would
-        # contribute is `<mount>/instagram` -- unless the mount already IS one.
-        archive = m if m.name == "instagram" else m / "instagram"
+        # A root is an Instagram archive folder. The layout is
+        # `<mount>/hardlywatching/instagram`, with the older `<mount>/instagram`
+        # still read so a drive that predates the wrapper folder keeps working.
+        # Whichever of those is ALREADY a root wins, so the page marks the real
+        # one instead of offering to add a second copy of the same drive.
+        cands = [m / "hardlywatching" / "instagram", m / "instagram"]
+        if m.name in ("instagram", "hardlywatching"):
+            cands.insert(0, m)
+        resolved: list[tuple[Path, Path]] = []
+        for c in cands:
+            try:
+                resolved.append((c, c.resolve()))
+            except OSError:
+                resolved.append((c, c))
+        chosen = next((c for c, r in resolved if r in roots or r == out_root), None)
+        if chosen is None:
+            chosen = next((c for c, _r in resolved if c.is_dir()), resolved[0][0])
+        archive = chosen
         try:
             archive_r = archive.resolve()
             mount_r = m.resolve()
@@ -1226,14 +1240,15 @@ def _mounted_disks(eng) -> list[dict]:
             "is_downloads": bool(is_downloads),
             "is_archive": bool(is_archive),
         }
-        # One row per physical filesystem. The home mount wins over /etc-style
-        # subvolume mounts, and a drive already in use wins over both.
+        # One row per physical device: the same btrfs filesystem is mounted as
+        # several subvolumes, and those are one drive. The home mount wins over
+        # the rest, and a drive already in use wins over both.
         rank = (not is_downloads, not is_archive, mount not in ("/var/home", "/home"),
                 len(mount), mount)
-        prev = by_device.get(dev)
+        prev = by_device.get(source)
         if prev is None or rank < prev["_rank"]:
             row["_rank"] = rank
-            by_device[dev] = row
+            by_device[source] = row
     for row in by_device.values():
         row.pop("_rank", None)
         out.append(row)
