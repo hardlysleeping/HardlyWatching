@@ -5872,7 +5872,8 @@ async function goBack(){
       gPlatform = "instagram";
       showTab("gallery");
       gAll = entry.all ?? null;
-      if(entry.all === "favorites" || entry.all === "trash"){
+      if(entry.all === "favorites" || entry.all === "trash"
+         || entry.all === "nopeople"){
         await renderAllSection(entry.all);
       } else if(entry.all === "bookmarks"){
         bmCat = entry.bmCat ?? "all";
@@ -6105,6 +6106,8 @@ function buildAllBar(profileCount){
   refreshJunk();
 }
 
+const allPageSize = {};   // how many posts each cross-profile view has drawn
+
 async function renderAllSection(section){
   const host = $("profileGrid");
   const sw = $("gSearchWrap");
@@ -6115,9 +6118,14 @@ async function renderAllSection(section){
   rememberView();
   const mine = ++gReq;
   host.innerHTML = `<div class="gempty">Loading…</div>`;
+  // No people grows with the archive (a clip scan can multiply it), so it is
+  // drawn a page at a time. "Load more" raises the page and redraws: 4,950
+  // tiles is fine, 65,000 is a frozen tab.
+  if(!(section in allPageSize)) allPageSize[section] = 1200;
+  const ask = section === "nopeople" ? `&limit=${allPageSize[section]}` : "";
   let data;
   try {
-    data = await (await fetch(`/api/gallery/all?section=${section}`)).json();
+    data = await (await fetch(`/api/gallery/all?section=${section}${ask}`)).json();
   } catch(e){
     host.innerHTML = `<div class="gempty">Could not load.</div>`;
     return;
@@ -6132,8 +6140,22 @@ async function renderAllSection(section){
   const tot = document.createElement("span");
   tot.className = "hint";
   const uniq = new Set(posts.map(p => p.username)).size;
-  tot.textContent = `${posts.length} posts across ${uniq} profile${uniq===1?"":"s"}`;
+  const known = Number.isFinite(data.total) ? data.total : posts.length;
+  tot.textContent = known > posts.length
+    ? `${known.toLocaleString()} posts across ${uniq} profiles · showing the newest ${posts.length.toLocaleString()}`
+    : `${posts.length} posts across ${uniq} profile${uniq===1?"":"s"}`;
   bar.appendChild(tot);
+  if(known > posts.length){
+    const more = document.createElement("button");
+    more.className = "small";
+    more.textContent = `Load ${Math.min(1200, known - posts.length)} more`;
+    more.title = "This view is drawn a page at a time — this adds the next page";
+    more.onclick = () => {
+      allPageSize[section] = (allPageSize[section] || 1200) + 1200;
+      renderAllSection(section);
+    };
+    bar.appendChild(more);
+  }
 
   if(section === "trash"){
     const spacer = document.createElement("span");
@@ -6181,6 +6203,7 @@ async function renderAllSection(section){
   if(!posts.length){
     grid.innerHTML = `<div class="gempty">${
       section === "favorites" ? "Nothing liked yet — tap ♡ on a photo, or like a clip in Shorts."
+      : section === "nopeople" ? "No people-free posts yet — run 👤 Scan for people and this fills up."
       : "Trash is empty everywhere."}</div>`;
   } else {
     for(const post of sortPosts(posts)){
@@ -10644,7 +10667,8 @@ async function runBulk(action){
   selPicked.clear();
   // Redraw whatever view this is, so the grid shows what is left.
   if(gAll === "bookmarks") renderBookmarks();
-  else if(gAll === "favorites" || gAll === "trash") renderAllSection(gAll);
+  else if(gAll === "favorites" || gAll === "trash" || gAll === "nopeople")
+    renderAllSection(gAll);
   else if(gAll === "timeline") renderTimeline();
   else if(gProfile) renderPhotos(gProfile, gPlatform);
   else renderGallery();

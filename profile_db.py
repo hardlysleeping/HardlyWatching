@@ -1322,18 +1322,41 @@ class ProfileDB:
                 (prefix + "%",)).fetchall()
         return {r["path"]: (r["size"], r["people"]) for r in rows}
 
-    def people_clean(self) -> list[tuple[str, int]]:
-        """[(path, size)] for every file judged to have nobody in it.
+    def people_all(self) -> list[tuple[str, int, int]]:
+        """[(path, size, verdict)] for every file that has been judged.
 
-        The one query behind the archive-wide "No people" view. Walking every
-        profile folder to build that list took over two minutes -- 2,279
-        folders and a sidecar read per post -- while the answers were already
-        in this table. A file with no verdict is not here: unknown is not clean.
+        The one query behind the archive-wide "No people" view, and it returns
+        the whole table on purpose: a post is people-free only if EVERY part of
+        it was judged and none had a person, so filtering to people = 0 here
+        would let a carousel with one clean frame in and hide the frames with
+        somebody in them. Verdict -1 means "could not be read" and counts as
+        unknown, never as clean.
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT path, size FROM people WHERE people = 0").fetchall()
-        return [(r["path"], int(r["size"] or 0)) for r in rows]
+                "SELECT path, size, people FROM people").fetchall()
+        return [(r["path"], int(r["size"] or 0), int(r["people"] or 0)) for r in rows]
+
+    def people_forget(self, paths: list[str]) -> int:
+        """Drop the verdicts for files that moved or were deleted.
+
+        The table is keyed by absolute path, so a file moved to trash/ keeps a
+        row pointing at where it used to be: the No people view went on listing
+        it, and its thumbnail answered 200 with 0 bytes. Called from move_media
+        and clear_trash, which are the two things that move media.
+        """
+        if not paths:
+            return 0
+        with self._lock:
+            n = 0
+            for chunk in range(0, len(paths), 400):
+                batch = paths[chunk:chunk + 400]
+                marks = ",".join("?" * len(batch))
+                cur = self._conn.execute(
+                    f"DELETE FROM people WHERE path IN ({marks})", batch)
+                n += cur.rowcount or 0
+            self._conn.commit()
+        return n
 
     def people_set_many(self, rows: list[tuple]) -> None:
         """rows: [(path, size, has_people, score)] -- one commit for the batch."""

@@ -795,8 +795,9 @@ def clean_profile_name(raw: str) -> str | None:
 # .heic/.heif are what iPhones write. Browsers other than Safari cannot display
 # them, so the grid never serves the original -- it serves the JPEG thumbnail,
 # which is why adding the extension is enough for them to appear.
-GALLERY_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".heic", ".heif"}
-GALLERY_VIDEO_EXTS = {".mp4", ".mov"}
+GALLERY_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v", ".mkv", ".avi"}
+GALLERY_EXTS = ({".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+                | GALLERY_VIDEO_EXTS)
 # What a TikTok archive holds. yt-dlp writes .mp4, and .webm/.m4v turn up when a
 # clip had no H.264 version; .jpg only when thumbnails were asked for. Used to
 # recognise an archive folder, so a directory that merely shares the name is not
@@ -1330,7 +1331,7 @@ PEOPLE_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 # frame at a time. Three, spread across the clip, is the cheap end that still
 # catches a person who walks in halfway through: a 30s video costs about 0.2s
 # to sample and 0.1s to look at, so a 200-video profile is under a minute.
-PEOPLE_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"}
+PEOPLE_VIDEO_EXTS = GALLERY_VIDEO_EXTS   # a clip the gallery cannot serve is not listed
 PEOPLE_VIDEO_FRAMES = 3
 PEOPLE_MODEL_PATHS = [
     Path(os.environ.get("AI_PEOPLE_MODEL", "")) if os.environ.get("AI_PEOPLE_MODEL") else None,
@@ -1440,7 +1441,7 @@ def _ffprobe_seconds(path: Path) -> float:
 
 def video_frames(path: Path, count: int = PEOPLE_VIDEO_FRAMES,
                  outdir: Path | None = None) -> list[Path]:
-    """Stills taken out of a clip at 10%, 50% and 90% of its length.
+    """Stills taken out of a clip at 1/6, 1/2 and 5/6 of its length.
 
     Seeking to a timestamp rather than decoding from the start keeps this cheap
     on a long video. An empty list means the clip could not be read at all --
@@ -1554,6 +1555,26 @@ def profile_bytes(folder: Path, nfiles: int = -1) -> int:
         _PROFILE_BYTES.clear()
     _PROFILE_BYTES[key] = (nfiles, now, nbytes)
     return nbytes
+
+
+def _post_ts(stamp: str) -> float:
+    """Epoch seconds for a post stamp, or 0.
+
+    instaloader writes `<date>_<time>_UTC`; TikTok names a post by its numeric
+    video id, whose high 32 bits are the Unix time it was posted. Without this
+    every TikTok post in the archive-wide views ties at 0 and sorts below every
+    Instagram post.
+    """
+    ts = _parse_filename_date(stamp)
+    if ts:
+        return ts
+    digits = re.sub(r"\D", "", stamp or "")
+    if len(digits) >= 18:
+        try:
+            return float(int(digits[:19]) >> 32)
+        except (ValueError, OverflowError):
+            return 0.0
+    return 0.0
 
 
 def _parse_filename_date(name: str) -> float:
@@ -2277,8 +2298,9 @@ def _attach_people(self, folder: Path, posts: list[dict]) -> list[dict]:
                     verdicts = None
                     break
                 rec = known.get(str(folder / item.get("file", "")))
-                if rec is None or (item.get("bytes") and rec[0] != item["bytes"]):
-                    verdicts = None       # never looked at, or replaced since
+                if rec is None or rec[1] < 0 or (item.get("bytes") and rec[0] != item["bytes"]):
+                    # never looked at, could not be read (-1), or replaced since
+                    verdicts = None
                     break
                 verdicts.append(rec[1])
         p["people"] = None if verdicts is None else bool(any(verdicts))
@@ -3214,48 +3236,81 @@ def _profile_folders(self) -> list[tuple[str, str, Path]]:
     return out
 
 
-def people_free_posts(self) -> list[dict]:
+def people_free_posts(self, limit: int = 0) -> list[dict]:
     """Every post in the archive with nobody in it, newest first.
 
-    Built from the verdicts in profiles.db rather than by walking folders:
-    the table already holds every judged file with its size, and walking 2,279
-    folders to rebuild that took over two minutes (a sidecar read per post).
-    Only files the pass actually judged clean are here -- a file with no
-    verdict is unknown, and unknown is not shown as people-free.
+    Two cheap halves, and neither is the expensive thing this used to do:
 
-    A post is its files: the carousel parts of one stamp arrive together, and
-    a stamp whose files were only partly judged is judged by the parts that
-    were, which is the same rule _attach_people applies per folder.
+      * the file LIST comes from the folders (`_gallery_media`, one scandir per
+        profile: 0.07s for all 2,343 of them), not from sidecars -- reading a
+        sidecar per post was the two minutes;
+      * the VERDICTS come from profiles.db, one query.
+
+    The rule is the same one _attach_people applies per folder, and it has to
+    be: a post is people-free only when every part of it is on disk AND was
+    judged AND none of them had a person. Grouping only the clean rows of the
+    table looked simpler and was wrong twice over -- a ten-frame carousel with
+    two people in it came out as clean with those frames dropped, and a frame
+    that had never been judged was invisible, so the post looked complete.
+
+    `limit` caps the answer (newest first); 0 means everything.
     """
     try:
-        rows = _pdb._shared_db().people_clean()
+        rows = _pdb._shared_db().people_all()
     except Exception:
         return []
-    grouped: dict[tuple[str, str], list[tuple[str, int]]] = {}
-    for path, size in rows:
-        p = Path(path)
-        m = POST_RE.match(p.name)
-        stamp = m.group("stamp") if m else p.stem
-        grouped.setdefault((str(p.parent), stamp), []).append((p.name, size))
+    verdict: dict[str, tuple[int, int]] = {
+        path: (size, v) for path, size, v in rows}
+    if not verdict:
+        return []
+
     out: list[dict] = []
-    for (folder, stamp), parts in grouped.items():
-        prof_dir = Path(folder)
-        platform = "tiktok" if f"{os.sep}tiktok{os.sep}" in folder else "instagram"
-        items = [{"file": name,
-                  "kind": "video" if Path(name).suffix.lower() in PEOPLE_VIDEO_EXTS
-                          else "image",
-                  "bytes": size}
-                 for name, size in sorted(parts)]
-        out.append({"post": stamp,
-                    "ts": _parse_filename_date(stamp),
-                    "count": len(items),
-                    "items": items,
-                    "people": False,
-                    "section": NOBODY_SECTION,
-                    "username": prof_dir.name,
-                    "platform": platform})
+    for username, platform, folder in self._profile_folders():
+        try:
+            names = _gallery_media(folder)
+        except OSError:
+            continue
+        for stamp, parts in group_into_posts(names).items():
+            clean = True
+            items: list[dict] = []
+            for _part, name in sorted(parts):
+                rec = verdict.get(str(folder / name))
+                if rec is None or rec[1] != 0:
+                    clean = False      # unjudged, unreadable, or a person in it
+                    break
+                items.append({"file": name,
+                              "kind": "video" if Path(name).suffix.lower() in PEOPLE_VIDEO_EXTS
+                                      else "image",
+                              "bytes": rec[0]})
+            if not clean or not items:
+                continue
+            out.append({"post": stamp,
+                        "ts": _post_ts(stamp),
+                        "count": len(items),
+                        "items": items,
+                        "people": False,
+                        "section": NOBODY_SECTION,
+                        "username": username,
+                        "platform": platform})
     out.sort(key=lambda p: p["ts"], reverse=True)
+    if limit and limit > 0:
+        out = out[:limit]
     return out
+
+
+def people_free_page(self, limit: int = 0, offset: int = 0) -> dict:
+    """One page of the people-free view, and how many there are in total.
+
+    Built once: asking for the total with a second call meant building the whole
+    list twice on every page, and this list is the one that grows with the
+    archive.
+    """
+    posts = self.people_free_posts(0)
+    total = len(posts)
+    if limit and limit > 0:
+        posts = posts[offset:offset + limit]
+    return {"posts": posts, "total": total, "offset": offset, "limit": limit,
+            "has_more": offset + len(posts) < total}
 
 
 def gallery_all(self, section: str) -> list[dict]:
@@ -3400,6 +3455,12 @@ def people_scan_profile(self, username: str, platform: str = "instagram",
                 except Exception:
                     res = None
                 if res is None:
+                    # Record the failure as -1 rather than leaving no row: a
+                    # clip ffmpeg cannot read used to be re-probed on every
+                    # later scan, forever, at 0.67s each. -1 counts as unknown
+                    # everywhere (never clean), and the size check still means a
+                    # re-encoded file gets a fresh answer.
+                    batch.append((str(p), sz, -1, 0.0))
                     out["skipped"] += 1
                     continue
                 batch.append((str(p), sz, res[0], res[1]))
@@ -3609,6 +3670,14 @@ def clear_trash(self) -> tuple[int, list[str]]:
                 for sib in trash.glob(f"{stem}.*"):
                     if sib.is_file() and not sib.is_symlink():
                         _to_desktop_trash(sib)
+                # The file is gone from disk; its people verdict is not. Left
+                # behind it kept the post in the archive-wide No people view,
+                # pointing at a path that now holds a 0-byte placeholder.
+                try:
+                    _pdb._shared_db().people_forget(
+                        [str(trash / name), str(root / name)])
+                except Exception:
+                    pass
                 removed += 1
             except OSError as e:
                 errors.append(f"{username}/{name}: {e}")
@@ -4449,6 +4518,15 @@ def move_media(self, username: str, name: str, section: str,
     _media_cache_forget(root)
     _media_cache_forget(root / FAVORITES_DIR)
     _media_cache_forget(root / TRASH_DIR)
+    # The people verdict is keyed by path, and this file has just changed path.
+    # Left behind, the row made the archive-wide No people view list a post that
+    # had been moved to trash, with a thumbnail that answered 0 bytes.
+    try:
+        _pdb._shared_db().people_forget(
+            [str(root / name), str(root / FAVORITES_DIR / name),
+             str(root / TRASH_DIR / name), str(dest_dir / name)])
+    except Exception:
+        pass
     return True, f"moved to {dest_dir.name}/"
 
 
@@ -4901,6 +4979,7 @@ class Engine:
     _people_worker = _people_worker
     _attach_people = _attach_people
     people_free_posts = people_free_posts
+    people_free_page = people_free_page
     clear_trash = clear_trash
     list_tombstones = list_tombstones
     remove_tombstone = remove_tombstone

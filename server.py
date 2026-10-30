@@ -1916,9 +1916,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(400)
             # Liked is the favourites folder plus every clip liked in the viewer
             # (gallery_all joins the two); trash is a folder like any other.
-            posts = _mark_bookmarks(get_engine().gallery_all(section))
-            total = len(posts)
+            # No people is built from verdicts and is capped by the caller: it
+            # grows with the archive (a clip scan can make it 10x bigger), and
+            # 65,000 tiles is not a page, it is a freeze.
+            eng = get_engine()
             limit, offset = _page_args(q)
+            if section == "nopeople":
+                # Built from verdicts rather than folders, and sliced as it is
+                # built: this is the list that grows with the archive.
+                page = eng.people_free_page(limit, offset)
+                posts = _mark_bookmarks(page["posts"])
+                out = {"section": section,
+                       "profiles": eng.gallery_profiles(),
+                       "posts": posts}
+                if limit:
+                    out.update({"total": page["total"], "offset": offset,
+                                "limit": limit, "has_more": page["has_more"]})
+                return self._json(out)
+            posts = _mark_bookmarks(eng.gallery_all(section))
+            total = len(posts)
             if limit:
                 posts = posts[offset:offset + limit]
             out = {"section": section,
