@@ -1640,12 +1640,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control",
                          "private, max-age=86400" if cache else "no-store")
         self.end_headers()
-        # Stream rather than read_bytes(): a clip can be hundreds of MB, and
-        # loading one whole per request is how a couple of concurrent videos
-        # exhaust RAM. A range seeks and copies exactly that window.
+        # Stream in fixed chunks. `shutil.copyfileobj(fh, wfile, length=window)`
+        # reads the WHOLE window into memory before the first byte goes out --
+        # a 400 MB allocation for a big clip, and a delay a browser cannot play
+        # through. A player can only start on bytes it has already received, so
+        # send the first chunk first and keep the window small.
+        remaining = end - start + 1
         with open(path, "rb") as fh:
             fh.seek(start)
-            shutil.copyfileobj(fh, self.wfile, length=end - start + 1)
+            while remaining > 0:
+                chunk = fh.read(min(256 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     # ---------- routes ----------
 
