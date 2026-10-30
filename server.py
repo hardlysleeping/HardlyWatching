@@ -570,6 +570,58 @@ def _tag_path_parts(eng, path: str) -> dict | None:
     return None
 
 
+def _tag_posts(eng, paths: list[str]) -> list[dict]:
+    """Tagged media as gallery posts, so a tag filter is the normal grid.
+
+    The point of the filter is not to look at matches, it is to act on them:
+    clicking "male" has to give tiles that can be selected and trashed like any
+    other tile. So the files are grouped back into posts (carousel parts under
+    one tile, as everywhere else) and returned in exactly the shape
+    /api/gallery/all already produces.
+    """
+    import time as _t
+    groups: dict[tuple, dict] = {}
+    for path in paths:
+        where = _tag_path_parts(eng, path)
+        if not where:
+            continue
+        name = where["file"].rsplit("/", 1)[-1]
+        # 2019-01-07_21-24-56_UTC_2.jpg -> base 2019-01-07_21-24-56_UTC, so the
+        # carousel parts stay one post with several items. Splitting on the
+        # first "_" (the date) would have merged a whole day into one tile.
+        stem, dot, ext = name.rpartition(".")
+        base = re.sub(r"_\d+$", "", stem or name)
+        key = (where["profile"].lower(), where["platform"], where["section"], base)
+        g = groups.setdefault(key, {"username": where["profile"],
+                                    "platform": where["platform"],
+                                    "section": where["section"],
+                                    "items": [], "_names": set()})
+        if name in g["_names"]:
+            continue
+        g["_names"].add(name)
+        g["items"].append({"file": name,
+                           "kind": "video" if dot and ext.lower() in
+                                   ("mp4", "mov", "webm", "m4v") else "image"})
+    out = []
+    for g in groups.values():
+        g.pop("_names", None)
+        g["items"].sort(key=lambda i: i["file"])
+        first = g["items"][0]["file"]
+        stamp = ""
+        try:
+            stamp = _t.strftime("%Y-%m-%d", _t.strptime(first[:10], "%Y-%m-%d"))
+        except Exception:
+            stamp = ""
+        g["count"] = len(g["items"])
+        g["date"] = stamp
+        g["post"] = first
+        g["ts"] = 0
+        g["ts_src"] = "name" if stamp else ""
+        out.append(g)
+    out.sort(key=lambda p: (p.get("date") or "", p["username"]), reverse=True)
+    return out
+
+
 def _mark_bookmarks(posts, profile: str | None = None) -> list[dict]:
     """Mark which of these posts are already saved, with the category each is in.
 
@@ -1995,8 +2047,30 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             q = parse_qs(urlparse(self.path).query)
             section = (q.get("section") or [""])[0]
-            if section not in ("favorites", "trash", "nopeople"):
+            if section not in ("favorites", "trash", "nopeople", "tags"):
                 return self.send_error(400)
+            if section == "tags":
+                # Filter the archive by what is in the pictures. `male` shows
+                # only males so they can be trashed; `-male` hides them; both
+                # together (female,-male) is a real query.
+                import tagging as _tagging
+                want = [t for t in (q.get("tags") or [""])[0].split(",") if t.strip()]
+                paths = _tagging.search(want, limit=6000) if want else []
+                posts = _tag_posts(get_engine(), paths)
+                posts = _mark_bookmarks(posts)
+                total = len(posts)
+                limit, offset = _page_args(q)
+                if limit:
+                    posts = posts[offset:offset + limit]
+                out = {"section": section,
+                       "profiles": get_engine().gallery_profiles(),
+                       "posts": posts, "total": total,
+                       "tags": want,
+                       "all_tags": [{"tag": t, "n": n} for t, n in _tagging.tag_counts(limit=40)]}
+                if limit:
+                    out.update({"offset": offset, "limit": limit,
+                                "has_more": offset + len(posts) < total})
+                return self._json(out)
             # Liked is the favourites folder plus every clip liked in the viewer
             # (gallery_all joins the two); trash is a folder like any other.
             # No people is built from verdicts and is capped by the caller: it

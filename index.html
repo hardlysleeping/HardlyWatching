@@ -2927,7 +2927,29 @@ function paintRunButton(st){
   run.disabled = !((c.queued || 0) > 0 || cur || paused || pacing);
 }
 
+// Arm or drop the in-place profile-count refresh. Called from the light poll,
+// which is the one that runs while the gallery is the thing on screen.
+// patchGalleryCounts only touches the count/size text of cards already drawn:
+// it never rebuilds the grid, so scroll position and the open view survive.
+function armGallerySizeTimer(st){
+  const anyLive = !!(st.current && (st.current.instagram || st.current.tiktok))
+    || (st.jobs || []).some(j => j.status === "running" || j.status === "retrying");
+  const onPlainProfileList = !gProfile && gAll === null
+    && $("galleryPane") && $("galleryPane").style.display !== "none";
+  if(anyLive && onPlainProfileList && !gTickLive){
+    gTickLive = setInterval(patchGalleryCounts, 4000);
+  } else if((!anyLive || !onPlainProfileList) && gTickLive){
+    clearInterval(gTickLive); gTickLive = null;
+  }
+}
+
 function renderLight(st){
+  // The gallery is what is on screen while this runs, so this is the only poll
+  // that can keep its numbers honest. patchGalleryCounts used to be armed from
+  // the queue path below the early return, which never runs while the gallery
+  // is up -- so profile sizes sat frozen at whatever they were when the tab was
+  // opened, while the files kept landing.
+  armGallerySizeTimer(st);
   const cAll = st.counts || {};
   // Follow the open sub-tab so the button label and its enabled state agree
   // with what is actually on screen.
@@ -3461,15 +3483,12 @@ function render(st){
   // unconditionally and snapped the All Liked view back to the profiles
   // list every 4 seconds. So the timer is only armed while that plain list is
   // the thing on screen, and it is disarmed on any other view.
-  const anyLive = !!(st.current)
-    || (st.jobs||[]).some(j => j.status === "running" || j.status === "retrying");
-  const onPlainProfileList = !gProfile && gAll === null
-    && $("galleryPane") && $("galleryPane").style.display !== "none";
-  if(anyLive && onPlainProfileList && !gTickLive){
-    gTickLive = setInterval(patchGalleryCounts, 4000);
-  } else if((!anyLive || !onPlainProfileList) && gTickLive){
-    clearInterval(gTickLive); gTickLive = null;
-  }
+  //
+  // This queue path only ever runs with the queue showing, where the profile
+  // list is not on screen at all; the arming that matters lives in
+  // armGallerySizeTimer(), called from the light poll. This call keeps the
+  // timer from being left running behind the queue.
+  armGallerySizeTimer(st);
 
   // Only show cleanup actions when there is something to clean up.
   $("retryAllBtn").style.display = (c.failed>0) ? "" : "none";
@@ -5199,7 +5218,10 @@ function stopWaitTimer(){
 
 let gProfile = null;      // username currently open, or null for the profile list
 let gPlatform = "instagram";  // platform of the profile currently open
-let gAll = null;          // null | "favorites" | "trash" — cross-profile view
+let gAll = null;          // null | "favorites" | "trash" | "tags" — cross-profile view
+// Tags picked in the gallery's tag view. Empty = show everything tagged; one
+// tag = only that tag; several = posts carrying all of them.
+let gTagList = [];
 let gFilter = "all";      // "all" | "favorites" | "trash"
 let gType = "any";        // "any" | "photos" | "videos"
 // Show ONLY the tagged posts: the ones in this folder that somebody else made,
@@ -6109,6 +6131,12 @@ function buildAllBar(profileCount){
   bar.appendChild(mk("👤 No people", gAll === "nopeople",
     () => { gAll = "nopeople"; gProfile = null; gPlatform = "instagram";
             renderAllSection("nopeople"); }));
+  // Filter the archive by what is IN the pictures. Clicking a tag shows only
+  // those posts, in the normal grid, with the normal buttons -- so "male"
+  // followed by select-all and trash is the whole workflow, no settings page.
+  bar.appendChild(mk("🏷 Tags", gAll === "tags",
+    () => { gAll = "tags"; gProfile = null; gPlatform = "instagram";
+            renderAllSection("tags"); }));
   bar.appendChild(mk("🕒 Timeline", gAll === "timeline",
     // Opened from inside a profile, the timeline stays on that profile -- the
     // same way Shorts opens limited when you arrive from a profile. Opened from
@@ -6155,21 +6183,98 @@ function buildAllBar(profileCount){
   stills.onclick = openStaticPanel;
   bar.appendChild(stills);
 
-  // Tags: a model reads every picture (and a video's first frame) and writes
-  // what is in it, plus the profile owner's name from the sidecar. The panel
-  // both starts that pass and searches what it has produced.
-  const tagsBtn = document.createElement("button");
-  tagsBtn.className = "fchip";
-  tagsBtn.id = "tagsChip";
-  tagsBtn.title = "Tag the archive with AI, and search it by tag";
-  tagsBtn.textContent = "🏷 Tags";
-  tagsBtn.onclick = openTagsPanel;
-  bar.appendChild(tagsBtn);
-
   refreshJunk();
 }
 
 const allPageSize = {};   // how many posts each cross-profile view has drawn
+
+// The tag filter itself: one chip per tag, click to show only those posts.
+// `male` is pinned first because "show me the males so I can delete them" is
+// the reason this view exists; the rest follow by count.
+async function tagListLocal(){
+  try {
+    const d = await (await fetch("/api/tags/list?limit=400")).json();
+    return d.tags || [];
+  } catch(e){ return []; }
+}
+
+// The same grouping the server does, in the page: 2019-01-07_21-24-56_UTC_1.jpg
+// and ..._UTC_2.jpg are one post with two items, not two posts. Exists so the
+// filter works before the next service restart, and as a fallback after it.
+async function tagsSectionLocal(){
+  const q = `?tags=${encodeURIComponent(gTagList.join(","))}&limit=2000`;
+  let items = [];
+  try { items = ((await (await fetch("/api/tags/search" + q)).json()).items) || []; }
+  catch(e){ items = []; }
+  const groups = new Map();
+  for(const it of items){
+    const name = it.file;
+    const base = name.replace(/\.[^.]+$/, "").replace(/_\d+$/, "");
+    const key = [it.profile.toLowerCase(), it.platform, it.section, base].join("|");
+    let g = groups.get(key);
+    if(!g){
+      g = {username: it.profile, platform: it.platform, section: it.section,
+           items: [], count: 0, date: "", post: name, ts: 0};
+      groups.set(key, g);
+    }
+    if(g.items.some(i => i.file === name)) continue;
+    g.items.push({file: name, kind: /\.(mp4|mov|webm|m4v)$/i.test(name) ? "video" : "image"});
+  }
+  const posts = [...groups.values()];
+  for(const g of posts){
+    g.items.sort((a, b) => a.file.localeCompare(b.file));
+    g.count = g.items.length;
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(g.items[0].file);
+    g.date = m ? m[1] : "";
+  }
+  posts.sort((a, b) => (b.date || "").localeCompare(a.date || "")
+                    || a.username.localeCompare(b.username));
+  return {posts, all_tags: await tagListLocal(), total: posts.length, profiles: []};
+}
+
+function tagFilterRow(allTags){
+  const wrap = document.createElement("span");
+  wrap.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1 1 100%";
+  const mk = (label, on, fn, title) => {
+    const b = document.createElement("button");
+    b.className = "fchip" + (on ? " on" : "");
+    b.textContent = label;
+    if(title) b.title = title;
+    b.onclick = fn;
+    return b;
+  };
+  wrap.appendChild(mk("All tagged", gTagList.length === 0, () => {
+    gTagList = []; renderAllSection("tags");
+  }, "Everything the tag pass has looked at"));
+  const pinned = ["male", "female", "mixed", "none"];
+  const rank = (t) => {
+    const i = pinned.indexOf(t);
+    return i === -1 ? pinned.length : i;
+  };
+  const tags = [...allTags].sort((a, b) => rank(a.tag) - rank(b.tag) || b.n - a.n);
+  for(const t of tags){
+    const on = gTagList.includes(t.tag);
+    wrap.appendChild(mk(`${t.tag} ${t.n}`, on, () => {
+      gTagList = on ? gTagList.filter(x => x !== t.tag) : [...gTagList, t.tag];
+      renderAllSection("tags");
+    }, on ? `Showing only posts tagged ${t.tag} — click to stop` 
+          : `Show only posts tagged ${t.tag}`));
+  }
+  const box = document.createElement("input");
+  box.placeholder = "tag…";
+  box.style.cssText = "width:96px;background:var(--panel);color:var(--text);"
+    + "border:1px solid var(--line-2);border-radius:6px;padding:3px 7px;font:inherit;font-size:12px";
+  box.onkeydown = (e) => {
+    if(e.key !== "Enter") return;
+    const v = box.value.trim().toLowerCase();
+    if(!v) return;
+    box.value = "";
+    if(!gTagList.includes(v)) gTagList = [...gTagList, v];
+    renderAllSection("tags");
+  };
+  wrap.appendChild(box);
+  return wrap;
+}
 
 async function renderAllSection(section){
   const host = $("profileGrid");
@@ -6185,12 +6290,27 @@ async function renderAllSection(section){
   // drawn a page at a time. "Load more" raises the page and redraws: 4,950
   // tiles is fine, 65,000 is a frozen tab.
   if(!(section in allPageSize)) allPageSize[section] = 1200;
-  const ask = section === "nopeople" ? `&limit=${allPageSize[section]}` : "";
-  let data;
+  let ask = section === "nopeople" ? `&limit=${allPageSize[section]}` : "";
+  if(section === "tags"){
+    // The filter IS the query: the server hands back only the posts carrying
+    // these tags, in the same post shape as every other cross-profile view.
+    ask = `&limit=${allPageSize[section]}`
+        + (gTagList.length ? `&tags=${encodeURIComponent(gTagList.join(","))}` : "");
+  }
+  let data = null;
   try {
-    data = await (await fetch(`/api/gallery/all?section=${section}${ask}`)).json();
-  } catch(e){
-    host.innerHTML = `<div class="gempty">Could not load.</div>`;
+    const r = await fetch(`/api/gallery/all?section=${section}${ask}`);
+    if(r.ok) data = await r.json();
+  } catch(e){ /* falls through to the local build below */ }
+  // The tags section is new server code; until the service is restarted the
+  // route is not there yet. Building it here from /api/tags/search keeps the
+  // filter working either way instead of failing until a restart.
+  if(!data && section === "tags" && gTagList.length) data = await tagsSectionLocal();
+  if(!data){
+    host.innerHTML = section === "tags" && !gTagList.length
+      ? `<div class="gempty">Pick a tag above to filter the gallery.</div>`
+      : `<div class="gempty">Could not load.</div>`;
+    if(section === "tags"){ host.innerHTML = ""; host.appendChild(tagFilterRow(await tagListLocal())); }
     return;
   }
   if(mine !== gReq) return;
@@ -6200,6 +6320,7 @@ async function renderAllSection(section){
   const bar = document.createElement("div");
   bar.className = "gbar";
   bar.style.gridColumn = "1/-1";
+  if(section === "tags") bar.appendChild(tagFilterRow(data.all_tags || []));
   const tot = document.createElement("span");
   tot.className = "hint";
   const uniq = new Set(posts.map(p => p.username)).size;
@@ -6278,7 +6399,10 @@ async function renderAllSection(section){
   if(!posts.length){
     grid.innerHTML = `<div class="gempty">${
       section === "favorites" ? "Nothing liked yet — tap ♡ on a photo, or like a clip in Shorts."
-      : section === "nopeople" ? "No people-free posts yet — run 👤 Scan for people and this fills up."
+      :      section === "nopeople" ? "No people-free posts yet — run 👤 Scan for people and this fills up."
+      : section === "tags" ? (gTagList.length
+          ? `Nothing is tagged ${gTagList.join(" + ")} yet.`
+          : "Nothing tagged yet — run the tag pass in Settings → AI tagging.")
       : "Trash is empty everywhere."}</div>`;
   } else {
     for(const post of sortPosts(posts)){
@@ -7744,7 +7868,7 @@ async function paintTagChips(){
   const host = $("tagChips");
   if(!host) return;
   try{
-    const d = await (await fetch("/api/tags/list?limit=40")).json();
+    const d = await (await fetch("/api/tags/list?limit=400")).json();
     host.innerHTML = "";
     const tags = d.tags || [];
     if(!tags.length){
@@ -8049,22 +8173,11 @@ function renderAI(){
           : `${stats.tagged || 0} files tagged · ${stats.failed || 0} failed ·
              ${stats.distinct_tags || 0} distinct tags ·
              ${stats.tokens_in || 0} in / ${stats.tokens_out || 0} out tokens spent`}</div>
-      </div>
-
-      <div class="sgroup" style="padding:12px 0">
-        <div style="${row}">
-          <b style="font-size:13.5px">Find by tag</b>
-          <input id="aiSearch" placeholder="tags, comma for AND, -tag to exclude — e.g. female, -male"
-                 style="flex:1;min-width:260px;background:var(--panel);color:var(--text);
-                        border:1px solid var(--line-2);border-radius:6px;padding:6px 9px;font:inherit">
-          <label class="hint" style="display:flex;gap:6px;align-items:center">
-            <input type="checkbox" id="aiHideMale"> hide male
-          </label>
-          <button class="small" id="aiGo">Search</button>
+        <div class="hint" style="margin-top:6px">
+          Tags are browsed in the gallery, not here: Gallery → 🏷 Tags, click a
+          tag and the grid shows only those posts, with the usual trash and
+          select buttons.
         </div>
-        <div id="aiChips" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
-        <div id="aiGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));
-             gap:6px;max-height:56vh;overflow:auto"></div>
       </div>`;
 
     $("aiEnabled").onchange = (e) => aiSave({enabled: e.target.checked});
@@ -8073,9 +8186,6 @@ function renderAI(){
     $("aiDetail").onchange = (e) => aiSave({detail: e.target.value});
     document.querySelectorAll('input[name="aiScope"]').forEach(r =>
       r.onchange = () => { if(r.checked) aiSave({scope: r.value}); });
-    $("aiGo").onclick = aiSearchRun;
-    $("aiSearch").addEventListener("keydown", (e) => { if(e.key === "Enter") aiSearchRun(); });
-    $("aiHideMale").onchange = () => { if(($("aiSearch").value || "").trim()) aiSearchRun(); };
     $("aiStop").onclick = async () => { await post("/api/tags/scan/stop", {}); setTimeout(renderAI, 900); };
     $("aiRun").onclick = async () => {
       const ok = confirm("Tag the whole library?\n\n"
@@ -8087,7 +8197,6 @@ function renderAI(){
       toast(`Tagging ${r.profiles} profiles`);
       setTimeout(renderAI, 900);
     };
-    aiChips();
     clearTimeout(aiTimer);
     if(running) aiTimer = setTimeout(renderAI, 3000);
   }).catch(e => {
@@ -8443,7 +8552,7 @@ function pcardGrid(p){
       ${pLive(p)}
       <a class="nm" data-plink="1" href="${esc(profileHref(p.username, p.platform||"instagram"))}"
          title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>
-      <div class="ct">${pCount(p)}</div>
+      <div class="ct" data-count="1">${pCount(p)}</div>
       ${pMerged(p)}
       ${pSplit(p)}
     </div>`;
@@ -8466,7 +8575,7 @@ function pcardBig(p){
         <div class="who">
           <a class="nm" data-plink="1" href="${href}"
              title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>
-          <div class="ct">${pCount(p)}</div>
+          <div class="ct" data-count="1">${pCount(p)}</div>
           ${pMerged(p)}
         </div>
       </div>
