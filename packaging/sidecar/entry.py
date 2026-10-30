@@ -45,7 +45,10 @@ from pathlib import Path
 
 # Bumped by hand when the bundle layout (not the app) changes. Reported by
 # --version and used by the desktop shell to refuse a mismatched pair.
-SIDECAR_VERSION = "0.2.0"
+# The launcher's own version, not the app's (that one comes from VERSION and is
+# what /api/version answers). Bumped with the release so a bundle can be
+# identified from the command line without running it.
+SIDECAR_VERSION = "0.5.0"
 
 USAGE = """\
 hardlywatching-server -- HardlyWatching, frozen (no Python install needed)
