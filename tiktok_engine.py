@@ -15,6 +15,7 @@ not listed is not configurable, rather than silently ignored.
 
 import datetime
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -22,6 +23,12 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 YTDLP = shutil.which("yt-dlp") or "yt-dlp"
+
+# Where the shared per-profile records live (the same directory engine.py uses
+# for its shared index, so one profile's memory follows it across drives).
+# INSTA_INDEX_DIR exists so a sandbox run can keep its state to itself.
+INDEX_DIR = Path(os.environ.get("INSTA_INDEX_DIR")
+                 or (Path.home() / ".config" / "hardlywatching" / "index"))
 
 # Real counts the UI offers. "all" means no --playlist-end.
 COUNT_CHOICES = (5, 10, 25, 50, 0)  # 0 == all
@@ -118,8 +125,41 @@ def ffmpeg_available() -> bool:
 
 
 def archive_path(root: Path, handle: str) -> Path:
-    """Per-profile record of already-downloaded video IDs."""
-    return root / handle / ".yt-dlp-archive.txt"
+    """Per-profile record of already-downloaded video IDs -- SHARED per handle.
+
+    It used to be `<root>/<handle>/.yt-dlp-archive.txt`, i.e. one archive per
+    FOLDER. The moment the same person's videos continued on a second drive, the
+    new folder had an empty archive and every video was fetched again -- the same
+    overlap that made a second copy of a profile, not a continuation of it. One
+    handle now has one archive wherever its folders live.
+
+    Anything a per-folder file already recorded is merged in on every call: that
+    is idempotent, costs a few milliseconds per job (this is called once per run,
+    not per poll), and it means a handle whose videos are split across two drives
+    still only ever downloads each video once. The legacy file is left in place
+    rather than deleted -- it is the fallback if this ever has to be undone.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(handle).strip().lstrip("@")) or "unknown"
+    shared = INDEX_DIR / "tiktok" / (safe + ".yt-dlp-archive.txt")
+    legacy = Path(root) / str(handle) / ".yt-dlp-archive.txt"
+    try:
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        have: set[str] = set()
+        if shared.exists():
+            have = {ln.strip() for ln in shared.read_text(errors="replace").splitlines() if ln.strip()}
+        if legacy.exists():
+            add = {ln.strip() for ln in legacy.read_text(errors="replace").splitlines() if ln.strip()}
+            if add - have:
+                with shared.open("a") as fh:
+                    for line in sorted(add - have):
+                        fh.write(line + "\n")
+        elif not shared.exists():
+            shared.touch()
+    except OSError:
+        # Never let archive bookkeeping stop a download: yt-dlp creates the file
+        # itself if it is missing.
+        pass
+    return shared
 
 
 def profile_url(handle: str) -> str:
