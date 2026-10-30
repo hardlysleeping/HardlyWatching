@@ -8763,7 +8763,18 @@ class Engine:
             self._note_saved_failures(failed_file, new_failures)
             new_failures.clear()
 
-        rc = proc.wait()
+        # Leaving the read loop early (drive at its limit, cancel, stop) leaves
+        # the child writing into a pipe nobody drains: yt-dlp blocks in write()
+        # and wait() would then never return -- the worker wedged for good with
+        # the job still marked "running" instead of back in the queue. Kill it
+        # first, and never wait unbounded on a child that will not go.
+        if disk_stopped or self.cancel_current["tiktok"] or self.stop_requested:
+            self._terminate_proc("tiktok")
+        try:
+            rc = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
         with self.lock:
             self._proc["tiktok"] = None
 

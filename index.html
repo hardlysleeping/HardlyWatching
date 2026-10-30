@@ -3260,8 +3260,22 @@ function paintDisk(st){
   const chip = $("diskChip");
   const box = $("diskBox");
   const disks = st.disks || [];
-  const worst = st.disk_worst || null;
+  // Judge the queue by the drives new downloads are actually WRITTEN to. Using
+  // the worst disk of every root let an archive drive that is only read report
+  // "Downloads stopped" while the receiving drive still had 300 GB free.
+  const rank = {ok: 0, warn: 1, stop: 2};
+  const recv = (st.roots || []).filter(r => r.receives && r.present && r.disk);
+  const worst = recv.length
+    ? recv.map(r => r.disk).reduce((a, b) =>
+        (rank[b.level] || 0) > (rank[a.level] || 0)
+        || ((rank[b.level] || 0) === (rank[a.level] || 0) && b.used_pct > a.used_pct) ? b : a)
+    : (st.disk_worst || null);
   const blocked = Object.values(st.disk_blocked || {}).filter(Boolean);
+  // A RECEIVING drive at its limit stops downloads. A full ARCHIVE drive is a
+  // different sentence: the profiles stored there carry on on the receiving one,
+  // so it is a warning and never "stopped".
+  const fullRecv = recv.some(r => r.disk.level === "stop");
+  const archiveFull = (st.roots || []).filter(r => !r.receives && r.present && r.disk && r.disk.level === "stop");
   // Archive folders that can take a new job while the downloads drive is full.
   // Their existence is the difference between "the queue has stopped" and "the
   // queue moved to the other drive", so the banner has to say which it is.
@@ -3274,8 +3288,8 @@ function paintDisk(st){
       chip.title = "No download folder is reachable right now.";
     } else {
       const d = worst || disks[0];
-      const lvl = blocked.length || d.level === "stop" ? "err"
-                : d.level === "warn" ? "warn" : "";
+      const lvl = blocked.length || fullRecv || d.level === "stop" ? "err"
+                : d.level === "warn" || archiveFull.length ? "warn" : "";
       chip.className = "chip" + (lvl ? " " + lvl : "");
       // Used first because that is what the limit is measured in; the bar in
       // the banner is the same figure.
@@ -3289,10 +3303,15 @@ function paintDisk(st){
   }
 
   if(!box) return;
-  const level = blocked.length ? "stop" : (worst ? worst.level : "ok");
+  const level = blocked.length || fullRecv ? "stop"
+              : archiveFull.length ? "warn" : (worst ? worst.level : "ok");
   if(level === "ok"){ box.style.display = "none"; return; }
-  const d = worst || {};
+  // Which drive the sentence is about: the one that stopped downloads, or the
+  // full ARCHIVE drive when downloads themselves are running fine.
+  const archiveDisk = archiveFull.length ? archiveFull[0].disk : null;
   const stopping = level === "stop";
+  const d = stopping ? (worst || {}) : (archiveDisk || worst || {});
+  const recvRoot = recv[0] || null;
   box.style.display = "flex";
   box.innerHTML = `
     <span class="dico">${stopping ? "⛔" : "⚠"}</span>
@@ -3302,7 +3321,9 @@ function paintDisk(st){
           ? (spill.length
               ? "The downloads drive is nearly full — new downloads go to another drive."
               : "Downloads stopped — the drive is nearly full.")
-          : "The drive is filling up."}</b>
+          : (archiveDisk
+              ? "An archive drive is full — downloads are still running."
+              : "The drive is filling up.")}</b>
         <button class="dmore" id="diskMore">details</button>
       </div>
       <div class="dbody">
@@ -3313,13 +3334,17 @@ function paintDisk(st){
             ? (spill.length
                 ? `New downloads are written to <code>${esc(spill[0].path)}</code> instead, which still has room. A run that crosses the limit on this drive is halted; it carries on by itself once there is room again.`
                 : "Nothing new will start, and a run that crosses the limit is halted. Queued profiles are kept and are not marked failed — they resume on their own as soon as there is room.")
-            : `Downloads still run, but they stop on their own once the drive reaches ${Math.round(d.limit_pct || 95)}% used.`}
+            : (archiveDisk
+                ? `This is an archive folder, not where new downloads go. New downloads are written to <code>${esc(recvRoot ? recvRoot.path : "")}</code>${recvRoot ? ` (${recvRoot.disk.free_gb} GB free)` : ""}; a profile already stored here carries on there instead, and nothing is moved or deleted.`
+                : `Downloads still run, but they stop on their own once the drive reaches ${Math.round(d.limit_pct || 95)}% used.`)}
         </div>
         <div style="margin-top:6px">
           ${stopping ? "Make room to continue:" : "Worth doing soon:"}
-          remove what you do not need from the Gallery${spill.length
-            ? ", or change the downloads folder under <b>Files and folders</b>."
-            : ", or add a folder on another drive under <b>Files and folders</b> — with room there, new downloads go to it instead of stopping."}
+          remove what you do not need from the Gallery${archiveDisk && !stopping
+            ? ", or stop reading that folder under <b>Files and folders</b>."
+            : (spill.length
+                ? ", or change the downloads folder under <b>Files and folders</b>."
+                : ", or add a folder on another drive under <b>Files and folders</b> — with room there, new downloads go to it instead of stopping.")}
         </div>
       </div>
       <div class="dacts">
