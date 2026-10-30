@@ -4534,9 +4534,15 @@ $("startBtn").onclick = async () => {
   btn.disabled = true;
   btn.textContent = "Adding…";
   let res;
+  // "All" is value 0, and 0 is falsy: `parseInt(...) || 5` turned the one option
+  // that asks for everything into "5 most recent", so the selector silently did
+  // nothing for it. 0 is a real answer here -- it means every video.
+  const ttSel = $("ttCount");
+  const ttN = ttSel ? parseInt(ttSel.value, 10) : NaN;
+  const wantCount = Number.isFinite(ttN) ? ttN : 5;
   try{
     res = await post("/api/add_mixed",
-      {text: val, platform: activePlatform, count: parseInt($("ttCount").value, 10) || 5});
+      {text: val, platform: activePlatform, count: wantCount});
   }catch(e){
     res = {ok:false, error:"Could not reach the server."};
   }

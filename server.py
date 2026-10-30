@@ -861,6 +861,23 @@ def _static_remove(paths: list[str], keep_image: bool) -> dict:
             "bytes": freed, "errors": errors}
 
 
+def count_param(body: dict, default: int = 5) -> int:
+    """`count` from a request body, where 0 means "every video".
+
+    The obvious `int(body.get("count") or 5)` reads 0 as "missing" and silently
+    substitutes the default, so the selector's "All" option queued the newest
+    five instead. Only a missing or blank value takes the default; a negative
+    number is clamped to 0, which is the same request.
+    """
+    raw = body.get("count")
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
 def route_lines(text: str, fallback: str = "instagram") -> tuple[list[str], list[str]]:
     """Split a mixed paste into (instagram lines, tiktok lines).
 
@@ -2204,7 +2221,10 @@ class Handler(BaseHTTPRequestHandler):
             # guessed at, which makes the behaviour something you can predict.
             text = str(body.get("text") or "")
             fallback = "tiktok" if str(body.get("platform") or "") == "tiktok" else "instagram"
-            count = int(body.get("count") or 5)
+            # 0 means "every video", and `int(body.get("count") or 5)` quietly
+            # turned it into 5 -- so choosing All in the selector queued the
+            # newest five instead. Only a missing/blank value takes the default.
+            count = count_param(body)
             ig_lines, tt_lines = route_lines(text, fallback)
             if not ig_lines and not tt_lines:
                 return self._json({"ok": False, "error": "Nothing to add."})
@@ -2300,7 +2320,7 @@ class Handler(BaseHTTPRequestHandler):
             restored = [h for h in handles if db.restore(plat, h)]
             if plat == "tiktok":
                 added, _ = get_engine().add_tiktok(
-                    restored, count=int(body.get("count") or 5), start=False)
+                    restored, count=count_param(body), start=False)
             else:
                 added, _ = get_engine().add(restored)
             db.mark_imported(plat, [j.username for j in added])
@@ -2310,7 +2330,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/tiktok/import":
             import tiktok_handles
             text = str(body.get("text") or "")
-            count = int(body.get("count") or 5)
+            count = count_param(body)
             handles, source, dropped = tiktok_handles.parse(text)
             if not handles:
                 return self._json({"ok": False, "error": "No usernames found in that text."})
