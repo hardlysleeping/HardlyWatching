@@ -1279,18 +1279,22 @@
     <button class="tab active" id="tabQueue">Download</button>
     <button class="tab" id="tabGallery">Gallery</button>
     <button class="tab" id="tabShorts" title="Full-screen feed of reels and TikTok videos">Shorts</button>
-    <button class="tab" id="tabAI" title="AI tagging: model, provider, price, and tag search">AI</button>
+    <button class="tab" id="tabSettings" title="Every setting the app has: AI tagging, downloads, backup, phone access, excluded, duplicates">Settings</button>
   </div>
 
-  <!-- AI tagging lives in its own tab. It is not a download setting: the model
-       choice, the provider and the price belong to the whole app, and the tag
-       search is a way of browsing the archive, not of configuring a fetch. -->
-  <div id="aiPane" class="pane" style="display:none">
+  <!-- One Settings page, and the AI settings are a section of it -- not a tab of
+       their own. The download/backup/phone/excluded/duplicates cards were
+       written for the Options dialog; they are the same elements with the same
+       ids and handlers, moved into #setHost the first time this tab opens, so
+       there is exactly one copy of every setting in the app. -->
+  <div id="settingsPane" class="pane" style="display:none">
     <div class="gallery-head">
-      <b style="font-size:16px">AI tagging</b>
+      <b style="font-size:16px">Settings</b>
       <span class="hint" id="aiHint" style="margin-left:auto"></span>
     </div>
+    <div id="setNav" style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px"></div>
     <div id="aiBody"></div>
+    <div id="setHost"></div>
   </div>
 
   <div id="shortsPane" class="pane" style="display:none">
@@ -3070,14 +3074,11 @@ function paintDisk(st){
 // warning to the number, opened, expanded and focused -- the row was reachable
 // before only by knowing it lives in Options -> Download settings -> Disk space.
 function openDiskLimit(){
-  const dlg = $("optionsDlg");
+  // Straight to the section that holds the number, on the Settings page.
+  showTab("settings");
+  setSection("settingsBox");
   const box = $("settingsBox");
-  if(box){
-    box.hidden = false;
-    box.open = true;
-    if(typeof showOptTab === "function") showOptTab("settingsBox");
-  }
-  if(dlg && !dlg.open) dlg.showModal();
+  if(box){ box.hidden = false; box.open = true; }
   // The grid is built from the poll; give it a beat, then find the row.
   const focusIt = () => {
     const rows = [...document.querySelectorAll("#sgrid [data-row]")];
@@ -4874,10 +4875,11 @@ OPT_TABS.forEach(function(pid){
   const el = $(pid);
   if(el) el.hidden = pid !== OPT_TABS[0];
 });
+// The gear used to open a modal. Settings is a page now, so it goes there --
+// on the section that was last open, or Download settings the first time.
 if($("optionsBtn")) $("optionsBtn").onclick = function(){
-  const d = $("optionsDlg");
-  if(!d.open) d.showModal();
-  showOptTab(OPT_TABS.find(function(pid){ return $(pid) && !$(pid).hidden; }) || OPT_TABS[0]);
+  showTab("settings");
+  setSection(setCur || "settingsBox");
 };
 if($("optionsClose")) $("optionsClose").onclick = function(){ $("optionsDlg").close(); };
 document.querySelectorAll("#optionsDlg .dlgtab").forEach(function(b){
@@ -5477,9 +5479,9 @@ function showTab(which, only){
   // profile list, and that must not count as having opened their profile.
   const gallery = which === "gallery";
   const shorts = which === "shorts";
-  const ai = which === "ai";
+  const ai = which === "settings";
   const wasTab = currentTab;
-  currentTab = ai ? "ai" : gallery ? "gallery" : shorts ? "shorts" : "queue";
+  currentTab = ai ? "settings" : gallery ? "gallery" : shorts ? "shorts" : "queue";
   // A tab switch is a move too: record the view being left so the one back
   // control can name it ("← Download"). Suppressed while a back is in flight --
   // that move is a return, not a new place -- and on the first load, where
@@ -5488,12 +5490,12 @@ function showTab(which, only){
   $("tabQueue").classList.toggle("active", !gallery && !shorts && !ai);
   $("tabGallery").classList.toggle("active", gallery);
   $("tabShorts").classList.toggle("active", shorts);
-  const aib = $("tabAI"); if(aib) aib.classList.toggle("active", ai);
+  const aib = $("tabSettings"); if(aib) aib.classList.toggle("active", ai);
   $("galleryPane").style.display = gallery ? "" : "none";
-  const ap = $("aiPane");
+  const ap = $("settingsPane");
   if(ap){
     ap.style.display = ai ? "" : "none";
-    if(ai) renderAI();
+    if(ai) renderSettings();
   }
   const sp = $("shortsPane");
   if(sp){
@@ -5581,8 +5583,8 @@ $("tabGallery").onclick = () => {
   showTab("gallery");
 };
 $("tabShorts").onclick = () => showTab("shorts");
-const tabAIEl = $("tabAI");
-if(tabAIEl) tabAIEl.onclick = () => showTab("ai");
+const tabSettingsEl = $("tabSettings");
+if(tabSettingsEl) tabSettingsEl.onclick = () => showTab("settings");
 
 // ---- platform sub-tabs --------------------------------------------------
 // Both platforms feed the same queue and the same worker, so this only swaps
@@ -7791,11 +7793,75 @@ async function refreshTagScan(){
 }
 
 // ---------------------------------------------------------------------------
-// The AI tab.
+// The Settings tab. Every setting the app has lives on this one page, in
+// sections: the AI section (model, provider, price, scope, tag search) is
+// rendered by renderAI(); the download/backup/phone/excluded/duplicates cards
+// are the Options dialog's own elements, moved into #setHost on first open so
+// their ids, handlers and lazy loaders keep working untouched.
+// ---------------------------------------------------------------------------
+const SET_SECTIONS = [
+  ["ai", "AI tagging"],
+  ["settingsBox", "Download settings"],
+  ["backupCard", "Backup & restore"],
+  ["lanCard", "Open on your phone"],
+  ["excludedCard", "Excluded"],
+  ["dupesCard", "Duplicates"]
+];
+let setMoved = false;
+let setCur = "ai";
+
+function moveSettingsCards(){
+  if(setMoved) return;
+  const host = $("setHost");
+  if(!host) return;
+  for(const pid of (typeof OPT_TABS !== "undefined" ? OPT_TABS : [])){
+    const el = $(pid);
+    if(el) host.appendChild(el);
+  }
+  setMoved = true;
+}
+
+function setSection(id){
+  moveSettingsCards();
+  if(!SET_SECTIONS.some(s => s[0] === id)) id = "ai";
+  setCur = id;
+  for(const pid of (typeof OPT_TABS !== "undefined" ? OPT_TABS : [])){
+    const el = $(pid);
+    if(el) el.hidden = true;
+  }
+  const ai = $("aiBody");
+  if(ai) ai.style.display = id === "ai" ? "" : "none";
+  if(id !== "ai" && typeof showOptTab === "function") showOptTab(id);
+  document.querySelectorAll("#setNav button").forEach(b =>
+    b.classList.toggle("active", b.dataset.sec === id));
+  const hint = $("aiHint");
+  if(hint && id !== "ai") hint.textContent = "";
+}
+
+function renderSettings(){
+  const nav = $("setNav");
+  if(nav && nav.dataset.built !== "1"){
+    for(const [id, label] of SET_SECTIONS){
+      const b = document.createElement("button");
+      b.className = "dlgtab";
+      b.dataset.sec = id;
+      b.textContent = label;
+      b.onclick = () => setSection(id);
+      nav.appendChild(b);
+    }
+    nav.dataset.built = "1";
+  }
+  moveSettingsCards();
+  setSection(setCur);
+  if(setCur === "ai") renderAI();
+}
+
+// ---------------------------------------------------------------------------
+// The AI section.
 //
-// Model, provider, detail, the on/off switch, the scope and the price all live
-// here rather than inside Download settings: they describe the whole app, and
-// the same tab is where the tags those settings produce are searched. Every
+// Model, provider, detail, the on/off switch, the scope and the price are here
+// rather than inside Download settings: they describe the whole app, and the
+// same section is where the tags those settings produce are searched. Every
 // change is saved the moment it is made -- there is no Save button, because a
 // setting you have to remember to apply is a setting that silently did not.
 // ---------------------------------------------------------------------------
