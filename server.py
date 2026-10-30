@@ -1926,6 +1926,16 @@ class Handler(BaseHTTPRequestHandler):
                                  for pth in tagging.search(tags, n)) if h]
             return self._json({"ok": True, "tags": tags, "count": len(items),
                                "items": items})
+        if p == "/api/ai/settings":
+            import tagging
+            return self._json({
+                "ok": True,
+                "settings": tagging.settings(),
+                "providers": [dict(id=k, **v) for k, v in tagging.PROVIDERS.items()],
+                "models": tagging.model_menu(),
+                "stats": tagging.stats(),
+                "pass": tagging.pass_state(),
+            })
         if p == "/api/tags/scan":
             import tagging
             return self._json(tagging.pass_state())
@@ -2285,6 +2295,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"id": token, "files": info["files"],
                                "total": info["total"]})
 
+        if p == "/api/ai/settings":
+            import tagging
+            saved = tagging.save_settings(body or {})
+            return self._json({"ok": True, "settings": saved,
+                               "models": tagging.model_menu()})
         if p == "/api/tags/scan":
             # Start a tagging pass. One profile, or every profile on both
             # platforms when none is named. It runs in the background: a profile

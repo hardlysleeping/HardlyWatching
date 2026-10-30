@@ -58,11 +58,13 @@ VID_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
 BOX = 640
 JPEG_Q = 82
 
-# The model Karakeep uses, on the endpoint it uses: `openai/gpt-4o-mini` through
-# OpenRouter. Same id, same provider, same key pool -- so what this pass costs is
-# directly comparable to what Karakeep's tagging costs, and the numbers the
-# dashboard already shows for that app apply here.
-MODEL_FAST = os.environ.get("HW_TAG_MODEL", "openai/gpt-4o-mini")
+# Karakeep's model is `openai/gpt-4o-mini`, but gpt-4o-mini bills a flat 2,833
+# tokens per image even at low detail: measured $0.446 per 1,000 images against
+# $0.065 for gemini-2.5-flash-lite on the same picture and prompt, with equal tag
+# quality and half the latency. So the default is the cheap one; the Karakeep
+# model stays one setting away, and the AI tab shows both prices side by side.
+DEFAULT_MODEL = "google/gemini-2.5-flash-lite"
+MODEL_FAST = os.environ.get("HW_TAG_MODEL", DEFAULT_MODEL)
 # Same model by default: Karakeep runs ONE model, and asking a second one to
 # confirm every name doubles the bill. When the two ids are equal the check is
 # skipped and the model's names are taken as-is -- exactly Karakeep's behaviour.
@@ -86,21 +88,103 @@ KEY_FILES = [Path.home() / ".hermes" / ".env",
 # Tokens actually spent, so a pass can be costed instead of estimated.
 TOKENS = {"in": 0, "out": 0}
 
+# --------------------------------------------------------------------------- #
+# Settings, so the model and the provider are a choice and not a rebuild
+#
+# Read on every call, not at import: changing the model in the UI has to apply to
+# the next picture, not to the next service restart.
+# --------------------------------------------------------------------------- #
 
-def api_key() -> str:
-    """The gateway key, from the environment or a file that already has it.
+SETTINGS_FILE = Path.home() / ".config" / "hardlywatching" / "ai.json"
+
+PROVIDERS = {
+    "openrouter": {
+        "label": "OpenRouter",
+        "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+        "key_env": "OPENROUTER_API_KEY",
+        "priced": True,          # bills per token, so a price per image is real
+    },
+    "manifest": {
+        "label": "Manifest gateway (subscription credits)",
+        "endpoint": "http://10.0.0.10:2099/v1/chat/completions",
+        "key_env": "HERMES_CUSTOM_10_0_0_10_2099_API_KEY",
+        "priced": False,         # draws on a credit quota, not a per-token rate
+    },
+}
+
+DEFAULTS = {
+    "enabled": True,             # tag automatically after a profile downloads
+    "provider": "openrouter",
+    "model": DEFAULT_MODEL,
+    "detail": "low",             # low keeps the image at a flat token cost
+    "check_model": "",           # "" = no cross-check, one call per picture
+    "gender_tags": True,         # always tag male / female / mixed / none
+    "scope": "library",          # library | profile
+}
+
+
+def settings() -> dict:
+    """The effective settings: defaults, then the file, then the environment."""
+    out = dict(DEFAULTS)
+    try:
+        saved = json.loads(SETTINGS_FILE.read_text())
+        if isinstance(saved, dict):
+            out.update({k: v for k, v in saved.items() if k in DEFAULTS})
+    except (OSError, ValueError):
+        pass
+    if os.environ.get("HW_TAG_MODEL"):
+        out["model"] = os.environ["HW_TAG_MODEL"]
+    if os.environ.get("HW_TAG_CHECK_MODEL"):
+        out["check_model"] = os.environ["HW_TAG_CHECK_MODEL"]
+    if os.environ.get("HW_TAG_DETAIL"):
+        out["detail"] = os.environ["HW_TAG_DETAIL"]
+    if os.environ.get("HW_TAG_ENDPOINT"):
+        out["endpoint"] = os.environ["HW_TAG_ENDPOINT"]
+    if out.get("provider") not in PROVIDERS:
+        out["provider"] = "openrouter"
+    prov = PROVIDERS[out["provider"]]
+    out.setdefault("endpoint", prov["endpoint"])
+    out["endpoint"] = out.get("endpoint") or prov["endpoint"]
+    out["key_env"] = prov["key_env"]
+    out["provider_label"] = prov["label"]
+    out["priced"] = prov["priced"]
+    return out
+
+
+def save_settings(patch: dict) -> dict:
+    """Merge a change into ai.json and return the effective settings."""
+    cur = dict(DEFAULTS)
+    try:
+        saved = json.loads(SETTINGS_FILE.read_text())
+        if isinstance(saved, dict):
+            cur.update({k: v for k, v in saved.items() if k in DEFAULTS})
+    except (OSError, ValueError):
+        pass
+    for k, v in (patch or {}).items():
+        if k in DEFAULTS:
+            cur[k] = v
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cur, indent=2))
+    tmp.replace(SETTINGS_FILE)
+    return settings()
+
+
+def api_key(key_env: str = "") -> str:
+    """The key for a provider, from the environment or a file that already has it.
 
     Never logged, never written anywhere new: a second copy on disk is a second
     thing to leak.
     """
-    key = os.environ.get(KEY_ENV, "").strip()
+    name = key_env or KEY_ENV
+    key = os.environ.get(name, "").strip()
     if key:
         return key
     for path in KEY_FILES:
         try:
             for line in path.read_text(errors="replace").splitlines():
                 line = line.strip()
-                if line.startswith(KEY_ENV + "="):
+                if line.startswith(name + "="):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
         except OSError:
             continue
@@ -134,6 +218,7 @@ def db() -> sqlite3.Connection:
                     size    INTEGER NOT NULL DEFAULT 0,
                     mtime   REAL    NOT NULL DEFAULT 0,
                     owner   TEXT    NOT NULL DEFAULT '',
+                    gender  TEXT    NOT NULL DEFAULT '',
                     tags    TEXT    NOT NULL DEFAULT '',   -- comma separated
                     people  TEXT    NOT NULL DEFAULT '',   -- confirmed names only
                     caption TEXT    NOT NULL DEFAULT '',
@@ -149,6 +234,10 @@ def db() -> sqlite3.Connection:
                 CREATE INDEX IF NOT EXISTS tag_paths_tag ON tag_paths(tag);
                 """
             )
+            # A database made before gender was asked for has no column for it.
+            cols = {r[1] for r in c.execute("PRAGMA table_info(tags)")}
+            if "gender" not in cols:
+                c.execute("ALTER TABLE tags ADD COLUMN gender TEXT NOT NULL DEFAULT ''")
             c.commit()
             _CONN = c
         return _CONN
@@ -208,14 +297,18 @@ def owner_name(profile_dir: Path, platform: str = "instagram") -> str:
 
 PROMPT = (
     "You label photos for a personal archive. Answer with ONLY compact JSON, no prose:\n"
-    '{"people": ["Full Name"], "tags": ["tag"], "caption": "one sentence"}\n'
+    '{"people": ["Full Name"], "gender": "female", "tags": ["tag"], "caption": "one sentence"}\n'
     "people: real, publicly known people you actually recognise (celebrities, actors, "
     "musicians, models, athletes, influencers). Common public name. If you do not "
     "recognise someone, return an empty list -- never guess.\n"
+    "gender: who the main subject is -- exactly one of \"male\", \"female\", \"mixed\" "
+    "(both sexes present), \"none\" (no person in frame). Required on every answer.\n"
     "tags: 5 to 10 lowercase single words or short phrases for setting, clothing, "
     "activity, mood, colours and shot type.\n"
     "caption: one plain sentence."
 )
+
+GENDERS = ("male", "female", "mixed", "none")
 
 
 def _payload_bytes(path: Path) -> bytes | None:
@@ -245,11 +338,13 @@ def _payload_bytes(path: Path) -> bytes | None:
         return None
 
 
-def _ask(model: str, img: bytes, timeout: int = 90) -> dict | None:
+def _ask(model: str, img: bytes, cfg: dict | None = None, timeout: int = 90) -> dict | None:
     """One vision call. Returns the parsed JSON object, or None."""
-    key = api_key()
+    cfg = cfg or settings()
+    key = api_key(cfg.get("key_env", ""))
     if not key:
-        raise RuntimeError("no model key: set %s or ~/.hermes/.env" % KEY_ENV)
+        raise RuntimeError("no model key: set %s or ~/.hermes/.env"
+                           % (cfg.get("key_env") or KEY_ENV))
     body = {
         "model": model,
         "messages": [{"role": "user", "content": [
@@ -257,13 +352,13 @@ def _ask(model: str, img: bytes, timeout: int = 90) -> dict | None:
             {"type": "image_url",
              "image_url": {"url": "data:image/jpeg;base64," +
                                   base64.b64encode(img).decode(),
-                           "detail": DETAIL}},
+                           "detail": cfg.get("detail") or "low"}},
         ]}],
         "temperature": 0.1,
         "max_tokens": 400,
     }
     req = urllib.request.Request(
-        ENDPOINT, data=json.dumps(body).encode(),
+        cfg.get("endpoint") or ENDPOINT, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -297,23 +392,34 @@ def _names(d: dict) -> list[str]:
     return [str(x).strip() for x in v if str(x).strip()][:4]
 
 
-def tag_media(path: Path, owner: str = "") -> dict:
+def tag_media(path: Path, owner: str = "", cfg: dict | None = None) -> dict:
     """Tags for one file. Owner is a fact; other names need two models to agree."""
+    cfg = cfg or settings()
     img = _payload_bytes(path)
     if img is None:
         return {"error": "no preview (unreadable or ffmpeg failed)"}
-    first = _ask(MODEL_FAST, img)
+    model = cfg.get("model") or MODEL_FAST
+    first = _ask(model, img, cfg)
     if not first:
         return {"error": "no answer"}
     if "__error__" in first:
         return {"error": first["__error__"]}
     tags = [_norm(t) for t in (first.get("tags") or []) if _norm(t)]
     caption = str(first.get("caption") or "")[:300]
+    # Gender is asked for on every picture and forced into the tag list, so
+    # "hide male" is a filter and not a hope. The model is told it is required;
+    # anything outside the four words is dropped rather than stored as-is.
+    gender = str(first.get("gender") or "").strip().lower()
+    if gender not in GENDERS:
+        gender = ""
+    if gender and cfg.get("gender_tags", True) and gender not in tags:
+        tags.append(gender)
     named = [n for n in _names(first) if n.lower() != (owner or "").lower()]
     confirmed: list[str] = []
-    if named and MODEL_CHECK and MODEL_CHECK != MODEL_FAST:
+    check = cfg.get("check_model") or ""
+    if named and check and check != model:
         # A second opinion, because a wrong name is worse than no name.
-        second = _ask(MODEL_CHECK, img)
+        second = _ask(check, img, cfg)
         if second and "__error__" not in second:
             other = {n.lower() for n in _names(second)}
             confirmed = [n for n in named if n.lower() in other]
@@ -322,8 +428,8 @@ def tag_media(path: Path, owner: str = "") -> dict:
         # the model gave it -- which is why the owner's name, read from the
         # sidecar, stays the one name that is certainly right.
         confirmed = named
-    return {"tags": tags[:12], "people": confirmed, "caption": caption,
-            "model": MODEL_FAST}
+    return {"tags": tags[:13], "people": confirmed, "caption": caption,
+            "gender": gender, "model": model}
 
 
 # --------------------------------------------------------------------------- #
@@ -385,15 +491,16 @@ def _store(path: Path, size: int, mtime: float, owner: str, res: dict) -> None:
     c = db()
     tags = ",".join(res.get("tags") or [])
     people = ",".join(res.get("people") or [])
+    gender = (res.get("gender") or "")[:12]
     with _LOCK:
         c.execute(
-            "INSERT INTO tags(path,size,mtime,owner,tags,people,caption,model,checked,failed)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?)"
+            "INSERT INTO tags(path,size,mtime,owner,gender,tags,people,caption,model,checked,failed)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime=excluded.mtime,"
-            " owner=excluded.owner, tags=excluded.tags, people=excluded.people,"
-            " caption=excluded.caption, model=excluded.model, checked=excluded.checked,"
-            " failed=excluded.failed",
-            (str(path), size, mtime, owner, tags, people,
+            " owner=excluded.owner, gender=excluded.gender, tags=excluded.tags,"
+            " people=excluded.people, caption=excluded.caption, model=excluded.model,"
+            " checked=excluded.checked, failed=excluded.failed",
+            (str(path), size, mtime, owner, gender, tags, people,
              res.get("caption") or "", res.get("model") or "", time.time(),
              res.get("error") or ""))
         c.execute("DELETE FROM tag_paths WHERE path = ?", (str(path),))
@@ -500,16 +607,102 @@ def tag_counts(prefix: str = "", limit: int = 200) -> list[tuple[str, int]]:
     return [(r[0], int(r[1])) for r in c.execute(q, (limit,))]
 
 
+# Measured, not guessed: input/output tokens for one 640px photo at detail=low,
+# same prompt, from the providers' own `usage` blocks. Multiplied by the live
+# list price this becomes "$ per 1,000 images", which is the only number worth
+# showing when choosing a model.
+MEASURED = {
+    "google/gemini-2.5-flash-lite": (377, 69),
+    "openai/gpt-4o-mini": (2858, 28),
+    "mistralai/mistral-small-3.2-24b-instruct": (649, 69),
+    "amazon/nova-lite-v1": (1266, 27),
+    "qwen/qwen3-vl-8b-instruct": (407, 14),
+}
+
+_PRICES: dict = {"at": 0.0, "data": {}}
+
+
+def list_prices(max_age: float = 3600.0) -> dict:
+    """{model: (prompt $/M, completion $/M)} from OpenRouter's catalogue."""
+    now = time.time()
+    if _PRICES["data"] and (now - _PRICES["at"]) < max_age:
+        return _PRICES["data"]
+    try:
+        with urllib.request.urlopen("https://openrouter.ai/api/v1/models", timeout=20) as r:
+            cat = json.loads(r.read())
+    except Exception:
+        return _PRICES["data"]
+    out = {}
+    for m in cat.get("data", []):
+        p = m.get("pricing") or {}
+        try:
+            out[m["id"]] = (float(p.get("prompt", 0)) * 1e6,
+                            float(p.get("completion", 0)) * 1e6)
+        except (TypeError, ValueError):
+            continue
+    _PRICES.update({"at": now, "data": out})
+    return out
+
+
+def model_menu() -> list[dict]:
+    """The models worth offering, with what each costs per 1,000 images."""
+    prices = list_prices()
+    out = []
+    for model, (tin, tout) in MEASURED.items():
+        pin, pout = prices.get(model, (0.0, 0.0))
+        per1000 = (tin * pin + tout * pout) / 1e6 * 1000
+        out.append({"id": model, "in": tin, "out": tout,
+                    "price_in": round(pin, 3), "price_out": round(pout, 3),
+                    "per_1000": round(per1000, 3),
+                    "per_archive": round(per1000 * 46.227, 2)})
+    out.sort(key=lambda m: m["per_1000"] or 9e9)
+    return out
+
+
 def search(tags: list[str], limit: int = 500, require_all: bool = True) -> list[str]:
-    """Paths carrying the given tags."""
-    tags = [_norm(t) for t in tags if _norm(t)]
-    if not tags:
+    """Paths carrying the given tags. A tag written `-male` excludes instead.
+
+    Exclusion is what makes "hide male subjects" a real filter: asking for
+    `female` alone would still return every mixed group shot, so the useful
+    query is `female, -male`.
+    """
+    want: list[str] = []
+    drop: list[str] = []
+    for raw in tags or []:
+        t = str(raw).strip()
+        if not t:
+            continue
+        if t.startswith("-"):
+            v = _norm(t[1:])
+            if v:
+                drop.append(v)
+        else:
+            v = _norm(t)
+            if v:
+                want.append(v)
+    if not want and not drop:
         return []
     c = db()
+    if not want:
+        # Only exclusions: everything that does not carry them.
+        q = ("SELECT path FROM tags WHERE failed = '' AND path NOT IN ("
+             "SELECT path FROM tag_paths WHERE tag IN (%s)) LIMIT ?"
+             % ",".join("?" * len(drop)))
+        return [r[0] for r in c.execute(q, drop + [limit])]
     q = ("SELECT path, COUNT(*) hits FROM tag_paths WHERE tag IN (%s) "
          "GROUP BY path %s ORDER BY hits DESC LIMIT ?"
-         % (",".join("?" * len(tags)), "HAVING hits = %d" % len(tags) if require_all else ""))
-    return [r[0] for r in c.execute(q, tags + [limit])]
+         % (",".join("?" * len(want)), "HAVING hits = %d" % len(want) if require_all else ""))
+    hits = [r[0] for r in c.execute(q, want + [limit * 3])]
+    if drop:
+        gone = set()
+        chunk = 400
+        for i in range(0, len(hits), chunk):
+            part = hits[i:i + chunk]
+            q2 = ("SELECT DISTINCT path FROM tag_paths WHERE tag IN (%s) AND path IN (%s)"
+                  % (",".join("?" * len(drop)), ",".join("?" * len(part))))
+            gone.update(r[0] for r in c.execute(q2, drop + part))
+        hits = [h for h in hits if h not in gone]
+    return hits[:limit]
 
 
 def stats() -> dict:

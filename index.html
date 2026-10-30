@@ -1279,6 +1279,18 @@
     <button class="tab active" id="tabQueue">Download</button>
     <button class="tab" id="tabGallery">Gallery</button>
     <button class="tab" id="tabShorts" title="Full-screen feed of reels and TikTok videos">Shorts</button>
+    <button class="tab" id="tabAI" title="AI tagging: model, provider, price, and tag search">AI</button>
+  </div>
+
+  <!-- AI tagging lives in its own tab. It is not a download setting: the model
+       choice, the provider and the price belong to the whole app, and the tag
+       search is a way of browsing the archive, not of configuring a fetch. -->
+  <div id="aiPane" class="pane" style="display:none">
+    <div class="gallery-head">
+      <b style="font-size:16px">AI tagging</b>
+      <span class="hint" id="aiHint" style="margin-left:auto"></span>
+    </div>
+    <div id="aiBody"></div>
   </div>
 
   <div id="shortsPane" class="pane" style="display:none">
@@ -5465,17 +5477,24 @@ function showTab(which, only){
   // profile list, and that must not count as having opened their profile.
   const gallery = which === "gallery";
   const shorts = which === "shorts";
+  const ai = which === "ai";
   const wasTab = currentTab;
-  currentTab = gallery ? "gallery" : shorts ? "shorts" : "queue";
+  currentTab = ai ? "ai" : gallery ? "gallery" : shorts ? "shorts" : "queue";
   // A tab switch is a move too: record the view being left so the one back
   // control can name it ("← Download"). Suppressed while a back is in flight --
   // that move is a return, not a new place -- and on the first load, where
   // there is nothing behind you yet.
   if(wasTab !== currentTab && !navMute && !navBoot) navPush(snapshotView(wasTab));
-  $("tabQueue").classList.toggle("active", !gallery && !shorts);
+  $("tabQueue").classList.toggle("active", !gallery && !shorts && !ai);
   $("tabGallery").classList.toggle("active", gallery);
   $("tabShorts").classList.toggle("active", shorts);
+  const aib = $("tabAI"); if(aib) aib.classList.toggle("active", ai);
   $("galleryPane").style.display = gallery ? "" : "none";
+  const ap = $("aiPane");
+  if(ap){
+    ap.style.display = ai ? "" : "none";
+    if(ai) renderAI();
+  }
   const sp = $("shortsPane");
   if(sp){
     sp.style.display = shorts ? "" : "none";
@@ -5562,6 +5581,8 @@ $("tabGallery").onclick = () => {
   showTab("gallery");
 };
 $("tabShorts").onclick = () => showTab("shorts");
+const tabAIEl = $("tabAI");
+if(tabAIEl) tabAIEl.onclick = () => showTab("ai");
 
 // ---- platform sub-tabs --------------------------------------------------
 // Both platforms feed the same queue and the same worker, so this only swaps
@@ -7769,6 +7790,217 @@ async function refreshTagScan(){
   }catch(e){ return null; }
 }
 
+// ---------------------------------------------------------------------------
+// The AI tab.
+//
+// Model, provider, detail, the on/off switch, the scope and the price all live
+// here rather than inside Download settings: they describe the whole app, and
+// the same tab is where the tags those settings produce are searched. Every
+// change is saved the moment it is made -- there is no Save button, because a
+// setting you have to remember to apply is a setting that silently did not.
+// ---------------------------------------------------------------------------
+let aiState = null;
+let aiTimer = null;
+
+async function aiLoad(){
+  const d = await (await fetch("/api/ai/settings")).json();
+  aiState = d;
+  return d;
+}
+
+async function aiSave(patch){
+  const r = await post("/api/ai/settings", patch);
+  if(!r || !r.ok){ toast((r && r.error) || "Could not save"); return null; }
+  aiState = Object.assign({}, aiState, {settings: r.settings, models: r.models || (aiState||{}).models});
+  renderAI();
+  return r;
+}
+
+function aiMoney(v){ return v === undefined || v === null ? "?" : "$" + Number(v).toFixed(3); }
+
+function aiPaintResults(items, note){
+  const grid = $("aiGrid");
+  if(!grid) return;
+  grid.innerHTML = "";
+  if(!items || !items.length){
+    grid.innerHTML = `<div class="gempty" style="grid-column:1/-1">${esc(note || "Nothing matches that.")}</div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for(const it of items){
+    const q = `profile=${encodeURIComponent(it.profile)}&file=${encodeURIComponent(it.file)}`
+      + `&platform=${encodeURIComponent(it.platform)}`
+      + (it.section && it.section !== "main" ? `&section=${encodeURIComponent(it.section)}` : "");
+    const a = document.createElement("a");
+    a.href = `/media?${q}`;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.title = `${it.profile} · ${it.file}`;
+    a.style.cssText = "display:block;aspect-ratio:1;overflow:hidden;border-radius:6px;background:var(--panel)";
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = ""; img.src = `/thumb?${q}`;
+    img.style.cssText = "width:100%;height:100%;object-fit:cover";
+    a.appendChild(img);
+    frag.appendChild(a);
+  }
+  grid.appendChild(frag);
+}
+
+async function aiSearchRun(){
+  const box = $("aiSearch");
+  let tags = (box && box.value || "").trim();
+  const hideMale = $("aiHideMale");
+  if(hideMale && hideMale.checked && !/-male/i.test(tags)) tags = (tags ? tags + "," : "") + "-male";
+  if(!tags){ toast("Type a tag first"); return; }
+  const note = $("aiHint");
+  try{
+    const r = await (await fetch(`/api/tags/search?tags=${encodeURIComponent(tags)}`)).json();
+    if(!r.ok){ if(note) note.textContent = r.error || "Search failed"; return; }
+    aiPaintResults(r.items || []);
+    if(note) note.textContent = `${r.count} match${r.count === 1 ? "" : "es"} for ${r.tags.join(" + ")}`;
+  }catch(e){
+    if(note) note.textContent = "Could not search: " + e.message;
+  }
+}
+
+async function aiChips(){
+  const host = $("aiChips");
+  if(!host) return;
+  try{
+    const d = await (await fetch("/api/tags/list?limit=32")).json();
+    host.innerHTML = "";
+    const tags = d.tags || [];
+    if(!tags.length){
+      host.innerHTML = `<span class="hint">Nothing tagged yet — press “Tag the whole library”.</span>`;
+      return;
+    }
+    for(const t of tags){
+      const b = document.createElement("button");
+      b.className = "fchip";
+      b.innerHTML = `${esc(t.tag)}<span class="n">${t.n}</span>`;
+      b.onclick = () => { const s = $("aiSearch"); if(s) s.value = t.tag; aiSearchRun(); };
+      host.appendChild(b);
+    }
+  }catch(e){}
+}
+
+function renderAI(){
+  const host = $("aiBody");
+  if(!host) return;
+  aiLoad().then(d => {
+    const s = d.settings || {};
+    const models = d.models || [];
+    const stats = d.stats || {};
+    const pass = d.pass || {};
+    const cur = models.find(m => m.id === s.model) || models[0] || {};
+    const running = !!pass.running;
+    const row = "display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px";
+    const lab = "font-size:12.5px;color:var(--muted);min-width:96px";
+    const sel = "background:var(--panel);color:var(--text);border:1px solid var(--line-2);"
+      + "border-radius:6px;padding:5px 8px;font:inherit";
+
+    host.innerHTML = `
+      <div class="sgroup" style="padding:12px 0">
+        <div style="${row}">
+          <label style="${lab}">Tagging</label>
+          <label class="hint" style="display:flex;gap:7px;align-items:center">
+            <input type="checkbox" id="aiEnabled" ${s.enabled ? "checked" : ""}>
+            tag every profile automatically once it finishes downloading
+          </label>
+        </div>
+        <div style="${row}">
+          <label style="${lab}">Provider</label>
+          <select id="aiProvider" style="${sel}">
+            ${(d.providers || []).map(p =>
+              `<option value="${esc(p.id)}" ${p.id === s.provider ? "selected" : ""}>${esc(p.label)}</option>`).join("")}
+          </select>
+          <span class="hint">${s.priced ? "billed per token, so the price below is real" :
+            "draws on a credit quota — no per-token price to show"}</span>
+        </div>
+        <div style="${row}">
+          <label style="${lab}">Model</label>
+          <select id="aiModel" style="${sel};min-width:300px">
+            ${models.map(m => `<option value="${esc(m.id)}" ${m.id === s.model ? "selected" : ""}>
+              ${esc(m.id)} — ${aiMoney(m.per_1000)}/1,000</option>`).join("")}
+          </select>
+          <label style="${lab};min-width:auto">Detail</label>
+          <select id="aiDetail" style="${sel}">
+            <option value="low" ${s.detail === "low" ? "selected" : ""}>low (flat token cost)</option>
+            <option value="high" ${s.detail !== "low" ? "selected" : ""}>high (~9× the tokens)</option>
+          </select>
+        </div>
+        <div style="${row}">
+          <label style="${lab}">Cost</label>
+          <b>${aiMoney(cur.per_1000)} per 1,000 images</b>
+          <span class="hint">≈ $${cur.per_archive || "?"} for the whole archive ·
+            ${cur.in || "?"} in / ${cur.out || "?"} out tokens per image, measured</span>
+        </div>
+        <div style="${row}">
+          <label style="${lab}">Scope</label>
+          <label class="hint" style="display:flex;gap:6px;align-items:center">
+            <input type="radio" name="aiScope" value="library" ${s.scope !== "profile" ? "checked" : ""}>
+            whole library
+          </label>
+          <label class="hint" style="display:flex;gap:6px;align-items:center">
+            <input type="radio" name="aiScope" value="profile" ${s.scope === "profile" ? "checked" : ""}>
+            only when I ask, on a profile
+          </label>
+          <button class="small" id="aiRun" ${running ? "disabled" : ""}>
+            ${running ? "Tagging…" : "Tag the whole library"}</button>
+          <button class="small danger" id="aiStop" style="${running ? "" : "display:none"}">Stop</button>
+        </div>
+        <div class="hint" id="aiProg">${running
+          ? `tagging ${esc(pass.profile || "…")} — ${pass.tagged || 0} tagged,
+             ${pass.profiles_done || 0}/${pass.profiles_total || 0} profiles`
+          : `${stats.tagged || 0} files tagged · ${stats.failed || 0} failed ·
+             ${stats.distinct_tags || 0} distinct tags ·
+             ${stats.tokens_in || 0} in / ${stats.tokens_out || 0} out tokens spent`}</div>
+      </div>
+
+      <div class="sgroup" style="padding:12px 0">
+        <div style="${row}">
+          <b style="font-size:13.5px">Find by tag</b>
+          <input id="aiSearch" placeholder="tags, comma for AND, -tag to exclude — e.g. female, -male"
+                 style="flex:1;min-width:260px;background:var(--panel);color:var(--text);
+                        border:1px solid var(--line-2);border-radius:6px;padding:6px 9px;font:inherit">
+          <label class="hint" style="display:flex;gap:6px;align-items:center">
+            <input type="checkbox" id="aiHideMale"> hide male
+          </label>
+          <button class="small" id="aiGo">Search</button>
+        </div>
+        <div id="aiChips" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0"></div>
+        <div id="aiGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));
+             gap:6px;max-height:56vh;overflow:auto"></div>
+      </div>`;
+
+    $("aiEnabled").onchange = (e) => aiSave({enabled: e.target.checked});
+    $("aiProvider").onchange = (e) => aiSave({provider: e.target.value});
+    $("aiModel").onchange = (e) => aiSave({model: e.target.value});
+    $("aiDetail").onchange = (e) => aiSave({detail: e.target.value});
+    document.querySelectorAll('input[name="aiScope"]').forEach(r =>
+      r.onchange = () => { if(r.checked) aiSave({scope: r.value}); });
+    $("aiGo").onclick = aiSearchRun;
+    $("aiSearch").addEventListener("keydown", (e) => { if(e.key === "Enter") aiSearchRun(); });
+    $("aiHideMale").onchange = () => { if(($("aiSearch").value || "").trim()) aiSearchRun(); };
+    $("aiStop").onclick = async () => { await post("/api/tags/scan/stop", {}); setTimeout(renderAI, 900); };
+    $("aiRun").onclick = async () => {
+      const ok = confirm("Tag the whole library?\n\n"
+        + `${aiMoney(cur.per_1000)} per 1,000 images — about $${cur.per_archive || "?"} for everything.\n`
+        + "Runs in the background, one profile at a time, and resumes where it stopped.");
+      if(!ok) return;
+      const r = await post("/api/tags/scan", {});
+      if(!r.ok){ toast(r.error || "Could not start"); return; }
+      toast(`Tagging ${r.profiles} profiles`);
+      setTimeout(renderAI, 900);
+    };
+    aiChips();
+    clearTimeout(aiTimer);
+    if(running) aiTimer = setTimeout(renderAI, 3000);
+  }).catch(e => {
+    host.innerHTML = `<div class="gempty">Could not load AI settings: ${esc(e.message)}</div>`;
+  });
+}
+
 function openTagsPanel(){
   let box = $("tagsBox");
   if(box) box.remove();
@@ -9151,6 +9383,11 @@ function drawPhotos(username, sec){
     : [["new", "New or missing posts", "posts added since the last run, plus any it skipped"],
        ["tagged", "Tagged posts", "posts this profile is tagged in"],
        ["reels", "Reels", "reels only, as their own pass"]];
+  // Tagging this profile is offered on both sites and is not a download pass:
+  // it reads what is already in the folder (and anything new), so it is the
+  // "run it here, on this person" half of the AI tab's scope setting.
+  PASSES.push(["tags", "Tag this profile",
+               "AI tags for every picture and video here, new or already downloaded"]);
   if(PASSES[0][0] === "new" && !mainJobId) PASSES[0][1] = "Download this profile";
 
   const boxes = {};
@@ -9195,7 +9432,9 @@ function drawPhotos(username, sec){
       // job's count to 0 (the app's "all") and revives it, so the run walks the
       // profile from the top instead of stopping at the newest video it already
       // has. Same endpoint the card's own "all" button uses.
-      const r = key === "all"
+      const r = key === "tags"
+        ? await post("/api/tags/scan", {profile: username, platform: PLAT})
+        : key === "all"
         ? await post("/api/tiktok/more", {id: mainJobId, all: true})
         : key === "new"
         // Existing job: re-run it. No job yet: queue it fresh.

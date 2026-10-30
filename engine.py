@@ -8446,6 +8446,7 @@ class Engine:
         self._set(job, status="done", finished_at=time.time(),
                   posts=files, total_files=files, total_bytes=total_bytes,
                   message=done_msg)
+        self._tag_after_download(job)
         if links_file is not None:
             self._bookmark_saved(job)
             self._queue_saved_creators(job)
@@ -8545,6 +8546,7 @@ class Engine:
 
                 self._set(job, status="done", finished_at=time.time(),
                           message=msg, error="")
+                self._tag_after_download(job)
                 return
             if outcome == "fatal":
                 # A "fatal" marker can still be a false positive (e.g. an HTTP
@@ -8776,6 +8778,37 @@ class Engine:
                        f"(401). Downloads are stopped until a different session is "
                        f"chosen: Sessions → Use on another account.")
         self.save_state()
+
+    def _tag_after_download(self, job) -> None:
+        """Tag this profile when its download finishes, if tagging is switched on.
+
+        "The new ones AND everything it already has" is one behaviour, not two:
+        the pass skips a file it has already answered at the same size, so a
+        profile that just gained 40 posts costs 40 calls, while a profile that
+        has never been tagged gets every file in the folder because none of them
+        are known yet. That is why there is no separate "only new" mode.
+
+        Runs in the background and never raises: tagging is a nicety, and a
+        model being unreachable must not turn a finished download into a failed
+        job.
+        """
+        try:
+            import tagging
+            cfg = tagging.settings()
+            if not cfg.get("enabled"):
+                return
+            # Scope "profile" means the user starts it themselves from that
+            # profile's page; auto-tagging after every download is the "whole
+            # library" behaviour.
+            if cfg.get("scope") == "profile":
+                return
+            platform = getattr(job, "platform", "instagram") or "instagram"
+            folder = self.root_for(job.username, platform)
+            if folder is None or not folder.is_dir():
+                return
+            tagging.start_pass([(folder, platform)], 0, 2)
+        except Exception:
+            return
 
     def _exec(self, job: Job, cmd: list[str], target_dir: Path) -> str:
         """Run instaloader, stream output. Returns the run's verdict."""
