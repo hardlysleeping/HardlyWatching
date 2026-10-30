@@ -2127,6 +2127,30 @@ def root_for(self, username: str, platform: str = "instagram") -> Path | None:
     return None
 
 
+def roots_for(self, username: str, platform: str = "instagram") -> list[Path]:
+    """EVERY archive root holding `username`, in list order (may be empty).
+
+    root_for() answers "where does this profile live" -- the first root, which
+    is where a write goes. A profile whose downloads outgrew one drive has
+    folders on several, and the gallery has to show all of them: this is that
+    list, and it is the one definition of "this root holds this profile" (it
+    asks _profile_in, exactly like root_for and _existing_root).
+
+    An unmounted root simply does not appear, so nothing here can select a
+    drive that is not there. Compared resolved, because one drive can be
+    spelled two ways (/home vs /var/home) and the same folder must not count
+    twice.
+    """
+    out: list[Path] = []
+    for root in self.roots:
+        if self._profile_in(root, username, platform) is None:
+            continue
+        if any(_same(root, seen) for seen in out):
+            continue
+        out.append(root)
+    return out
+
+
 def _post_owner(folder: Path, stamp: str, platform: str = "instagram") -> str:
     """The account that actually posted this, or "" when the sidecar has none.
 
@@ -2603,23 +2627,159 @@ NOBODY_SECTION = "nopeople"
 # time we looked. It lets us notice files you deleted from the file manager and
 # leave a placeholder for them, so they are not silently re-downloaded. A
 # dotfile is invisible to instaloader and to _gallery_media (extension filter).
+#
+# LEGACY: new indexes are written OUTSIDE the archive (see _index_path), one
+# file per profile, so every drive holding that profile shares one memory. This
+# name is still read once per folder, to adopt what an older build left behind.
 INDEX_FILE = ".insta-index.json"
 
+# 2 = {"media": {root_path: [names]}, "tombstones": [names]}. Version 1 was a
+# single {"media": [names]} written inside one profile folder.
+INDEX_VERSION = 2
 
-def _read_index(root: Path) -> dict:
+
+def _index_dir() -> Path:
+    """Where the shared per-profile records live.
+
+    Same directory tiktok_engine keeps its shared yt-dlp archive in, so one
+    profile's memory (both platforms) follows it across drives. INSTA_INDEX_DIR
+    exists so a sandbox run can keep its state to itself.
+    """
+    env = (os.environ.get("INSTA_INDEX_DIR") or "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".config" / "hardlywatching" / "index"
+
+
+def _index_path(folder) -> Path:
+    """The shared index file for the profile whose folder this is."""
+    folder = Path(folder)
+    platform = _platform_of_folder(folder)
+    who = "".join(c if (c.isalnum() or c in "-._") else "_"
+                  for c in (folder.name or "").lower()) or "unknown"
+    return _index_dir() / platform / f"{who}.json"
+
+
+def _empty_index() -> dict:
+    return {"version": INDEX_VERSION, "media": {}, "tombstones": []}
+
+
+def _index_has_root(index: dict, folder) -> bool:
+    """Whether this folder's own listing is recorded (even if it is empty)."""
+    media = index.get("media") if isinstance(index, dict) else None
+    if not isinstance(media, dict):
+        return False
+    want = Path(folder)
+    if str(want) in media:
+        return True
+    real = _resolve(want)
+    if real is None:
+        return False
+    return any(_resolve(Path(k)) == real for k in media)
+
+
+def _index_media(index: dict, folder) -> list[str]:
+    """The media names recorded for THIS folder (one root's listing)."""
+    media = index.get("media") if isinstance(index, dict) else None
+    if not isinstance(media, dict):
+        return []
+    want = Path(folder)
+    for key, names in media.items():
+        if key == str(want):
+            return [str(n) for n in (names or [])]
+    # The same place spelled two ways (/home vs /var/home, a symlinked drive):
+    # fall back to comparing the resolved paths.
+    real = _resolve(want)
+    if real is None:
+        return []
+    for key, names in media.items():
+        if _resolve(Path(key)) == real:
+            return [str(n) for n in (names or [])]
+    return []
+
+
+def _index_set_media(index: dict, folder, names) -> None:
+    """Record one folder's listing under its own root, leaving the others alone.
+
+    Per root on purpose: a media list describes ONE folder. Sharing one list
+    between two drives is what would make the second folder look as though
+    everything in it had been deleted.
+    """
+    media = index.get("media")
+    if not isinstance(media, dict):
+        media = index["media"] = {}
+    want = Path(folder)
+    key = str(want)
+    real = _resolve(want)
+    if real is not None:
+        for existing in list(media):
+            if existing != key and _resolve(Path(existing)) == real:
+                key = existing
+                break
+    media[key] = [str(n) for n in (names or [])]
+    index["version"] = INDEX_VERSION
+    if not isinstance(index.get("tombstones"), list):
+        index["tombstones"] = []
+
+
+def _read_legacy_index(folder) -> list[str] | None:
+    """The media list an older build left INSIDE this profile folder, or None."""
     try:
-        raw = (root / INDEX_FILE).read_bytes()
-        d = json.loads(raw)
-        return d if isinstance(d, dict) else {}
+        d = json.loads((Path(folder) / INDEX_FILE).read_bytes())
     except (OSError, ValueError):
-        return {}
+        return None
+    if not isinstance(d, dict):
+        return None
+    media = d.get("media")
+    if isinstance(media, list):
+        return [str(n) for n in media]
+    return None
 
 
-def _write_index(root: Path, index: dict) -> None:
+def _read_index(folder) -> dict:
+    """The profile's shared index, carrying THIS folder's own media list.
+
+    Shape: {"version": 2, "media": {root_path: [names]}, "tombstones": [names]}.
+    The media list describes one folder's contents, so it stays per root; the
+    tombstones belong to the profile, so every drive sees the same list.
+
+    Migration: when the shared file has nothing for this folder yet and the
+    folder still holds the old `.insta-index.json`, that list is adopted. It has
+    to be -- an empty memory here reads as "everything vanished", and
+    reconcile_deletions() would then write a 0-byte placeholder over every file
+    that already exists.
+    """
+    index = _empty_index()
     try:
-        tmp = root / (INDEX_FILE + ".tmp")
+        d = json.loads(_index_path(folder).read_bytes())
+    except (OSError, ValueError):
+        d = None
+    if isinstance(d, dict):
+        media = d.get("media")
+        if isinstance(media, dict):
+            index["media"] = {str(k): [str(n) for n in (v or [])]
+                              for k, v in media.items()}
+        elif isinstance(media, list):
+            # Version 1: one list, written for this folder's own root.
+            index["media"] = {str(Path(folder)): [str(n) for n in media]}
+        if isinstance(d.get("tombstones"), list):
+            index["tombstones"] = [str(n) for n in d["tombstones"]]
+    if _index_has_root(index, folder):
+        return index
+    legacy = _read_legacy_index(folder)
+    if legacy is not None:
+        _index_set_media(index, folder, legacy)
+    return index
+
+
+def _write_index(folder, index: dict) -> None:
+    """Write the profile's shared index. Never touches the archive."""
+    path = _index_path(folder)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(index, separators=(",", ":")))
-        tmp.replace(root / INDEX_FILE)
+        tmp.replace(path)
     except OSError:
         pass
 
@@ -2774,7 +2934,7 @@ def reconcile_deletions(self, username: str) -> list[str]:
         return []
     index = _read_index(root)
     current = set(_gallery_media(root))
-    previously = set(index.get("media") or [])
+    previously = set(_index_media(index, root))
 
     # A move is not a deletion. Favouriting and trashing relocate a file, and
     # anything now sitting in favorites/ or trash/ must not be tombstoned:
@@ -2816,13 +2976,27 @@ def reconcile_deletions(self, username: str) -> list[str]:
 
     # Remember what is there now (only real media, never placeholders).
     #
-    # Written ONLY when it differs. Rewriting it on every call changed the
-    # profile folder's mtime every time, which invalidated the listing cache
-    # (keyed on that mtime) on every single request -- the gallery went from
-    # 3ms to 1s, and the timeline from 0.7s to 5.8s, purely from this rewrite.
+    # Written ONLY when it differs. The file no longer lives in the profile
+    # folder -- so it can no longer change that folder's mtime and invalidate
+    # the listing cache (which used to cost 3ms -> 1s on the gallery and 0.7s ->
+    # 5.8s on the timeline) -- but it is still a write per call otherwise, and
+    # the tombstones in it are what a second drive reads.
+    #
+    # The list is stored under THIS root, never merged into another one: a
+    # folder on drive B must not inherit drive A's listing, or every file in it
+    # would look deleted and get a 0-byte placeholder written over it.
     now_media = sorted(current)
-    if now_media != sorted(previously):
-        _write_index(root, {"media": now_media})
+    platform = _platform_of_folder(root)
+    tombs = sorted({str(t.get("name")) for t in self.tombstones
+                    if t.get("username") == username
+                    and t.get("platform", platform) == platform
+                    and t.get("name")})
+    if (now_media != sorted(previously)
+            or tombs != sorted(index.get("tombstones") or [])
+            or not _index_has_root(index, root)):
+        _index_set_media(index, root, now_media)
+        index["tombstones"] = tombs
+        _write_index(root, index)
     return added
 
 
@@ -2835,23 +3009,60 @@ def gallery_sections(self, username: str, platform: str = "instagram") -> dict:
     Each post carries a `section` so the UI can merge favorites into the main
     grid (a favourited photo stays visible in All, marked as favourited)
     without losing track of where the file physically lives.
+
+    A profile can be split across drives (see roots_for): every root that holds
+    it contributes its posts, and a post that exists in two of them is shown
+    once. The first root listed wins, which is the one root_for() writes to --
+    and a post whose MAIN copy is on another drive is not repeated under
+    favorites/ or trash/, so the merged page reads like one archive rather than
+    two overlapping ones.
     """
-    out = {}
-    # A merged account's media belongs here too. Every post keeps the profile it
-    # actually came from, because moving or favouriting it has to act on that
-    # folder -- the file is not in the primary's directory.
     family = self.profile_family(username, platform)
+    # Collect per section, remembering which root each post came from: that is
+    # what makes "the same post on two drives" one post, and what says which
+    # copy is the main one.
+    found: dict[str, list[tuple[str, dict]]] = {
+        "main": [], "favorites": [], "trash": []}
+    for who, who_plat in family:
+        for root in self.roots_for(who, who_plat):
+            folder = self._profile_in(root, who, who_plat)
+            if folder is None:
+                continue
+            for key in ("main", "favorites", "trash"):
+                for p in self.gallery_posts(who, key, who_plat, folder=folder):
+                    p["section"] = key
+                    # The post keeps the profile it actually came from, because
+                    # moving or favouriting it has to act on that folder -- the
+                    # file is not in the primary's directory.
+                    p["profile"] = who
+                    # The post keeps the platform of the account it actually
+                    # came from: a merged card shows two sites at once, and
+                    # moving or trashing a file has to act on the folder it is
+                    # really in.
+                    p["platform"] = who_plat
+                    found[key].append((str(root), p))
+
+    # Where each post id has a MAIN copy. A copy sitting in favorites/ or
+    # trash/ on a DIFFERENT drive is the same post, and main wins.
+    main_roots: dict[str, set[str]] = {}
+    for root, p in found["main"]:
+        pid = str(p.get("post") or "")
+        if pid:
+            main_roots.setdefault(pid, set()).add(root)
+
+    out = {}
     for key in ("main", "favorites", "trash"):
         posts = []
-        for who, who_plat in family:
-            for p in self.gallery_posts(who, key, who_plat):
-                p["section"] = key
-                p["profile"] = who
-                # The post keeps the platform of the account it actually came
-                # from: a merged card shows two sites at once, and moving or
-                # trashing a file has to act on the folder it is really in.
-                p["platform"] = who_plat
-                posts.append(p)
+        seen: set[str] = set()
+        for root, p in found[key]:
+            pid = str(p.get("post") or "")
+            if pid:
+                if pid in seen:
+                    continue        # one post, even when two drives hold it
+                if key != "main" and (main_roots.get(pid, set()) - {root}):
+                    continue        # its main copy on another drive wins
+                seen.add(pid)
+            posts.append(p)
         posts.sort(key=lambda p: p.get("ts") or 0)
         out[key] = posts
     return out
@@ -2985,10 +3196,16 @@ def gallery_profiles(self) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        folder = self.root_for(username, platform)
-        if folder is None:
+        # Every root holding this profile, not just the first: a profile whose
+        # downloads outgrew one drive has files on several, and its card has to
+        # count all of them (see roots_for). An unmounted root contributes
+        # nothing, so it can never invent a folder.
+        fs = [f for f in (self._profile_in(r, username, platform)
+                          for r in self.roots_for(username, platform))
+              if f is not None]
+        if not fs:
             continue
-        folders.append((username, platform, folder))
+        folders.append((username, platform, fs))
 
     # The disk half of each card: how many files, how many bytes, which root.
     # That is the part that costs a stat (or a full walk) per profile, and it
@@ -2997,28 +3214,40 @@ def gallery_profiles(self) -> list[dict]:
     # stamp of all of them (one stat each, ~40ms for this archive) and the LIVE
     # job fields are re-attached below on every call: a running download's
     # status and progress must never be served out of a cache.
-    stamp = _archive_stamp([f for _u, _p, f in folders])
+    stamp = _archive_stamp([f for _u, _p, fs in folders for f in fs])
     disk = getattr(self, "_gallery_disk", None)
     if disk is None or disk[0] != stamp:
         cards = {}
-        for username, platform, folder in folders:
-            media = _gallery_media(folder)
-            if not media:
-                continue
-            cards[(username, platform)] = {
-                "count": len(media),
+        for username, platform, fs in folders:
+            # Summed over every root: the card's count, size and trash size are
+            # what the merged profile page will show, or the tile and the page
+            # would disagree about how much there is.
+            count = 0
+            nbytes = 0
+            trash = 0
+            for folder in fs:
+                media = _gallery_media(folder)
+                if not media:
+                    continue
+                count += len(media)
                 # How much disk this person's archive takes. Costs a walk of
                 # the folder the first time and is remembered after that; see
                 # profile_bytes(). The grid sorts by it.
-                "bytes": profile_bytes(folder, len(media)),
-                "trash_bytes": profile_trash_bytes(folder),
-                "root": str(folder.parent),
+                nbytes += profile_bytes(folder, len(media))
+                trash += profile_trash_bytes(folder)
+            if not count:
+                continue
+            cards[(username, platform)] = {
+                "count": count,
+                "bytes": nbytes,
+                "trash_bytes": trash,
+                "root": str(fs[0].parent),
             }
         disk = (stamp, cards)
         self._gallery_disk = disk
     cards = disk[1]
 
-    for username, platform, _folder in folders:
+    for username, platform, _fs in folders:
         got = cards.get((username, platform))
         if got is None:
             continue
@@ -3168,17 +3397,26 @@ def liked_posts(self) -> list[dict]:
     return out
 
 
-def _handle_folders(self, platform: str = "instagram") -> dict:
+def _handle_folders(self, platform: str = "instagram",
+                    all_roots: bool = False) -> dict:
     """{lowercased handle: (root folder, its own spelling)} for one platform.
 
     Built with one scandir per root, for the whole list at once. Resolving a
     handle used to scan the archive root per row, and the bookmark view asks
     about every row: 6,754 bookmarks meant 6,754 scandirs of a 2,000-folder
     directory before a single tile was described, which measured as 5.8s of a
-    /api/bookmarks request. First root wins, exactly like root_for(), so the two
-    cannot disagree about which copy is the archive.
+    /api/bookmarks request.
+
+    A handle can be in MORE than one root -- the same person's archive
+    continued on a second drive -- and this used to keep only the first with
+    setdefault(), so the second folder was invisible: a bookmark pointing at a
+    video that lives there resolved as missing. `all_roots=True` returns every
+    folder for every handle ({handle: [(root folder, spelling), ...]}, first
+    root first); the default keeps the one-folder-per-handle shape the callers
+    that act on a single folder need, and is built from the same scan so the
+    two cannot disagree.
     """
-    out: dict[str, tuple[Path, str]] = {}
+    full: dict[str, list[tuple[Path, str]]] = {}
     for root in self.roots:
         bases = tiktok_roots(root) if platform == "tiktok" else [root]
         for base in bases:
@@ -3190,10 +3428,15 @@ def _handle_folders(self, platform: str = "instagram") -> dict:
                                 continue
                         except OSError:
                             continue
-                        out.setdefault(entry.name.lower(), (base, entry.name))
+                        found = full.setdefault(entry.name.lower(), [])
+                        if any(_same(b, base) for b, _s in found):
+                            continue      # this root is already listed
+                        found.append((base, entry.name))
             except OSError:
                 continue
-    return out
+    if all_roots:
+        return full
+    return {name: hits[0] for name, hits in full.items() if hits}
 
 
 def _folder_sections(base: Path) -> tuple[set, set, set]:
@@ -3237,7 +3480,7 @@ def bookmarked_posts(self, category=None) -> list[dict]:
     # was ~19k pathlib calls (0.08s) for 6,800 bookmarks that mostly belong to a
     # handful of profiles. False means "this profile has no folder here", which
     # is also worth remembering.
-    bases: dict[tuple[str, str], tuple] = {}
+    bases: dict[tuple[str, str], list[tuple]] = {}
     missing: set[tuple[str, str]] = set()
     for row in db.bookmarks(category):
         name = str(row.get("file") or "").rsplit("/", 1)[-1]
@@ -3246,23 +3489,30 @@ def bookmarked_posts(self, category=None) -> list[dict]:
         if not name or not stored:
             continue
         if plat not in folders:
-            folders[plat] = self._handle_folders(plat)
+            # Every folder of every handle: a profile split across two drives
+            # has its videos in both, and resolving only the first root made a
+            # bookmark pointing at the other drive look deleted.
+            folders[plat] = self._handle_folders(plat, all_roots=True)
         key = (plat, stored.lower())
         if key in missing:
             continue
         got = bases.get(key)
         if got is None:
-            hit = folders[plat].get(stored.lower())
-            if not hit:
+            hits = folders[plat].get(stored.lower())
+            if not hits:
                 missing.add(key)
                 continue
-            base = hit[0] / hit[1]
-            got = bases[key] = (hit, base, _folder_sections(base))
-        hit, base, lists = got
+            got = bases[key] = [(hit, hit[0] / hit[1],
+                                 _folder_sections(hit[0] / hit[1]))
+                                for hit in hits]
         section = None
-        for cand, names in zip(("main", FAVORITES_DIR, TRASH_DIR), lists):
-            if name in names:
-                section = cand
+        hit = got[0][0]
+        for hit, base, lists in got:
+            for cand, names in zip(("main", FAVORITES_DIR, TRASH_DIR), lists):
+                if name in names:
+                    section = cand
+                    break
+            if section is not None:
                 break
         if section is None:
             # Not in the listing. Either the file is gone (trash cleared, or
@@ -3270,9 +3520,12 @@ def bookmarked_posts(self, category=None) -> list[dict]:
             # (an interrupted download's zero-byte placeholder). Ask the slow,
             # exact way before treating the bookmark as dead -- deleting a
             # bookmark over a file that is really there is not recoverable.
-            for cand in ("", FAVORITES_DIR, TRASH_DIR):
-                if self.resolve_media(hit[1], name, cand, plat) is not None:
-                    section = cand or "main"
+            for hit, base, lists in got:
+                for cand in ("", FAVORITES_DIR, TRASH_DIR):
+                    if self.resolve_media(hit[1], name, cand, plat) is not None:
+                        section = cand or "main"
+                        break
+                if section is not None:
                     break
         if section is None:
             # The account's folder is here but the file is in none of the three
@@ -3938,9 +4191,15 @@ def remove_tombstone(self, username: str, name: str,
     # feature exists for. Removing the entry first is what makes the clear hold.
     try:
         index = _read_index(root_real)
-        media = [m for m in (index.get("media") or []) if m != name]
-        if media != (index.get("media") or []):
-            _write_index(root_real, {"media": media})
+        before = _index_media(index, root_real)
+        media = [m for m in before if m != name]
+        # ...and out of the shared tombstone list, or a folder on another drive
+        # would still read this post as permanently deleted.
+        tombs = [t for t in (index.get("tombstones") or []) if t != name]
+        if media != before or tombs != (index.get("tombstones") or []):
+            _index_set_media(index, root_real, media)
+            index["tombstones"] = tombs
+            _write_index(root_real, index)
     except OSError:
         pass
     self.save_state()
@@ -4134,16 +4393,35 @@ def _pin_root(self, job) -> None:
 
     A profile already archived somewhere keeps that root, always: one profile
     on one drive, so a re-run updates its archive instead of starting a second
-    copy. Otherwise the job is pinned only when the pick is NOT the downloads
-    folder -- an unpinned job follows the downloads folder, which is what every
-    job did before overflow existed, and keeps "change the downloads folder"
-    meaning what it says.
+    copy. The one exception is the drive being FULL: when the root holding the
+    profile is here but cannot take another run (at the user's stop limit), the
+    job is pinned to a root that can (pick_root, which skips absent roots and
+    roots at their limit) and the download continues there. Nothing is moved or
+    deleted -- the posts already archived stay exactly where they are, and the
+    gallery merges the two folders into one profile.
+
+    Otherwise the job is pinned only when the pick is NOT the downloads folder
+    -- an unpinned job follows the downloads folder, which is what every job did
+    before overflow existed, and keeps "change the downloads folder" meaning
+    what it says.
     """
     platform = getattr(job, "platform", "instagram")
     if getattr(job, "root", ""):
         return      # the caller already decided (a follow-up pass inherits)
     existing = self._existing_root(job.username, platform)
     if existing is not None:
+        ready, why = self.root_ready(existing, platform)
+        if ready:
+            job.root = str(existing)
+            return
+        pick = self.pick_root(platform)
+        if pick is not None and not _same(pick, existing):
+            job.root = str(pick)
+            job.message = (f"writing to {pick} — {existing} is at its disk "
+                           f"limit ({why})")
+            return
+        # Nowhere else to go: keep the honest answer (the space check reports
+        # the block) rather than pretending this profile has no home.
         job.root = str(existing)
         return
     pick = self.pick_root(platform)
@@ -4155,14 +4433,19 @@ def _pin_root(self, job) -> None:
 def _reroot(self, job) -> str:
     """Move a job off a pinned drive that can no longer take it.
 
-    Called just before a run. Two conditions, and both are needed:
+    Called just before a run. The pinned root is unusable when it is at its
+    stop limit, not writable, or not there at all. Then:
 
-    * the pinned root is unusable -- at its stop limit, or not there at all;
-    * the profile is NOT already archived on it.
+    * the profile is NOT archived there -- nothing to split, so the job moves to
+      a root that has room (pick_root: never an absent root, never one at its
+      limit);
 
-    The second is the whole safety rule: one profile never gets split across
-    two drives. If the folder is there, the job keeps writing there and the
-    normal space check reports the block, exactly as before.
+    * the profile IS archived there, and the root is STILL PRESENT -- the drive
+      is here but full. The download continues on a root that has room and the
+      job is pinned to it. Nothing is moved or deleted: what is already archived
+      stays on the full drive, the rest lands on the other, and the gallery
+      shows the two folders as one profile (see roots_for). Refusing instead is
+      what left a half-finished profile stuck behind a drive it had outgrown.
 
     A root that is GONE needs one more thought, because its contents cannot be
     listed: if this job has already written files it may well be archived on
@@ -4179,8 +4462,22 @@ def _reroot(self, job) -> str:
     ok, why = self.root_ready(pinned, platform)
     if ok:
         return ""
-    if self._profile_in(pinned, job.username, platform) is not None:
-        return ""       # already archived here: never split it
+    here = self._profile_in(pinned, job.username, platform)
+    if here is not None:
+        # Archived here and the drive is here -- so this is the full-drive case,
+        # not a missing one. Continue on a root with room.
+        pick = self.pick_root(platform)
+        if pick is None or _same(pick, pinned):
+            return ""        # nothing else can take it: report the block, as before
+        old = job.root
+        job.root = str(pick)
+        note = f"switched to {pick} — {old} has no room"
+        job.message = note
+        self._log(job, f"! {why or 'that drive cannot take this run'}; "
+                       f"{old} holds this profile and is full, so the rest of "
+                       f"it goes to {pick} (nothing is moved or deleted)")
+        self.save_state()
+        return note
     if not pinned.is_dir() and (job.posts or job.total_files):
         return ""       # written before, possibly onto that very drive
     pick = self.pick_root(platform)
@@ -4558,21 +4855,29 @@ def resolve_media(self, username: str, rel: str, section: str = "",
     # `rel` is a bare filename, not a path.
     if rel != Path(rel).name or Path(rel).suffix.lower() not in GALLERY_EXTS:
         return None
-    # Only these three locations are servable.
-    if section in SUBDIRS:
-        target = folder / section / rel
-    else:
-        target = folder / rel
-    try:
-        folder_real = folder.resolve(strict=True)
-        target_real = target.resolve(strict=True)
-    except OSError:
-        return None
-    if target_real.parent not in (folder_real,
-                                  folder_real / FAVORITES_DIR,
-                                  folder_real / TRASH_DIR):
-        return None
-    return target_real
+    # Every root that holds this profile, not just the first: the gallery merges
+    # a profile's posts across drives (see roots_for), so a tile whose bytes are
+    # on the second drive has to be servable or it draws empty. Each candidate
+    # folder goes through exactly the same containment checks.
+    for folder in [folder] + [f for f in (self._profile_in(r, username, platform)
+                                          for r in self.roots_for(username, platform))
+                              if f is not None and not _same(f, folder)]:
+        # Only these three locations are servable.
+        if section in SUBDIRS:
+            target = folder / section / rel
+        else:
+            target = folder / rel
+        try:
+            folder_real = folder.resolve(strict=True)
+            target_real = target.resolve(strict=True)
+        except OSError:
+            continue
+        if target_real.parent not in (folder_real,
+                                      folder_real / FAVORITES_DIR,
+                                      folder_real / TRASH_DIR):
+            continue
+        return target_real
+    return None
 
 
 def move_media(self, username: str, name: str, section: str,
@@ -4675,20 +4980,22 @@ def move_media(self, username: str, name: str, section: str,
 
     # Tell the deletion detector this file was MOVED, not deleted.
     #
-    # reconcile_deletions compares main/ against .insta-index.json and writes a
-    # tombstone plus a 0-byte placeholder for anything it thinks vanished. A
-    # favourite is a rename OUT of main/, so without this it looked exactly like
-    # a delete: every favourited post left a stub behind in main/ and got
-    # recorded as a tombstone. Keeping the index in step is what tells the two
-    # apart, so it is updated here, at the moment of the move.
+    # reconcile_deletions compares main/ against the shared per-profile index and
+    # writes a tombstone plus a 0-byte placeholder for anything it thinks
+    # vanished. A favourite is a rename OUT of main/, so without this it looked
+    # exactly like a delete: every favourited post left a stub behind in main/
+    # and got recorded as a tombstone. Keeping the index in step is what tells
+    # the two apart, so it is updated here, at the moment of the move -- and
+    # under this root only, so a folder on another drive keeps its own listing.
     try:
         idx = _read_index(root)
-        media = set(idx.get("media") or [])
+        media = set(_index_media(idx, root))
         if dest_dir == root:
             media.add(name)          # back in main/
         else:
             media.discard(name)      # moved out of main/
-        _write_index(root, {**idx, "media": sorted(media)})
+        _index_set_media(idx, root, sorted(media))
+        _write_index(root, idx)
     except Exception:
         pass
     # Every folder a post can live in, plus the write hook: a rename already
@@ -4891,6 +5198,13 @@ class Job:
     message: str = ""
     posts: int = 0
     error: str = ""
+    # What the last run actually did, for the Finished list: files it added, and
+    # things it could not take (TikTok posts it will not serve / lines it
+    # warned about; on Instagram the posts a run stopped short of). Filled at
+    # the moment a job reaches "done" (see _finish_outcome and
+    # _process_tiktok), and saved with the rest of the job.
+    new_files: int = 0
+    skipped: int = 0
     tail: list[str] = field(default_factory=list)
     total_files: int = 0
     total_bytes: int = 0
@@ -5168,6 +5482,9 @@ class Engine:
     move_media = move_media
     set_output_root = set_output_root
     root_for = root_for
+    # Every root holding a profile, not just the first: a profile split across
+    # two drives is one profile with posts in both (see roots_for).
+    roots_for = roots_for
     _existing_root = _existing_root
     roots_status = roots_status
     disk_worst = disk_worst
@@ -7704,6 +8021,42 @@ class Engine:
             for k, v in kw.items():
                 setattr(job, k, v)
 
+    def _finish_outcome(self, job: Job) -> None:
+        """Fill new_files/skipped for a job that has just reached "done".
+
+        ONE place, called from the worker after _process() returns, because
+        Instagram has five separate completion paths (complete, complete with
+        warnings, warnings ignored, PARTIAL, and the demoted/re-queued ones
+        that end up here too) and every one of them should report the same two
+        numbers rather than five slightly different ones.
+
+        new_files is a difference of media counts taken at the start of the run
+        and now, counted across every root the profile lives on (see
+        _count_media), so a run that continued on a second drive still reports
+        what it added. skipped is the run's own admission of what it did not
+        take: the gap instaloader reported ([n/m]), or the warnings it logged
+        when the counts agree.
+
+        Nothing is touched unless the job really is done -- a queued, failed or
+        cancelled job keeps whatever it had.
+        """
+        if job.status != "done":
+            return
+        before = getattr(job, "_media_before", None)
+        if before is not None:
+            after = self._count_media(self.job_root(job) / job.username)
+            job.new_files = max(0, int(after) - int(before))
+        total = int(job.total_count or 0)
+        done = int(job.done_count or 0)
+        if total > done:
+            # The partial signal: instaloader said there were more posts.
+            job.skipped = total - done
+        elif "warning" in (job.message or "").lower():
+            job.skipped = sum(1 for ln in (job.tail or [])
+                              if ln.startswith("!"))
+        else:
+            job.skipped = 0
+
     def _log(self, job: Job, line: str) -> None:
         line = line.rstrip()
         if not line:
@@ -7924,8 +8277,9 @@ class Engine:
                 return  # genuinely idle; thread exits, this platform goes free
 
             # A pinned drive that cannot take this run any more: move the job to
-            # a root that can, unless the profile is already archived where it
-            # is pinned (one profile never splits across two drives). Done
+            # a root that can. That includes a profile already archived where it
+            # is pinned -- a full drive continues on another root instead of
+            # refusing, and nothing is moved or deleted (see _reroot). Done
             # before the space check, so an overflow job is not parked forever
             # behind a full drive it was never going to write to.
             moved = self._reroot(job)
@@ -7972,6 +8326,14 @@ class Engine:
                 # being moved is not a failure.
                 if job.id in self.demote_ids:
                     self._finish_demoted(platform, job)
+                # What the run added and what it could not take, for the
+                # Finished list. One place, so every Instagram completion path
+                # (there are several) reports it the same way.
+                if ig:
+                    try:
+                        self._finish_outcome(job)
+                    except Exception:
+                        pass
                 self._set(job, last_run_seconds=round(time.time() - t0, 1))
                 self.save_state()
 
@@ -8195,6 +8557,9 @@ class Engine:
             if not keep:
                 self._set(job, status="done", finished_at=time.time(),
                           posts=len(links), total_files=len(links), total_bytes=0,
+                          # Nothing was fetched; what was skipped is what the
+                          # ledger and the on-disk check already had.
+                          new_files=0, skipped=skipped,
                           message="nothing new — every saved video is already here")
                 self._bookmark_saved(job)
                 self.save_state()
@@ -8272,6 +8637,7 @@ class Engine:
 
         downloaded = 0
         warned = False
+        warn_lines = 0
         disk_stopped = ""
         seen = 0
         # Failures worth remembering, for a saved pass only: a profile pass has
@@ -8357,6 +8723,7 @@ class Engine:
                 continue
             elif kind == "warn":
                 warned = True
+                warn_lines += 1
                 # A slideshow (no video track) and a private post both arrive
                 # here. Neither is worth asking about again on the next run.
                 post_id, reason = tt.error_post(line) or ("", "")
@@ -8542,6 +8909,10 @@ class Engine:
             done_msg += f", {unavailable} unavailable on TikTok"
         self._set(job, status="done", finished_at=time.time(),
                   posts=files, total_files=files, total_bytes=total_bytes,
+                  # What this run actually did, for the Finished list: the
+                  # videos it fetched, and what it could not take (posts TikTok
+                  # will not serve, plus the lines yt-dlp warned about).
+                  new_files=downloaded, skipped=unavailable + warn_lines,
                   message=done_msg)
         self._tag_after_download(job)
         if links_file is not None:
@@ -8560,6 +8931,10 @@ class Engine:
         # downloads folder moves, so one profile never splits across roots.
         target_dir = self.job_root(job) / job.username
         target_dir.mkdir(parents=True, exist_ok=True)
+        # Where this run starts from, so the Finished list can say what it
+        # added: counted across every root, because the profile may already be
+        # archived on another drive (see _count_media/_finish_outcome).
+        job._media_before = self._count_media(target_dir)
         session_user = self.session_username()
         cfg = job.effective(self.settings)
 

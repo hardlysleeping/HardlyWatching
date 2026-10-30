@@ -1227,6 +1227,10 @@ def _mounted_disks(eng) -> list[dict]:
             has_archive = False
         is_downloads = archive_r == out_root or mount_r == out_root
         is_archive = archive_r in roots or mount_r in roots
+        try:
+            home_r = Path.home().resolve()
+        except OSError:
+            home_r = Path("/var/home")
         row = {
             "path": str(m),
             "label": labels.get(str(Path(source).resolve()), "") or m.name,
@@ -1239,6 +1243,10 @@ def _mounted_disks(eng) -> list[dict]:
             "has_archive": has_archive,
             "is_downloads": bool(is_downloads),
             "is_archive": bool(is_archive),
+            # The filesystem holding the home folder is the machine's own disk:
+            # listed only if it is already in use, so the page stays about the
+            # drives a person actually plugs in.
+            "system": bool(mount_r == home_r or mount_r == Path("/")),
         }
         # One row per physical device: the same btrfs filesystem is mounted as
         # several subvolumes, and those are one drive. The home mount wins over

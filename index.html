@@ -1707,9 +1707,7 @@ some.profile
       <button class="small" id="driveRescan" style="margin-left:auto">Rescan</button>
     </div>
     <div class="hint" style="margin:4px 0 8px">
-      One click puts new downloads on a drive — nothing to type. <b>Read it
-      too</b> only adds the drive's <b>instagram</b> folder to what the gallery
-      shows, without changing where new files go. Nothing is ever moved.
+      Click a drive to use it. Nothing is ever moved.
     </div>
     <div id="driveList"></div>
     <div class="hint" id="driveMsg"></div>
@@ -2814,7 +2812,20 @@ function paintDrives(){
     return;
   }
 
-  for(const d of rows){
+  // Only drives a person would put files on: the system drive is noise, and a
+  // drive that is neither in use nor writable cannot be used at all.
+  const shown = rows.filter(d =>
+    !(d.system && !d.is_downloads && !d.is_archive) &&
+    (d.writable || d.is_downloads || d.is_archive));
+  if(count) count.textContent = shown.length
+    ? `${shown.length} drive${shown.length === 1 ? "" : "s"}` : "";
+  if(!shown.length){
+    list.innerHTML = `<div class="hint">No other drives are connected.</div>`;
+    return;
+  }
+  const cap = gb => gb >= 1000 ? (gb / 1000).toFixed(1) + " TB" : Math.round(gb) + " GB";
+
+  for(const d of shown){
     const row = document.createElement("div");
     row.className = "num drive-row";
     row.style.cssText = "align-items:flex-start;gap:10px;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line)";
@@ -2825,20 +2836,23 @@ function paintDrives(){
     const head = document.createElement("span");
     head.style.cssText = "display:flex;align-items:baseline;gap:7px;flex-wrap:wrap";
     const name = document.createElement("b");
-    name.textContent = d.label || d.path || "drive";
+    // A drive with no name of its own gets its size instead of a UUID.
+    const raw = d.label || "";
+    const unnamed = !raw || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(raw) || /^(bazzite|fedora|ostree)/i.test(raw);
+    name.textContent = unnamed ? cap(d.total_gb || 0) + " drive" : raw;
     head.appendChild(name);
     if(d.is_downloads){
       const t = document.createElement("span");
       t.className = "tagtag";
       t.textContent = "downloads folder";
-      t.title = "New files are already written here";
+      t.title = "New files are written here";
       head.appendChild(t);
     }
     if(d.is_archive){
       const t = document.createElement("span");
       t.className = "tagtag";
       t.textContent = "read as archive";
-      t.title = "The gallery already shows this folder";
+      t.title = "The gallery shows this folder";
       head.appendChild(t);
     }
     if(!d.writable){
@@ -2852,42 +2866,37 @@ function paintDrives(){
     const where = document.createElement("small");
     where.className = "hint";
     where.style.cssText = "display:block;word-break:break-all";
-    where.textContent = (d.path || "") + (d.archive && d.archive !== d.path ? "  →  " + d.archive : "");
-    where.title = d.has_archive
-      ? "This folder already exists"
-      : "This folder will be created when it is used";
+    where.textContent = d.archive || d.path || "";
+    where.title = d.has_archive ? "This folder exists" : "Created when the drive is first used";
     label.appendChild(where);
 
     const space = document.createElement("small");
     space.className = "hint";
     space.style.cssText = "display:block";
     const bits = [];
-    if(typeof d.free_gb === "number") bits.push(`${d.free_gb} GB free of ${d.total_gb} GB`);
+    if(typeof d.free_gb === "number") bits.push(`${cap(d.free_gb)} free of ${cap(d.total_gb)}`);
     if(typeof d.used_pct === "number") bits.push(`${d.used_pct}% used`);
-    if(d.fstype) bits.push(d.fstype);
-    if(d.has_archive === false) bits.push("no instagram folder yet");
+    if(d.has_archive === false) bits.push("new folder");
     space.textContent = bits.join(" · ");
     label.appendChild(space);
     row.appendChild(label);
 
+    // One button per thing that is actually left to do. A drive already in use
+    // shows its tags and nothing else.
     const acts = document.createElement("span");
     acts.style.cssText = "margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-self:center";
     const target = d.archive || d.path;
-    const use = driveBtn("Use for downloads",
-      d.is_downloads ? "New downloads already go here"
-        : !d.writable ? "This drive is not writable"
-        : `Write new downloads into ${target}`,
-      () => useDriveForDownloads(target, use));
-    use.disabled = !!(d.is_downloads || !d.writable);
-    const read = driveBtn("Read it too",
-      d.is_archive ? "The gallery already shows this folder"
-        : d.is_downloads ? "The downloads folder is always read as an archive"
-        : `Also show ${target} in the gallery`,
-      () => readDriveToo(target, read));
-    read.disabled = !!(d.is_archive || d.is_downloads);
-    acts.appendChild(use);
-    acts.appendChild(read);
-    row.appendChild(acts);
+    if(d.writable && !d.is_downloads){
+      const use = driveBtn("Use for downloads", `Write new downloads into ${target}`,
+        () => useDriveForDownloads(target, use));
+      acts.appendChild(use);
+    }
+    if(d.writable && !d.is_archive && !d.is_downloads){
+      const read = driveBtn("Read it too", `Also show ${target} in the gallery`,
+        () => readDriveToo(target, read));
+      acts.appendChild(read);
+    }
+    if(acts.children.length) row.appendChild(acts);
     list.appendChild(row);
   }
 }
@@ -8321,16 +8330,17 @@ async function refreshTagScan(){
 // their ids, handlers and lazy loaders keep working untouched.
 // ---------------------------------------------------------------------------
 const SET_SECTIONS = [
+  ["driveCard", "Files & drives"],
+  ["settingsBox", "Downloads"],
+  ["sessions", "Logins"],
+  ["lanCard", "Phone access"],
   ["ai", "AI tagging"],
-  ["sessions", "Sessions"],
-  ["settingsBox", "Download settings"],
-  ["backupCard", "Backup & restore"],
-  ["lanCard", "Open on your phone"],
-  ["excludedCard", "Excluded"],
-  ["dupesCard", "Duplicates"]
+  ["dupesCard", "Duplicates"],
+  ["excludedCard", "Excluded people"],
+  ["backupCard", "Backup"]
 ];
 let setMoved = false;
-let setCur = "ai";
+let setCur = "driveCard";
 
 function moveSettingsCards(){
   if(setMoved) return;
@@ -8359,7 +8369,7 @@ function moveSettingsCards(){
 
 function setSection(id){
   moveSettingsCards();
-  if(!SET_SECTIONS.some(s => s[0] === id)) id = "ai";
+  if(!SET_SECTIONS.some(s => s[0] === id)) id = "driveCard";
   setCur = id;
   for(const pid of (typeof OPT_TABS !== "undefined" ? OPT_TABS : [])){
     const el = $(pid);
@@ -8367,14 +8377,14 @@ function setSection(id){
   }
   const ai = $("aiBody");
   if(ai) ai.style.display = id === "ai" ? "" : "none";
-  if(id !== "ai" && typeof showOptTab === "function") showOptTab(id);
-  // The drive card belongs to the Download section alone: it is not one of the
-  // OPT_TABS panels, so that loop cannot hide it, and it must not follow the
-  // user onto AI or Sessions. Set after showOptTab, which has its own opinion
-  // (it falls back to settingsBox for an id it does not know, e.g. "sessions").
+  if(id !== "ai" && id !== "driveCard" && typeof showOptTab === "function") showOptTab(id);
+  // The drive card is its own section ("Files & drives"), not one of the
+  // OPT_TABS panels, so that loop cannot hide it. Set after showOptTab, which
+  // has its own opinion (it falls back to settingsBox for an id it does not
+  // know, e.g. "sessions").
   const drive = $("driveCard");
-  if(drive) drive.hidden = id !== "settingsBox";
-  if(id === "settingsBox" && typeof loadDisks === "function") loadDisks();
+  if(drive) drive.hidden = id !== "driveCard";
+  if(id === "driveCard" && typeof loadDisks === "function") loadDisks();
   // Sessions is a section like any other: both platforms listed at once, so
   // there is no "which tab am I on" question about whose login you are editing.
   const sess = $("sessPanel");
