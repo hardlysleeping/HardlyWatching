@@ -1993,6 +1993,13 @@ function renderSessions(sessions, active, ok, username){
 // TikTok's own session had no list at all -- one slot, which the next capture
 // overwrote.
 function paintSessionPanel(){
+  // On the Settings page both platforms are shown at once; the platform switch
+  // only applies to the old in-tab panel.
+  if(window.__sessBoth){
+    if($("sessIg")) $("sessIg").style.display = "";
+    if($("sessTt")) $("sessTt").style.display = "";
+    return;
+  }
   const tt = activePlatform === "tiktok";
   const title = $("sessTitle"), hint = $("sessHint");
   if(title) title.textContent = tt ? "TikTok sessions" : "Instagram sessions";
@@ -2140,17 +2147,13 @@ function renderBrowsers(list){
 // Opens the sessions panel (and never closes it), so a banner button can point
 // at it without depending on the toggle's current state.
 function openSessionsPanel(){
-  const p = $("sessPanel");
-  p.style.display = "block";
-  loadSessions(); paintSessionPanel();
+  showTab("settings");
+  setSection("sessions");
 }
 
-$("sessBtn").onclick = () => {
-  const p = $("sessPanel");
-  const show = p.style.display === "none";
-  p.style.display = show ? "block" : "none";
-  if(show){ loadSessions(); paintSessionPanel(); }
-};
+// The session chip and the "Switch session" banner both land on the section
+// itself now; there is no panel to toggle open any more.
+$("sessBtn").onclick = () => openSessionsPanel();
 // The "Switch session" button lives inside a banner the poll repaints, so it is
 // wired by delegation -- a handler bound to the button itself is thrown away
 // with the next repaint and the button goes dead.
@@ -7801,6 +7804,7 @@ async function refreshTagScan(){
 // ---------------------------------------------------------------------------
 const SET_SECTIONS = [
   ["ai", "AI tagging"],
+  ["sessions", "Sessions"],
   ["settingsBox", "Download settings"],
   ["backupCard", "Backup & restore"],
   ["lanCard", "Open on your phone"],
@@ -7818,6 +7822,14 @@ function moveSettingsCards(){
     const el = $(pid);
     if(el) host.appendChild(el);
   }
+  // The session panel is a page section now, not a box that pops open inside
+  // the Download tab: one place to see and switch every login.
+  const sess = $("sessPanel");
+  if(sess){
+    host.appendChild(sess);
+    const close = $("sessPanelClose");
+    if(close) close.style.display = "none";   // nothing to close on a page
+  }
   setMoved = true;
 }
 
@@ -7832,6 +7844,22 @@ function setSection(id){
   const ai = $("aiBody");
   if(ai) ai.style.display = id === "ai" ? "" : "none";
   if(id !== "ai" && typeof showOptTab === "function") showOptTab(id);
+  // Sessions is a section like any other: both platforms listed at once, so
+  // there is no "which tab am I on" question about whose login you are editing.
+  const sess = $("sessPanel");
+  if(sess){
+    const on = id === "sessions";
+    window.__sessBoth = on;
+    sess.style.display = on ? "block" : "none";
+    if(on){
+      if($("sessIg")) $("sessIg").style.display = "";
+      if($("sessTt")) $("sessTt").style.display = "";
+      if($("sessTitle")) $("sessTitle").textContent = "Sessions";
+      if($("sessHint")) $("sessHint").textContent = "Which login each platform downloads with.";
+      if(typeof loadSessions === "function") loadSessions();
+      if(typeof loadTiktokSessions === "function") loadTiktokSessions();
+    }
+  }
   document.querySelectorAll("#setNav button").forEach(b =>
     b.classList.toggle("active", b.dataset.sec === id));
   const hint = $("aiHint");
