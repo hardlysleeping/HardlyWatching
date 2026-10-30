@@ -58,21 +58,37 @@ VID_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
 BOX = 640
 JPEG_Q = 82
 
-# Model that answers first. Flash-lite was the fastest and the least willing to
-# invent a name, which is exactly the combination wanted for the bulk pass.
-MODEL_FAST = os.environ.get("HW_TAG_MODEL",
-                            "nous/google/gemini-3.5-flash-lite-subscription")
-# Asked only when the first model named somebody, to confirm the name.
-MODEL_CHECK = os.environ.get("HW_TAG_CHECK_MODEL",
-                             "nous/qwen/qwen3-vl-8b-instruct-subscription")
+# The model Karakeep uses, on the endpoint it uses: `openai/gpt-4o-mini` through
+# OpenRouter. Same id, same provider, same key pool -- so what this pass costs is
+# directly comparable to what Karakeep's tagging costs, and the numbers the
+# dashboard already shows for that app apply here.
+MODEL_FAST = os.environ.get("HW_TAG_MODEL", "openai/gpt-4o-mini")
+# Same model by default: Karakeep runs ONE model, and asking a second one to
+# confirm every name doubles the bill. When the two ids are equal the check is
+# skipped and the model's names are taken as-is -- exactly Karakeep's behaviour.
+# Set HW_TAG_CHECK_MODEL to a different model to buy the cross-check back.
+MODEL_CHECK = os.environ.get("HW_TAG_CHECK_MODEL", MODEL_FAST)
 
-ENDPOINT = os.environ.get("HW_TAG_ENDPOINT", "http://10.0.0.10:2099/v1/chat/completions")
-KEY_ENV = "HERMES_CUSTOM_10_0_0_10_2099_API_KEY"
-KEY_FILE = Path.home() / ".hermes" / ".env"
+# gpt-4o-mini through OpenRouter bills the base64 data URL as TEXT unless the
+# detail level is pinned: the same 640px picture cost 25,526 input tokens at
+# `auto`/`high` and 2,858 at `low`, and the count at auto scaled with the JPEG's
+# byte size (64 KB -> 25.5k, 19 KB -> 8.5k). `low` is flat regardless of size, so
+# it is the default; HW_TAG_DETAIL=high buys the extra fidelity back at ~9x.
+DETAIL = os.environ.get("HW_TAG_DETAIL", "low")
+
+ENDPOINT = os.environ.get("HW_TAG_ENDPOINT",
+                          "https://openrouter.ai/api/v1/chat/completions")
+KEY_ENV = os.environ.get("HW_TAG_KEY_ENV", "OPENROUTER_API_KEY")
+# Where a key may be found, in order. Never logged, never copied anywhere new.
+KEY_FILES = [Path.home() / ".hermes" / ".env",
+             Path.home() / ".config" / "hardlywatching" / "ai.env"]
+
+# Tokens actually spent, so a pass can be costed instead of estimated.
+TOKENS = {"in": 0, "out": 0}
 
 
 def api_key() -> str:
-    """The gateway key, from the environment or the one file that already has it.
+    """The gateway key, from the environment or a file that already has it.
 
     Never logged, never written anywhere new: a second copy on disk is a second
     thing to leak.
@@ -80,13 +96,14 @@ def api_key() -> str:
     key = os.environ.get(KEY_ENV, "").strip()
     if key:
         return key
-    try:
-        for line in KEY_FILE.read_text(errors="replace").splitlines():
-            line = line.strip()
-            if line.startswith(KEY_ENV + "="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
+    for path in KEY_FILES:
+        try:
+            for line in path.read_text(errors="replace").splitlines():
+                line = line.strip()
+                if line.startswith(KEY_ENV + "="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except OSError:
+            continue
     return ""
 
 
@@ -239,7 +256,8 @@ def _ask(model: str, img: bytes, timeout: int = 90) -> dict | None:
             {"type": "text", "text": PROMPT},
             {"type": "image_url",
              "image_url": {"url": "data:image/jpeg;base64," +
-                                  base64.b64encode(img).decode()}},
+                                  base64.b64encode(img).decode(),
+                           "detail": DETAIL}},
         ]}],
         "temperature": 0.1,
         "max_tokens": 400,
@@ -251,6 +269,11 @@ def _ask(model: str, img: bytes, timeout: int = 90) -> dict | None:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read())
         txt = (d["choices"][0]["message"]["content"] or "").strip()
+        # Count what was actually billed, not what was estimated: the provider
+        # reports it, and a pass that reports its own spend can be trusted.
+        use = d.get("usage") or {}
+        TOKENS["in"] += int(use.get("prompt_tokens") or 0)
+        TOKENS["out"] += int(use.get("completion_tokens") or 0)
     except (urllib.error.URLError, KeyError, ValueError, TimeoutError) as e:
         return {"__error__": str(e)[:200]}
     m = re.search(r"\{.*\}", txt, re.S)
@@ -288,12 +311,17 @@ def tag_media(path: Path, owner: str = "") -> dict:
     caption = str(first.get("caption") or "")[:300]
     named = [n for n in _names(first) if n.lower() != (owner or "").lower()]
     confirmed: list[str] = []
-    if named:
+    if named and MODEL_CHECK and MODEL_CHECK != MODEL_FAST:
         # A second opinion, because a wrong name is worse than no name.
         second = _ask(MODEL_CHECK, img)
         if second and "__error__" not in second:
             other = {n.lower() for n in _names(second)}
             confirmed = [n for n in named if n.lower() in other]
+    elif named:
+        # One model, no cross-check: Karakeep's behaviour. The name is stored as
+        # the model gave it -- which is why the owner's name, read from the
+        # sidecar, stays the one name that is certainly right.
+        confirmed = named
     return {"tags": tags[:12], "people": confirmed, "caption": caption,
             "model": MODEL_FAST}
 
@@ -493,7 +521,8 @@ def stats() -> dict:
         "SELECT people FROM tags WHERE people != '' LIMIT 200")]
     return {"tagged": int(n), "failed": int(bad), "distinct_tags": int(tags),
             "with_people": len(people), "db": str(db_path()),
-            "size_mb": round(db_path().stat().st_size / 1e6, 1) if db_path().exists() else 0}
+            "size_mb": round(db_path().stat().st_size / 1e6, 1) if db_path().exists() else 0,
+            "tokens_in": TOKENS["in"], "tokens_out": TOKENS["out"]}
 
 
 # --------------------------------------------------------------------------- #
