@@ -1245,8 +1245,10 @@ def _mounted_disks(eng) -> list[dict]:
             "is_archive": bool(is_archive),
             # The filesystem holding the home folder is the machine's own disk:
             # listed only if it is already in use, so the page stays about the
-            # drives a person actually plugs in.
-            "system": bool(mount_r == home_r or mount_r == Path("/")),
+            # drives a person actually plugs in. The home mount is /var/home,
+            # not /var/home/<user>, so a plain equality test misses it.
+            "system": bool(mount_r == Path("/") or mount_r == home_r
+                           or mount_r in home_r.parents),
         }
         # One row per physical device: the same btrfs filesystem is mounted as
         # several subvolumes, and those are one drive. The home mount wins over
