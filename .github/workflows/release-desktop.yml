@@ -162,6 +162,7 @@ jobs:
           # right-click -> Open on first run because there is no Developer ID.
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict "$APP"
+          mkdir -p src-tauri/target/release/bundle/dmg
           hdiutil create -volname "HardlyWatching" -srcfolder "$APP" -ov -format UDZO \
             "src-tauri/target/release/bundle/dmg/HardlyWatching_${VERSION}_$(uname -m).dmg"
           ls -la src-tauri/target/release/bundle/dmg/

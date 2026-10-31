@@ -184,9 +184,10 @@ impl Drop for OwnedChild {
 // Tiny process helpers (no extra dependency beyond libc for the signals)
 // ---------------------------------------------------------------------------
 
-#[cfg(unix)]
+// Defined everywhere, not cfg(unix): these are only ever arguments to
+// send_signal, and a cfg(unix) const made the Windows build fail to compile
+// (E0425: cannot find value `SIGTERM` in this scope).
 const SIGTERM: i32 = 15;
-#[cfg(unix)]
 const SIGKILL: i32 = 9;
 
 #[cfg(unix)]
@@ -196,7 +197,17 @@ fn send_signal(pid: u32, sig: i32) {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn send_signal(pid: u32, _sig: i32) {
+    // Windows has no POSIX signals. taskkill /T /F is the closest thing to
+    // SIGKILL and it takes the whole tree, which is what stopping the server
+    // means here: the frozen sidecar may have children of its own.
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
+}
+
+#[cfg(not(any(unix, windows)))]
 fn send_signal(_pid: u32, _sig: i32) {}
 /// Poll until the child exits or the deadline passes. Returns None on timeout.
 fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
