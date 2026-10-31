@@ -3,6 +3,25 @@
 Notable changes to HardlyWatching. Format follows [Keep a Changelog](https://keepachangelog.com/);
 versioning is [SemVer](https://semver.org/).
 
+## [0.5.1] — 2026-10-30
+
+### Added
+
+- **Every profile says which site it came from.** The grid, card and list views
+  draw a pill per site on each card — `IG`, `TikTok`, or both when one card stands
+  for an account archived on both — so the platform is visible without opening a
+  profile. On this archive that is 2,132 TikTok, 192 Instagram and 35 on both.
+- **Filter the list by site.** `All · IG · TikTok · Both` sits above the list,
+  narrows it instantly, composes with the name search, survives a repaint and is
+  remembered like the view choice. The on-screen count reads "35 of 2289 match",
+  and each button's tooltip carries its total.
+
+### Fixed
+
+- **The UI baseline gate could not run.** Its capture waited for three tabs on a
+  page that has drawn four since Settings became one, so every run timed out on a
+  healthy page.
+
 ## [0.5.0] — 2026-10-29
 
 ### Added
