@@ -1300,6 +1300,29 @@ def _archive_stamp(folders) -> tuple:
     return (_WRITE_SEQ, tuple(out))
 
 
+def _sweep_stamp(folders) -> tuple:
+    """A fingerprint for the leftover sweep: (mtime, size, inode) per folder.
+
+    The gallery's stamp deliberately leaves the directory's own mtime out, and
+    for the gallery that is right. For the sweep it is not: the question is
+    "did a new entry appear", and a `.temp` file is not media, so it moves
+    neither the newest-mtime nor the media count. On a filesystem where the new
+    entry fits in the blocks the directory already has, the size does not move
+    either and the remembered answer stayed stale -- a leftover from an
+    interrupted download that the page never offered to clean.
+
+    Reading a directory does not bump its mtime (measured), so this still hits
+    on every load that changed nothing.
+    """
+    out = []
+    for folder in folders:
+        st = _dir_stamp(folder)
+        if st is None:
+            continue
+        out.append((str(folder), st))
+    return (_WRITE_SEQ, tuple(out))
+
+
 def _scan_dir(folder: Path) -> tuple[list[str], int, int] | None:
     """One pass over the folder: the media names, the newest date-carrying
     mtime, and how many sidecars were counted.
@@ -6991,9 +7014,8 @@ class Engine:
         # entry in the archive -- 250k of them here, 2.2s -- and the page asks
         # for this on EVERY load to decide whether to show a button that is
         # almost always hidden. So a dry run is remembered against one stat per
-        # profile folder (the same fingerprint the gallery uses): an interrupted
-        # download drops a `.temp` inside a folder, that folder's mtime changes,
-        # and the next load looks again.
+        # profile folder: an interrupted download drops a `.temp` inside a
+        # folder, that folder's mtime changes, and the next load looks again.
         profiles: list[Path] = []
         for root in roots:
             try:
@@ -7002,7 +7024,7 @@ class Engine:
                 profiles.extend(p for p in root.iterdir() if p.is_dir())
             except OSError:
                 continue
-        stamp = _archive_stamp(profiles)
+        stamp = _sweep_stamp(profiles)
         cached = getattr(self, "_partials_cache", None)
         if dry_run and cached is not None and cached[0] == stamp:
             return cached[1]
