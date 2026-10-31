@@ -69,10 +69,13 @@ jobs:
       VERSION: ${{ inputs.version }}
 
     steps:
-      - name: Check out the tag
+      # A dispatch builds the branch it was started from, so packaging fixes do
+      # not have to be inside an already-published tag before they can be used.
+      # The release job (a tag push) is what checks out the tag itself.
+      - name: Check out
         uses: actions/checkout@v4
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
       - name: Python 3.12
         uses: actions/setup-python@v5
