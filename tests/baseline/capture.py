@@ -261,7 +261,9 @@ def navigate(ws, sid: str, port: int) -> None:
     wait_until(ws, sid, "document.readyState === 'complete'", 10, "blank page")
     ws.call("Page.navigate", session_id=sid, url="http://127.0.0.1:%d/" % port)
     wait_until(ws, sid, "document.readyState === 'complete'", 20, "page load")
-    wait_until(ws, sid, "document.querySelectorAll('.tab').length === 3", 20, "tab strip")
+    # Four tabs: Download, Gallery, Shorts, Settings. This said 3 long after
+    # Settings was added, so every capture timed out on a page that was fine.
+    wait_until(ws, sid, "document.querySelectorAll('.tab').length === 4", 20, "tab strip")
 
 
 def prepare(ws, sid: str, port: int, view: str, w: int, h: int) -> None:
