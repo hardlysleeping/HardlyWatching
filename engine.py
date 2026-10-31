@@ -4837,6 +4837,23 @@ def profile_peek(self, username: str, platform: str = "instagram",
             "liked": len(liked), "items": items}
 
 
+# How many thumbnails may be built at once.
+#
+# One per browser connection, which is what a grid asks for: the cap is here to
+# stop an unbounded burst (a hundred tiles at once), not to slow a normal view.
+# The real limit on how fast these come back is the unit's CPUQuota -- six ffmpeg
+# runs want ~2 cores, and the service is held to 250% of the machine so the
+# desktop stays usable while downloading. Measured: the same six frames take
+# ~420 ms with no quota and ~1.45 s under it.
+THUMB_SLOTS = threading.Semaphore(6)
+
+# One build per thumbnail, however many requests ask for it at once: the grid
+# and the popup can want the same file in the same instant, and two ffmpeg runs
+# for one JPEG is pure waste under a CPU quota.
+_inflight: dict[str, threading.Event] = {}
+_inflight_lock = threading.Lock()
+
+
 def make_thumb(src: Path, ext: str) -> Path | None:
     """Create (or reuse) a small JPEG for `src`. Returns None on failure.
 
@@ -4847,6 +4864,34 @@ def make_thumb(src: Path, ext: str) -> Path | None:
     dest = _thumb_path("v" if ext in GALLERY_VIDEO_EXTS else "i",
                        _cache_key(src))
     if dest.is_file() and dest.stat().st_size > 0:
+        return dest
+    key = str(dest)
+    with _inflight_lock:
+        waiting_on = _inflight.get(key)
+        mine = waiting_on is None
+        if mine:
+            waiting_on = threading.Event()
+            _inflight[key] = waiting_on
+    if not mine:
+        # Somebody else is building exactly this one: wait for it instead of
+        # spending another slot on the same frame.
+        waiting_on.wait(timeout=60)
+        if dest.is_file() and dest.stat().st_size > 0:
+            return dest
+        return None
+    try:
+        # Bounded: see THUMB_SLOTS. Held only while building, never for a hit.
+        with THUMB_SLOTS:
+            return _build_thumb(src, ext, dest)
+    finally:
+        with _inflight_lock:
+            _inflight.pop(key, None)
+        waiting_on.set()
+
+
+def _build_thumb(src: Path, ext: str, dest: Path) -> Path | None:
+    if dest.is_file() and dest.stat().st_size > 0:
+        # Another request may have built it while this one waited for a slot.
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part.jpg")
@@ -5812,6 +5857,24 @@ class Engine:
             t.start()
         except Exception:
             pass
+
+    def _save_heartbeat(self, gap: float = 10.0) -> None:
+        """Save a state file that only exists to keep the UI's countdown fresh.
+
+        The paused and cooling loops used to call save_state() every second or
+        two. Each save is a full dump of the queue, an fsync and a re-parse to
+        prove the file is valid -- a few hundred milliseconds of the one
+        interpreter every request also shares, so a paused queue spent a large
+        part of its life rewriting a file nobody was reading: the countdown the
+        UI shows is computed in memory from `cooldown_until` by snapshot(). A
+        heartbeat every ten seconds keeps the file fresh enough for a restart
+        while costing almost nothing.
+        """
+        now = time.time()
+        if now - getattr(self, "_last_heartbeat", 0.0) < gap:
+            return
+        self._last_heartbeat = now
+        self.save_state()
 
     def save_state(self) -> None:
         # A running download reports progress about once a second, and each save
@@ -8423,13 +8486,15 @@ class Engine:
                     # they pressed never clears here at all.
                     self._release_limit_pause()
                     if self.paused:
-                        self.save_state()  # keep the UI countdown fresh
+                        # A heartbeat, not a save every second: see
+                        # _save_heartbeat for what that cost.
+                        self._save_heartbeat()
                         time.sleep(1.0)
                         continue
                     with self.lock:
                         cooling = self.cooldown_remaining() > 0 and bool(self.pending)
                     if cooling:
-                        self.save_state()
+                        self._save_heartbeat()
                         time.sleep(2.0)
                         continue
                     break
