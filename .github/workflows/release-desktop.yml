@@ -130,7 +130,7 @@ jobs:
           python packaging/sidecar/build_ci.py
           if [ "$RUNNER_OS" = "Windows" ]; then
             ./dist/sidecar/hardlywatching-server.exe --self-check
-            ./dist/sidecar/bin/instaloader.exe --version
+            ./dist/sidecar/instaloader.exe --version
             ./dist/sidecar/bin/yt-dlp.exe --version
           else
             ./dist/sidecar/hardlywatching-server --self-check

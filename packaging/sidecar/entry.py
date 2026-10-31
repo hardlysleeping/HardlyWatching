@@ -128,6 +128,12 @@ def prepend_bundle_bin() -> None:
     for d in (exe_dir() / "bin", bundle_dir() / "bin"):
         if d.is_dir() and d not in dirs:
             dirs.append(d)
+    # Windows has no symlink to make and no shebang to write, so bin/instaloader
+    # is a copy of this binary -- and a PyInstaller onedir copy only starts if
+    # _internal/ is beside it, i.e. in the bundle root. Put the root on PATH so
+    # `instaloader.exe` there is what engine.py's shutil.which finds.
+    if os.name == "nt" and exe_dir().is_dir() and exe_dir() not in dirs:
+        dirs.append(exe_dir())
     # Insert in reverse so the exe-dir bin/ ends up leftmost.
     for d in reversed(dirs):
         if str(d) not in os.environ.get("PATH", "").split(os.pathsep):

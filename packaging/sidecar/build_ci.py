@@ -170,14 +170,23 @@ def copy_tools() -> list[str]:
     # shebang to write, so it gets a copy of this binary under that name and
     # entry.py recognises itself by argv[0] (see the dispatch in main()).
     if IS_WIN:
-        wrapper = bin_dir / "instaloader.exe"
+        # A copy of the exe has to sit BESIDE _internal/ or the PyInstaller
+        # bootloader cannot find python312.dll -- so it goes in the bundle root,
+        # not in bin/, and entry.py puts that root on PATH on Windows.
+        wrapper = DIST / "instaloader.exe"
         shutil.copy2(DIST / SERVER, wrapper)
-        notes.append("instaloader.exe <- copy of hardlywatching-server.exe")
+        notes.append("instaloader.exe <- copy of hardlywatching-server.exe (bundle root)")
     else:
         wrapper = bin_dir / "instaloader"
+        # CDPATH= cd -- is the portable form: BSD readlink has no -f, so a
+        # `readlink -f` wrapper resolved to "." on macOS and could not find
+        # the server.
         wrapper.write_text(
             "#!/bin/sh\n"
-            'exec "$(dirname "$0")/hardlywatching-server" --run-instaloader "$@"\n'
+            "# instaloader, from the HardlyWatching bundle: hands the arguments to\n"
+            "# the bundle's own interpreter so no separate install is needed.\n"
+            'here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+            'exec "$here/../hardlywatching-server" --run-instaloader "$@"\n'
         )
         os.chmod(wrapper, 0o755)
         notes.append("instaloader <- wrapper -> hardlywatching-server --run-instaloader")
