@@ -875,6 +875,30 @@
   .pcard .split:hover{color:var(--text)}
   @media (hover:none){.pcard .split{opacity:1}}
   .pcard .ct{font-size:11px;color:var(--muted);margin-top:3px}
+  /* Which site a profile is archived from, ON the card. A merged card carries
+     both pills, so "IG TikTok" IS the "both" case and needs no third word. The
+     site filter above the list narrows on exactly these, so a pill and a filter
+     button can never disagree about what a card is. */
+  .ptags{display:flex;gap:4px;justify-content:center;flex-wrap:wrap;margin-top:5px}
+  .ptag{font-size:9.5px;line-height:1;padding:3px 6px;border-radius:999px;
+    border:1px solid var(--line-2);background:var(--panel-3);color:var(--muted);
+    white-space:nowrap;letter-spacing:.02em}
+  .ptag.ig{color:#f2a7c9;border-color:#5b3550;background:rgba(225,80,155,.14)}
+  .ptag.tt{color:#9ee6ee;border-color:#2c5560;background:rgba(60,205,225,.13)}
+  .pcard.big .ptags{justify-content:flex-start;margin-top:4px}
+  /* In a row the pills sit beside the name, not under it: a list is scanned
+     across, and a second line per profile doubles its height. They get a fixed
+     column so the platform reads as a column -- hugging the count made the same
+     site appear at a different place on every row, because a count is as wide as
+     the numbers in it. */
+  .pcard.rowv .ptags{flex:none;flex-wrap:nowrap;margin-top:0;min-width:56px;
+    justify-content:flex-end}
+  .pcard.rowv .rowct{min-width:7.5em;text-align:right}
+  /* The site filter for the profile list. Its own row, because the search box
+     and the view switchers already fill one, and a control that needs a
+     sideways swipe to find does not exist. */
+  .gplat{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+  .gplat .gviews button{font-size:11.5px;padding:4px 10px}
   .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:9px}
   .ptile{position:relative;background:var(--panel-3);border-radius:9px;overflow:hidden;
     aspect-ratio:1;cursor:pointer}
@@ -1229,6 +1253,18 @@
   #profileGrid.profile-grid{gap:9px}
   #profileGrid.gview-grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr))}
   #profileGrid.gview-card{grid-template-columns:minmax(0,1fr)}
+  /* Four site buttons plus a count do not fit beside a phone's search box, so
+     this row wraps instead of pushing the page wider than the screen. */
+  .gplat{flex-wrap:wrap;row-gap:6px;margin-bottom:9px}
+  .gplat .gviews button{padding:7px 10px}
+  /* A phone row has no room for a pill column AND a count column: together they
+     squeezed a downloading profile's name to 10px. The pills take the line under
+     the name instead -- still on the card, still readable, and the name keeps
+     the width it had. */
+  .pcard.rowv{flex-wrap:wrap;row-gap:2px}
+  .pcard.rowv .ptags{flex:0 0 100%;order:8;min-width:0;justify-content:flex-start;
+    padding-left:43px}
+  .pcard.rowv .rowct{min-width:0}
   .pcard{padding:9px 5px 8px;border-radius:11px}
   .pcard .av{width:52px;height:52px;margin-bottom:6px}
   .pcard .nm{font-size:12px}
@@ -1380,6 +1416,17 @@
       </span>
       <span class="hint" id="gSearchN"></span>
       <button class="small" id="gSearchClear" title="Clear the search">✕</button>
+    </div>
+
+    <!-- Which site the profiles on screen are archived from. The same pills sit
+         on every card, and "Both" is the merged card that carries two of them. -->
+    <div class="gplat" id="gPlatBar" style="display:none">
+      <span class="gviews" id="gPlat" role="group" aria-label="Filter profiles by site">
+        <button type="button" data-gplat="" title="Every profile">All</button>
+        <button type="button" data-gplat="instagram" title="Archived from Instagram">IG</button>
+        <button type="button" data-gplat="tiktok" title="Archived from TikTok">TikTok</button>
+        <button type="button" data-gplat="both" title="Archived on both sites">Both</button>
+      </span>
     </div>
 
     <div class="profile-grid" id="profileGrid"></div>
@@ -6647,8 +6694,7 @@ function tagFilterRow(allTags){
 
 async function renderAllSection(section){
   const host = $("profileGrid");
-  const sw = $("gSearchWrap");
-  if(sw) sw.style.display = "none";
+  showListChrome(false);
   // This is a cross-profile view, so no single profile is open. The URL has to
   // say so, or a reload would reopen whichever profile was open a moment ago.
   gProfile = null;
@@ -7033,8 +7079,7 @@ function repaintBookmarksView(){
 
 async function renderBookmarks(){
   const host = $("profileGrid");
-  const sw = $("gSearchWrap");
-  if(sw) sw.style.display = "none";
+  showListChrome(false);
   gProfile = null;
   rememberView();
   const mine = ++gReq;
@@ -8050,8 +8095,7 @@ async function tlOpenBig(post){
 
 async function renderTimeline(){
   const host = $("profileGrid");
-  const sw = $("gSearchWrap");
-  if(sw) sw.style.display = "none";
+  showListChrome(false);
   const mine = ++tlReq;
   host.innerHTML = `<div class="gempty">Loading the timeline…</div>`;
 
@@ -8914,6 +8958,69 @@ try{
   if(v === "card" || v === "list") gView = v;
 }catch(e){}
 
+// Which site the profile LIST is narrowed to: "" (every profile), "instagram",
+// "tiktok", or "both" (the merged cards, which carry two pills). Remembered like
+// the view, because it is the same kind of choice -- and the pill on each card
+// and the button in the bar read from the same three words, so they agree.
+const GPLAT_KEY = "hw.gplat";
+const GPLAT_WORD = {instagram:"Instagram", tiktok:"TikTok", both:"two-site"};
+let gPlatFilter = "";
+try{
+  const v = localStorage.getItem(GPLAT_KEY) || "";
+  if(v === "instagram" || v === "tiktok" || v === "both") gPlatFilter = v;
+}catch(e){}
+
+function setGPlat(v){
+  gPlatFilter = (v === "instagram" || v === "tiktok" || v === "both") ? v : "";
+  try{
+    if(gPlatFilter) localStorage.setItem(GPLAT_KEY, gPlatFilter);
+    else localStorage.removeItem(GPLAT_KEY);
+  }catch(e){}
+  paintGPlatBtns();
+  // Filtering is a display:none on cards already on screen, so the search box's
+  // own filter has to be re-applied with it -- one of them clearing the other's
+  // `display` is exactly how a list goes blank with the box still full.
+  applyProfileSearch();
+}
+
+function wireGPlat(){
+  const wrap = $("gPlat");
+  if(!wrap || wrap.dataset.wired) return;
+  wrap.dataset.wired = "1";
+  for(const b of wrap.querySelectorAll("[data-gplat]"))
+    b.onclick = () => setGPlat(b.dataset.gplat || "");
+}
+
+// Labels stay put; the numbers ride the tooltip and the hint beside the search
+// box, because four counts in four buttons do not fit a phone's width.
+function paintGPlatBtns(){
+  const wrap = $("gPlat");
+  if(!wrap) return;
+  const counts = {instagram:0, tiktok:0, both:0};
+  for(const p of (gProfiles || [])){
+    const plats = pPlats(p);
+    if(plats.length > 1) counts.both++;
+    for(const q of plats) if(q in counts) counts[q]++;
+  }
+  for(const b of wrap.querySelectorAll("[data-gplat]")){
+    const v = b.dataset.gplat || "";
+    b.classList.toggle("on", v === gPlatFilter);
+    const n = v ? counts[v] : (gProfiles || []).length;
+    b.title = v
+      ? `${GPLAT_WORD[v] === "two-site" ? "Archived on both sites" : "Archived from " + GPLAT_WORD[v]} — ${n.toLocaleString()} profile${n===1?"":"s"}`
+      : `Every profile — ${n.toLocaleString()}`;
+  }
+}
+
+// Does this card belong to the site filter that is on? A merged card answers yes
+// to both sites as well as to "both", which is why the buttons are not exclusive
+// buckets: the pills on the card are the truth, and this reads them back.
+function cardMatchesPlat(card){
+  if(!gPlatFilter) return true;
+  const plats = (card.dataset.plats || "").split(" ").filter(Boolean);
+  return gPlatFilter === "both" ? plats.length > 1 : plats.includes(gPlatFilter);
+}
+
 function setGView(v){
   if(v !== "card" && v !== "grid" && v !== "list") return;
   gView = v;
@@ -9036,15 +9143,36 @@ function pCount(p){
   return p.bytes ? `${n} · ${fmtBytes(p.bytes)}` : n;
 }
 
+// Every site this card stands for. One entry for an ordinary profile, two for a
+// merged card (the same handle archived on both sites, or a burner pair).
+function pPlats(p){
+  const out = [p.platform || "instagram"];
+  for(const q of (p.merged_platforms || []))
+    if(!out.includes(q)) out.push(q);
+  return out;
+}
+
+// The pills that say which site(s) a card is archived from. Drawn on the card
+// itself rather than left to be inferred from the merge line, because that line
+// only appears on the rare merged card and says nothing on the other 2,000.
+function pTags(p){
+  return `<span class="ptags">${pPlats(p).map(q => {
+    const tt = q === "tiktok";
+    return `<span class="ptag ${tt ? "tt" : "ig"}" title="Archived from ${
+      tt ? "TikTok" : "Instagram"}">${tt ? "TikTok" : "IG"}</span>`;
+  }).join("")}</span>`;
+}
+
 // The compact grid: what the list has always looked like.
 function pcardGrid(p){
   return `
-    <div class="pcard${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-pinned="${p.pinned?1:0}">
+    <div class="pcard${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-plats="${esc(pPlats(p).join(" "))}" data-pinned="${p.pinned?1:0}">
       ${pAvatar(p)}
       ${pLive(p)}
       <a class="nm" data-plink="1" href="${esc(profileHref(p.username, p.platform||"instagram"))}"
          title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>${pPin(p)}
       <div class="ct" data-count="1">${pCount(p)}</div>
+      ${pTags(p)}
       ${pMerged(p)}
       ${pSplit(p)}
     </div>`;
@@ -9058,7 +9186,7 @@ function pcardBig(p){
   const pic = `/api/profile-pic?profile=${encodeURIComponent(p.username)}&platform=${encodeURIComponent(p.platform||"instagram")}`;
   const href = esc(profileHref(p.username, p.platform||"instagram"));
   return `
-    <div class="pcard big${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-pinned="${p.pinned?1:0}">
+    <div class="pcard big${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-plats="${esc(pPlats(p).join(" "))}" data-pinned="${p.pinned?1:0}">
       <a class="hero" data-plink="1" href="${href}" title="Open ${esc(p.username)}"><img loading="lazy" alt="" src="${pic}"
         onerror="this.style.visibility='hidden'"></a>
       ${pLive(p)}
@@ -9068,6 +9196,7 @@ function pcardBig(p){
           <a class="nm" data-plink="1" href="${href}"
              title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>${pPin(p)}
           <div class="ct" data-count="1">${pCount(p)}</div>
+          ${pTags(p)}
           ${pMerged(p)}
         </div>
       </div>
@@ -9082,13 +9211,14 @@ function pcardBig(p){
 // The list: one row a profile.
 function pcardRow(p){
   return `
-    <div class="pcard rowv${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-pinned="${p.pinned?1:0}">
+    <div class="pcard rowv${p.downloading?" live":""}${p.pinned?" pinned":""}" data-profile="${esc(p.username)}" data-platform="${esc(p.platform||"instagram")}" data-plats="${esc(pPlats(p).join(" "))}" data-pinned="${p.pinned?1:0}">
       ${pAvatar(p)}
       <div class="who">
         <a class="nm" data-plink="1" href="${esc(profileHref(p.username, p.platform||"instagram"))}"
            title="Open ${esc(p.username)} — right-click or long-press to open in a new tab">${esc(p.username)}</a>${pPin(p)}
         ${pMerged(p)}
       </div>
+      ${pTags(p)}
       <span class="rowct">${pCount(p)}</span>
       ${pLive(p)}
       ${pSplit(p)}
@@ -9153,6 +9283,16 @@ async function togglePeek(card){
   }
 }
 
+// The search row and the site filter belong to the profile LIST. They are shown
+// and hidden together, because a cross-profile view (Liked, Trash, Timeline…)
+// that left one of them behind would be filtering a list it does not own.
+function showListChrome(on){
+  for(const id of ["gSearchWrap", "gPlatBar"]){
+    const el = $(id);
+    if(el) el.style.display = on ? "" : "none";
+  }
+}
+
 async function renderGallery(){
   const host = $("profileGrid");
   if(gProfile) return renderPhotos(gProfile, gPlatform);
@@ -9196,8 +9336,7 @@ async function renderGallery(){
     ? `${profiles.length} ${profiles.length===1?"profile":"profiles"}`
       + (live ? ` · ${live} downloading` : "")
     : "nothing archived yet";
-  const sw = $("gSearchWrap");
-  if(sw) sw.style.display = "";
+  showListChrome(true);
   if(!profiles.length){
     host.innerHTML = `<div class="gempty">Nothing archived yet. Profiles appear here as soon as files start landing.</div>`;
     return;
@@ -9267,8 +9406,10 @@ function paintProfileCards(profiles){
   }
   wireGViews();
   wireGDens();
+  wireGPlat();
   wireCtxMenu();
   paintGViewBtns();
+  paintGPlatBtns();
 }
 
 function wireGViews(){
@@ -9636,8 +9777,8 @@ async function renderPhotos(username, platform){
     const b = $(id);
     if(b) b.style.display = "none";
   }
-  const sw0 = $("gSearchWrap");
-  if(sw0) sw0.style.display = "none";   // the search box is for the profile list only
+  // the search box and the site filter are for the profile list only
+  showListChrome(false);
   // None of the cross-profile views is the one you are in once a profile is
   // open, so the bar above must stop claiming otherwise. It is only rebuilt
   // when the profile list is drawn, so it has to be cleared here -- left alone
@@ -10602,23 +10743,29 @@ function applyProfileSearch(){
   const cards = [...(host ? host.querySelectorAll(".pcard") : [])];
   let shown = 0;
   for(const card of cards){
-    const hit = !q || (card.dataset.profile || "").toLowerCase().includes(q);
+    // The name and the site filter are two narrowings of ONE list, so a card has
+    // to pass both. Each writes the same `display`, which is why they are decided
+    // in one place rather than each having its own loop.
+    const hit = (!q || (card.dataset.profile || "").toLowerCase().includes(q))
+      && cardMatchesPlat(card);
     card.style.display = hit ? "" : "none";
     if(hit) shown++;
   }
   const n = $("gSearchN");
-  if(n) n.textContent = q ? `${shown} of ${cards.length} match` : "";
+  if(n) n.textContent = (q || gPlatFilter) ? `${shown} of ${cards.length} match` : "";
   const clr = $("gSearchClear");
   if(clr) clr.style.display = q ? "" : "none";
   // An empty result needs to say so, or the pane just looks broken.
   let none = host.querySelector(".gsearch-none");
-  if(q && !shown && cards.length){
+  if((q || gPlatFilter) && !shown && cards.length){
     if(!none){
       none = document.createElement("div");
       none.className = "gempty gsearch-none";
       host.appendChild(none);
     }
-    none.textContent = `No profile matches “${box.value.trim()}”.`;
+    none.textContent = q
+      ? `No profile matches “${box.value.trim()}”.`
+      : `No ${GPLAT_WORD[gPlatFilter] || ""} profiles here.`;
   } else if(none){
     none.remove();
   }
