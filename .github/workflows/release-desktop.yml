@@ -1,0 +1,184 @@
+name: Desktop packages
+
+# Windows and macOS installers for an existing release.
+#
+# PyInstaller cannot cross-compile: the frozen server embeds CPython and every
+# shared library for its own platform, so a .exe and a .app have to be built on
+# Windows and macOS respectively. This job does exactly that and attaches the
+# results to the release for the tag it is given.
+#
+#   gh workflow run "Desktop packages" -f version=0.5.1
+#
+# The Linux .deb and AppImage are NOT built here: they come from
+# src-tauri/build-in-container.sh on the workstation, and rebuilding them here
+# would upload a second copy of assets that already exist.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without the leading v (e.g. 0.5.1). The tag v<version> must exist."
+        required: true
+      upload:
+        description: "Attach the artifacts to the release for that tag"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Check the version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # A workflow_dispatch input is only settable by someone with write access,
+      # but it is still input: validate the shape before it reaches a ref name.
+      - name: Version must be x.y.z
+        env:
+          V: ${{ inputs.version }}
+        run: |
+          case "$V" in
+            *[!0-9.]*|.*|*.|*..*) echo "version must look like 0.5.1, got '$V'" >&2; exit 1 ;;
+          esac
+          printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "version must look like 0.5.1, got '$V'" >&2; exit 1; }
+
+  package:
+    name: ${{ matrix.label }}
+    needs: guard
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows (NSIS .exe)
+            bundle: nsis
+          - os: macos-latest
+            label: macOS (.dmg)
+            bundle: app
+
+    env:
+      VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Node (for the Tauri CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install the Tauri CLI
+        run: npm install --global @tauri-apps/cli@^2
+
+      # ---------------------------------------------------------------- tools
+      - name: Fetch yt-dlp and ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tools | Out-Null
+          curl.exe -sSL -o tools/yt-dlp.exe https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
+          curl.exe -sSL -o tools/ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+          tar -xf tools/ffmpeg.zip -C tools
+          $dir = Get-ChildItem tools -Directory -Filter 'ffmpeg-*' | Select-Object -First 1
+          Copy-Item "$($dir.FullName)/bin/ffmpeg.exe" tools/ffmpeg.exe
+          Copy-Item "$($dir.FullName)/bin/ffprobe.exe" tools/ffprobe.exe
+          ./tools/yt-dlp.exe --version
+          ./tools/ffmpeg.exe -version | Select-Object -First 1
+
+      - name: Fetch yt-dlp and ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p tools
+          curl -sSL -o tools/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
+          chmod +x tools/yt-dlp
+          brew install ffmpeg
+          ./tools/yt-dlp --version
+          ffmpeg -version | head -1
+
+      # -------------------------------------------------------------- sidecar
+      - name: Build the frozen server for this platform
+        shell: bash
+        env:
+          YTDLP_BIN: ${{ github.workspace }}/tools/yt-dlp${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            export FFMPEG_BIN="$GITHUB_WORKSPACE/tools/ffmpeg.exe"
+          else
+            export FFMPEG_BIN="$(command -v ffmpeg)"
+          fi
+          python packaging/sidecar/build_ci.py
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./dist/sidecar/hardlywatching-server.exe --self-check
+            ./dist/sidecar/bin/instaloader.exe --version
+            ./dist/sidecar/bin/yt-dlp.exe --version
+          else
+            ./dist/sidecar/hardlywatching-server --self-check
+            ./dist/sidecar/bin/instaloader --version
+          fi
+
+      # --------------------------------------------------------------- bundle
+      # The sidecar is wired into the Linux .deb by bundle.linux.deb.files, which
+      # does not exist for Windows or macOS. Rather than add a global resources
+      # map (that would ship a second copy inside the deb and the AppImage), the
+      # resource is added only for these two builds, on the command line.
+      - name: Build the Windows installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          tauri build --bundles nsis --config '{"bundle":{"resources":{"../dist/sidecar":"sidecar"}}}'
+          ls -la src-tauri/target/release/bundle/nsis/
+
+      - name: Build the macOS app, sign it ad-hoc, wrap it in a dmg
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          tauri build --bundles app --config '{"bundle":{"resources":{"../dist/sidecar":"sidecar"}}}'
+          APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          echo "app: $APP"
+          test -x "$APP/Contents/Resources/sidecar/hardlywatching-server"
+          # arm64 refuses to run a completely unsigned bundle; an ad-hoc
+          # signature is enough to launch, and Gatekeeper still asks the user to
+          # right-click -> Open on first run because there is no Developer ID.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          hdiutil create -volname "HardlyWatching" -srcfolder "$APP" -ov -format UDZO \
+            "src-tauri/target/release/bundle/dmg/HardlyWatching_${VERSION}_$(uname -m).dmg"
+          ls -la src-tauri/target/release/bundle/dmg/
+
+      # --------------------------------------------------------------- upload
+      - name: Attach to the release
+        if: ${{ inputs.upload }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          files=(src-tauri/target/release/bundle/nsis/*.exe src-tauri/target/release/bundle/dmg/*.dmg)
+          if [ ${#files[@]} -eq 0 ]; then echo "no artifact to upload" >&2; exit 1; fi
+          for f in "${files[@]}"; do
+            echo "uploading $f ($(stat -c%s "$f" 2>/dev/null || stat -f%z "$f") bytes)"
+            gh release upload "v${VERSION}" "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+          gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" \
+            --json assets -q '.assets[] | "  " + .name + "  " + .state + "  " + (.size|tostring)'

@@ -82,6 +82,20 @@ def tiktok_avatar(self, username: str, fetch: bool = False) -> Path | None:
         return None
 
 
+def spawn_kwargs() -> dict:
+    """Detached-child kwargs, on the platform that has an opinion.
+
+    ``start_new_session`` is POSIX-only: on Windows ``Popen`` raises
+    ``ValueError: start_new_session is only supported on POSIX``, so a Windows
+    sidecar could not launch instaloader or yt-dlp at all. There the equivalent
+    is a new process group. Everything else is unchanged, so Linux and macOS
+    spawn exactly what they always did.
+    """
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
 def cache_dir() -> Path:
     """Standard per-user cache folder for this OS."""
     if os.name == "nt":
@@ -2924,7 +2938,9 @@ def _drive_bin_roots(roots) -> list[Path]:
         # another level up again. All three are checked.
         base = Path(root)
         for parent in (base, base.parent, base.parent.parent):
-            for name in (".Trash-1000", ".Trash", ".Trash-0", f".Trash-{os.getuid()}"):
+            # getuid is POSIX-only; on Windows there is no per-user Trash to find.
+            uid = os.getuid() if hasattr(os, "getuid") else 0
+            for name in (".Trash-1000", ".Trash", ".Trash-0", f".Trash-{uid}"):
                 p = parent / name
                 try:
                     if p.is_dir() and str(p) not in seen:
@@ -8918,7 +8934,7 @@ class Engine:
         try:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True,
+                text=True, bufsize=1, **spawn_kwargs(),
             )
         except Exception as e:
             self._set(job, status="failed", finished_at=time.time(),
@@ -9603,7 +9619,7 @@ class Engine:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, stdin=subprocess.DEVNULL,
-                start_new_session=True,
+                **spawn_kwargs(),
             )
         except FileNotFoundError:
             self._set(job, error=f"instaloader not found at {INSTALOADER}")

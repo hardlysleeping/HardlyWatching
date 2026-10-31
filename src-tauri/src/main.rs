@@ -61,6 +61,9 @@ const WINDOW_MIN_WIDTH: f64 = 380.0;
 const WINDOW_MIN_HEIGHT: f64 = 520.0;
 
 /// The frozen server, as laid out by packaging/sidecar/build.sh.
+#[cfg(windows)]
+const SIDECAR_BIN: &str = "hardlywatching-server.exe";
+#[cfg(not(windows))]
 const SIDECAR_BIN: &str = "hardlywatching-server";
 const SIDECAR_DIR: &str = "sidecar";
 /// Escape hatch for development: point the shell at a hand-built

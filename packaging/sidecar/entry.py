@@ -355,6 +355,11 @@ def main() -> int:
     # Checked before parse_args: instaloader has its own --version, --help and
     # positional targets that must reach it unchanged.
     argv = sys.argv[1:]
+    # Windows has no shebang, so bin/instaloader.exe is a copy of this binary:
+    # it recognises itself by name and treats every argument as instaloader's.
+    invoked_as = Path(sys.executable).stem.lower() if sys.executable else ""
+    if invoked_as.startswith("instaloader"):
+        return run_instaloader(argv)
     if argv and argv[0] == "--run-instaloader":
         return run_instaloader(argv[1:])
 
