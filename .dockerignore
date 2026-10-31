@@ -1,0 +1,22 @@
+# What the image does not need. The build copies the source tree, and three of
+# these are hundreds of megabytes that have nothing to do with running the
+# server: the Tauri target dir, the PyInstaller output and the build venv.
+.git
+.github
+.gitignore
+.venv
+.venv-build
+.venv-ig
+__pycache__
+*.pyc
+dist
+src-tauri
+flatpak
+packaging
+tests
+docs/*.png
+*.AppImage
+*.deb
+*.flatpak
+data
+archive

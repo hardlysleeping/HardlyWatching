@@ -120,7 +120,16 @@ def _lan_enabled() -> bool:
 
     Failing closed matters here -- this decides whether a stranger on the
     network can use an app with no password.
+
+    INSTA_LAN=1 is the container's version of that toggle. In a container there
+    is no loopback client at all: every request arrives from the docker bridge,
+    which is a remote address by the rule above, so the app refused everything
+    it served. The variable is explicit rather than implied by INSTA_HOST, and
+    the image binds the published port to 127.0.0.1 so "reachable" still means
+    "reachable from this machine".
     """
+    if (os.environ.get("INSTA_LAN") or "").strip().lower() in ("1", "true", "yes"):
+        return True
     try:
         return bool(get_engine().settings.lan_access)
     except Exception:

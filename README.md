@@ -6,6 +6,25 @@ Paste the profiles you follow, let them download over days, and browse what you
 have collected in one place — grid, timeline, and a full-screen short-video feed
 for your phone. Both platforms share one queue and one gallery.
 
+## ➜ Run it in Docker
+
+```bash
+docker run -d --name hardlywatching \
+  -p 127.0.0.1:8765:8765 \
+  -v "$PWD/data:/data:z" -v "$PWD/archive:/archive:z" \
+  --restart unless-stopped \
+  ghcr.io/hardlysleeping/hardlywatching:latest
+```
+
+Then open <http://127.0.0.1:8765>. Two folders persist: `data` (the queue, the
+databases, thumbnails and the Instagram session) and `archive` (the media, one
+folder per profile). It brings its own Python, ffmpeg, instaloader and yt-dlp.
+
+The `:z` on the volumes is the SELinux label — **drop it only if your host is not
+SELinux**, and keep it on Fedora/Bazzite, where without it the container cannot
+write and the gallery comes back empty. Compose file, permissions, the port and
+what is inside the image: **[docs/docker.md](docs/docker.md)**.
+
 ## ➜ Install the Flatpak
 
 **[Click here to install it](https://hardlysleeping.github.io/HardlyWatching/hardlywatching.flatpakref)** —

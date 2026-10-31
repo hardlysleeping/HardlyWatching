@@ -1,0 +1,111 @@
+name: Docker image
+
+# Builds the container image and pushes it to GHCR.
+#
+#   gh workflow run "Docker image" -f version=0.5.1
+#
+# Uses the workflow's own GITHUB_TOKEN, which can push packages with the
+# `packages: write` permission below -- a local `gh auth token` cannot (it has
+# repo scope, not write:packages), so this is the supported route.
+#
+# Tags: the version, the minor series, and latest for a full release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without the leading v (e.g. 0.5.1)"
+        required: true
+      latest:
+        description: "Also tag it :latest"
+        type: boolean
+        default: true
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ inputs.version || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and push
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # The version comes from the tree unless it is given: the image is built
+      # from whatever commit this run checked out, and its label has to say which
+      # release that code is.
+      - name: Resolve the version
+        id: v
+        env:
+          IN: ${{ inputs.version }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -n "$IN" ]; then V="$IN"
+          elif [ -n "$TAG" ]; then V="${TAG#v}"
+          else V="$(cat VERSION)"; fi
+          printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "not a version: '$V'" >&2; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      # A release builds that release's tag; a manual run builds the branch it
+      # was started from (normally master), so container support does not have to
+      # be inside an already-published tag before the first image can be built.
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/hardlywatching
+          tags: |
+            type=raw,value=${{ steps.v.outputs.version }}
+            type=raw,value=${{ steps.v.outputs.version }},enable=${{ inputs.latest != false }}
+            type=raw,value=latest,enable=${{ inputs.latest != false }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.v.outputs.version }}
+
+      # A push that "succeeded" is not an image that runs: pull it back and ask
+      # the server it contains for its version.
+      - name: Prove the pushed image runs
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/hardlywatching:${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          mkdir -p /tmp/hwdata /tmp/hwarchive
+          docker run -d --name hw -p 127.0.0.1:8765:8765 \
+            -v /tmp/hwdata:/data -v /tmp/hwarchive:/archive "$IMAGE"
+          for i in $(seq 1 30); do
+            if curl -fsS -m 3 http://127.0.0.1:8765/api/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8765/api/health
+          curl -fsS http://127.0.0.1:8765/api/version | tee /tmp/ver.json
+          grep -q "\"version\": \"${{ steps.v.outputs.version }}\"" /tmp/ver.json
+          docker exec hw yt-dlp --version
+          docker exec hw instaloader --version
+          docker logs hw | tail -5

@@ -1,0 +1,26 @@
+# docker compose up -d
+#
+# Two paths to change before the first run:
+#   ./data     where the app keeps its queue, databases and thumbnails
+#   ./archive  where the media goes -- one folder per profile
+#
+# If your UID is not 1000, add `user: "1000:1000"` replaced by `id -u`:`id -g`,
+# or the archive you already own will be written as the wrong user.
+
+services:
+  hardlywatching:
+    image: ghcr.io/hardlysleeping/hardlywatching:latest
+    container_name: hardlywatching
+    ports:
+      # Bound to localhost on purpose: the app has no authentication and anyone
+      # who can reach the port can start logins and delete files. Put a reverse
+      # proxy with a password in front of it if you need it from elsewhere.
+      - "127.0.0.1:8765:8765"
+    volumes:
+      # :z is the SELinux label. Without it on Fedora/Bazzite the container
+      # looks like it owns the folder and every write still fails.
+      - ./data:/data:z
+      - ./archive:/archive:z
+    environment:
+      - TZ=America/Los_Angeles
+    restart: unless-stopped
